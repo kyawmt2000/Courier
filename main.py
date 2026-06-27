@@ -1,7 +1,11 @@
+import math
+import os
+import re
 from datetime import datetime
 from typing import Literal
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -82,12 +86,86 @@ class SignedUploadResponse(BaseModel):
     upload_url: str
     public_url: str
 
+class DistanceEstimateRequest(BaseModel):
+    pickup_location: str
+    dropoff_location: str
+
+
+class DistanceEstimateResponse(BaseModel):
+    distance_km: float
+    price: float
+
 
 orders: list[OrderResponse] = []
 
 
 def estimate_price(distance_km: float, weight_kg: float) -> float:
     return round(distance_km * 1000, 2)
+
+def parse_coordinate(text: str) -> tuple[float, float] | None:
+    patterns = [
+        r"@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
+        r"q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
+        r"ll=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
+        r"(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+    return None
+
+
+async def expand_location_text(text: str) -> str:
+    if "maps.app.goo.gl" not in text and "goo.gl/maps" not in text:
+        return text
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=12) as client:
+        response = await client.get(text)
+        return str(response.url)
+
+
+async def geocode_location(text: str) -> tuple[float, float]:
+    expanded = await expand_location_text(text.strip())
+
+    coordinate = parse_coordinate(expanded)
+    if coordinate:
+        return coordinate
+
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY is not configured")
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={"address": expanded, "key": api_key},
+        )
+        payload = response.json()
+
+    if payload.get("status") != "OK" or not payload.get("results"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Google Map Location 不正确或无法解析：{payload.get('status', 'UNKNOWN')}",
+        )
+
+    location = payload["results"][0]["geometry"]["location"]
+    return float(location["lat"]), float(location["lng"])
+
+
+def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
+    lat1, lon1 = origin
+    lat2, lon2 = destination
+    radius_km = 6371.0
+
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return radius_km * c
 
 
 @app.get("/", response_model=HealthResponse)
@@ -154,6 +232,16 @@ def cancel_order(order_id: str) -> OrderResponse:
             orders[index] = updated
             return updated
     raise HTTPException(status_code=404, detail="订单不存在")
+
+@app.post("/distance/estimate", response_model=DistanceEstimateResponse)
+async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimateResponse:
+    pickup = await geocode_location(request.pickup_location)
+    dropoff = await geocode_location(request.dropoff_location)
+    distance_km = max(round(haversine_km(pickup, dropoff), 1), 0.1)
+    return DistanceEstimateResponse(
+        distance_km=distance_km,
+        price=estimate_price(distance_km, 1),
+    )
 
 
 @app.post("/storage/signed-upload-url", response_model=SignedUploadResponse)
