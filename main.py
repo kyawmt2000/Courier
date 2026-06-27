@@ -61,6 +61,10 @@ class CreateOrderRequest(BaseModel):
     weight_kg: float = Field(gt=0)
     note: str = ""
     distance_km: float = Field(gt=0)
+    pickup_lat: float | None = None
+    pickup_lng: float | None = None
+    dropoff_lat: float | None = None
+    dropoff_lng: float | None = None
 
 
 class OrderResponse(BaseModel):
@@ -75,6 +79,10 @@ class OrderResponse(BaseModel):
     status: OrderStatus
     rider_name: str | None = None
     created_at: datetime
+    pickup_lat: float | None = None
+    pickup_lng: float | None = None
+    dropoff_lat: float | None = None
+    dropoff_lng: float | None = None
 
 
 class SignedUploadRequest(BaseModel):
@@ -94,6 +102,10 @@ class DistanceEstimateRequest(BaseModel):
 class DistanceEstimateResponse(BaseModel):
     distance_km: float
     price: float
+    pickup_lat: float
+    pickup_lng: float
+    dropoff_lat: float
+    dropoff_lng: float
 
 class AcceptOrderRequest(BaseModel):
     rider_name: str
@@ -218,6 +230,10 @@ def create_order(request: CreateOrderRequest) -> OrderResponse:
         price=estimate_price(request.distance_km, request.weight_kg),
         status="matching",
         created_at=datetime.now(timezone.utc),
+        pickup_lat=request.pickup_lat,
+        pickup_lng=request.pickup_lng,
+        dropoff_lat=request.dropoff_lat,
+        dropoff_lng=request.dropoff_lng,
     )
     orders.insert(0, order)
     return order
@@ -279,6 +295,10 @@ async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimat
     return DistanceEstimateResponse(
         distance_km=distance_km,
         price=estimate_price(distance_km, 1),
+        pickup_lat=pickup[0],
+        pickup_lng=pickup[1],
+        dropoff_lat=dropoff[0],
+        dropoff_lng=dropoff[1],
     )
 
 
