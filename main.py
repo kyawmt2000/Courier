@@ -1,7 +1,7 @@
 import math
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
@@ -180,7 +180,7 @@ def health_check() -> HealthResponse:
     return HealthResponse(
         status="ok",
         service="courier-api",
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
 
@@ -217,7 +217,7 @@ def create_order(request: CreateOrderRequest) -> OrderResponse:
         distance_km=request.distance_km,
         price=estimate_price(request.distance_km, request.weight_kg),
         status="matching",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     orders.insert(0, order)
     return order
