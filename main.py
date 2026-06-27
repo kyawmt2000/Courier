@@ -95,6 +95,13 @@ class DistanceEstimateResponse(BaseModel):
     distance_km: float
     price: float
 
+class AcceptOrderRequest(BaseModel):
+    rider_name: str
+
+
+class UpdateOrderStatusRequest(BaseModel):
+    status: OrderStatus
+
 
 orders: list[OrderResponse] = []
 
@@ -232,6 +239,37 @@ def cancel_order(order_id: str) -> OrderResponse:
             orders[index] = updated
             return updated
     raise HTTPException(status_code=404, detail="订单不存在")
+
+@app.get("/rider/orders", response_model=list[OrderResponse])
+def list_rider_orders() -> list[OrderResponse]:
+    return [order for order in orders if order.status in ["matching", "accepted", "picking_up", "delivering"]]
+
+
+@app.post("/rider/orders/{order_id}/accept", response_model=OrderResponse)
+def accept_order(order_id: str, request: AcceptOrderRequest) -> OrderResponse:
+    for index, order in enumerate(orders):
+        if order.id == order_id:
+            if order.status != "matching":
+                raise HTTPException(status_code=409, detail="订单已被接单或不可接单")
+            updated = order.model_copy(update={"status": "accepted", "rider_name": request.rider_name})
+            orders[index] = updated
+            return updated
+    raise HTTPException(status_code=404, detail="订单不存在")
+
+
+@app.post("/rider/orders/{order_id}/status", response_model=OrderResponse)
+def update_rider_order_status(order_id: str, request: UpdateOrderStatusRequest) -> OrderResponse:
+    allowed = ["picking_up", "delivering", "completed"]
+    if request.status not in allowed:
+        raise HTTPException(status_code=400, detail="骑手不能设置这个订单状态")
+
+    for index, order in enumerate(orders):
+        if order.id == order_id:
+            updated = order.model_copy(update={"status": request.status})
+            orders[index] = updated
+            return updated
+    raise HTTPException(status_code=404, detail="订单不存在")
+
 
 @app.post("/distance/estimate", response_model=DistanceEstimateResponse)
 async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimateResponse:
