@@ -87,10 +87,7 @@ orders: list[OrderResponse] = []
 
 
 def estimate_price(distance_km: float, weight_kg: float) -> float:
-    base = 12
-    distance_fee = max(distance_km - 2, 0) * 3.2
-    weight_fee = max(weight_kg - 1, 0) * 4
-    return round(base + distance_fee + weight_fee, 2)
+    return round(distance_km * 1000, 2)
 
 
 @app.get("/", response_model=HealthResponse)
