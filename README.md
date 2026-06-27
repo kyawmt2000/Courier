@@ -21,3 +21,7 @@ Temporary login code:
 ```text
 1234
 ```
+
+## Pricing
+
+- `1 km = 1000 MMK`
