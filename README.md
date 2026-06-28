@@ -37,11 +37,21 @@ FastAPI backend for the courier app.
 - `POST /orders`
 - `GET /docs`
 
-Temporary login code:
+## SMS verification
 
-```text
-1234
-```
+Login uses a real SMS verification code. Configure either Twilio:
+
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_FROM_NUMBER` or `TWILIO_MESSAGING_SERVICE_SID`
+
+Or configure a custom HTTP SMS gateway:
+
+- `SMS_GATEWAY_URL`
+- `SMS_GATEWAY_TOKEN` (optional)
+
+The API sends Myanmar phone numbers in `+95...` format.
+
 
 ## Pricing
 
