@@ -1,7 +1,8 @@
 import math
 import os
+import random
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import uuid4
 
@@ -52,6 +53,15 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     token: str
     user: UserProfile
+
+class SendSMSCodeRequest(BaseModel):
+    phone: str = Field(min_length=6)
+
+
+class SendSMSCodeResponse(BaseModel):
+    phone: str
+    expires_at: datetime
+    dev_code: str | None = None
 
 
 class CreateOrderRequest(BaseModel):
@@ -116,6 +126,34 @@ class UpdateOrderStatusRequest(BaseModel):
 
 
 orders: list[OrderResponse] = []
+sms_codes: dict[str, tuple[str, datetime]] = {}
+
+def normalize_myanmar_phone(phone: str) -> str:
+    cleaned = re.sub(r"[^\d+]", "", phone.strip())
+    if cleaned.startswith("+95"):
+        local = cleaned[3:]
+    elif cleaned.startswith("95"):
+        local = cleaned[2:]
+    elif cleaned.startswith("09"):
+        local = cleaned[1:]
+    elif cleaned.startswith("9"):
+        local = cleaned
+    else:
+        raise HTTPException(status_code=400, detail="请输入缅甸手机号，格式如 09xxxxxxx 或 +959xxxxxxx")
+
+    if not re.fullmatch(r"9\d{7,10}", local):
+        raise HTTPException(status_code=400, detail="缅甸手机号格式不正确，请检查号码")
+
+    return f"+95{local}"
+
+
+def create_sms_code() -> str:
+    return f"{random.randint(0, 999999):06d}"
+
+
+def send_sms_code(phone: str, code: str) -> None:
+    # Local development fallback. Replace this with a real SMS gateway call in production.
+    print(f"[dev sms] {phone}: {code}")
 
 
 def estimate_price(distance_km: float, weight_kg: float) -> float:
@@ -198,17 +236,41 @@ def health_check() -> HealthResponse:
 
 @app.post("/auth/login", response_model=LoginResponse)
 def login(request: LoginRequest) -> LoginResponse:
-    # First production pass: replace this with SMS verification and a real JWT.
-    if request.code != "1234":
+    phone = normalize_myanmar_phone(request.phone)
+    stored = sms_codes.get(phone)
+    now = datetime.now(timezone.utc)
+
+    if not stored or stored[1] < now:
+        raise HTTPException(status_code=401, detail="验证码已过期，请重新获取")
+
+    if request.code != stored[0]:
         raise HTTPException(status_code=401, detail="验证码错误")
 
+    sms_codes.pop(phone, None)
+
+    user_id_digits = re.sub(r"\D", "", phone)
+
     return LoginResponse(
-        token=f"dev-token-{request.phone}",
+        token=f"dev-token-{phone}",
         user=UserProfile(
-            id="user_001",
-            phone=request.phone,
+            id=f"user_{user_id_digits}",
+            phone=phone,
             nickname="快送用户",
         ),
+    )
+
+@app.post("/auth/sms-code", response_model=SendSMSCodeResponse)
+def send_login_sms_code(request: SendSMSCodeRequest) -> SendSMSCodeResponse:
+    phone = normalize_myanmar_phone(request.phone)
+    code = create_sms_code()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    sms_codes[phone] = (code, expires_at)
+    send_sms_code(phone, code)
+
+    return SendSMSCodeResponse(
+        phone=phone,
+        expires_at=expires_at,
+        dev_code=code if os.getenv("SMS_DEV_MODE", "1") == "1" else None,
     )
 
 
