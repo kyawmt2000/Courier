@@ -2,6 +2,7 @@ import math
 import os
 import random
 import re
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import uuid4
@@ -61,8 +62,6 @@ class SendSMSCodeRequest(BaseModel):
 class SendSMSCodeResponse(BaseModel):
     phone: str
     expires_at: datetime
-    dev_code: str | None = None
-
 
 class CreateOrderRequest(BaseModel):
     pickup_address: str
@@ -148,12 +147,61 @@ def normalize_myanmar_phone(phone: str) -> str:
 
 
 def create_sms_code() -> str:
-    return f"{random.randint(0, 999999):06d}"
+    return f"{secrets.randbelow(1_000_000):06d}"
 
 
-def send_sms_code(phone: str, code: str) -> None:
-    # Local development fallback. Replace this with a real SMS gateway call in production.
-    print(f"[dev sms] {phone}: {code}")
+async def send_sms_code(phone: str, code: str) -> None:
+    message = f"Your Courier verification code is {code}. It expires in 5 minutes."
+
+    twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+    twilio_from = os.getenv("TWILIO_FROM_NUMBER")
+    twilio_messaging_service_sid = os.getenv("TWILIO_MESSAGING_SERVICE_SID")
+
+    if twilio_sid and twilio_token and (twilio_from or twilio_messaging_service_sid):
+        data = {
+            "To": phone,
+            "Body": message,
+        }
+        if twilio_messaging_service_sid:
+            data["MessagingServiceSid"] = twilio_messaging_service_sid
+        else:
+            data["From"] = twilio_from
+
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.post(
+                f"https://api.twilio.com/2010-04-01/Accounts/{twilio_sid}/Messages.json",
+                data=data,
+                auth=(twilio_sid, twilio_token),
+            )
+
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail="短信发送失败，请稍后再试")
+        return
+
+    gateway_url = os.getenv("SMS_GATEWAY_URL")
+    if gateway_url:
+        headers = {"Content-Type": "application/json"}
+        gateway_token = os.getenv("SMS_GATEWAY_TOKEN")
+        if gateway_token:
+            headers["Authorization"] = f"Bearer {gateway_token}"
+
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.post(
+                gateway_url,
+                headers=headers,
+                json={
+                    "to": phone,
+                    "message": message,
+                    "code": code,
+                },
+            )
+
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail="短信发送失败，请稍后再试")
+        return
+
+    raise HTTPException(status_code=500, detail="短信服务未配置，请先配置真实短信网关")
 
 
 def estimate_price(distance_km: float, weight_kg: float) -> float:
@@ -260,17 +308,16 @@ def login(request: LoginRequest) -> LoginResponse:
     )
 
 @app.post("/auth/sms-code", response_model=SendSMSCodeResponse)
-def send_login_sms_code(request: SendSMSCodeRequest) -> SendSMSCodeResponse:
+async def send_login_sms_code(request: SendSMSCodeRequest) -> SendSMSCodeResponse:
     phone = normalize_myanmar_phone(request.phone)
     code = create_sms_code()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    await send_sms_code(phone, code)
     sms_codes[phone] = (code, expires_at)
-    send_sms_code(phone, code)
 
     return SendSMSCodeResponse(
         phone=phone,
         expires_at=expires_at,
-        dev_code=code if os.getenv("SMS_DEV_MODE", "1") == "1" else None,
     )
 
 
