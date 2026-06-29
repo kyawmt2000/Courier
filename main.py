@@ -1,4 +1,5 @@
 import math
+import logging
 import os
 import random
 import re
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field
 
 
 app = FastAPI(title="Courier API", version="1.0.0")
+logger = logging.getLogger("courier-api")
 
 app.add_middleware(
     CORSMiddleware,
@@ -176,7 +178,20 @@ async def send_sms_code(phone: str, code: str) -> None:
             )
 
         if response.status_code >= 400:
+            logger.warning("Twilio SMS send failed: status=%s body=%s", response.status_code, response.text)
             raise HTTPException(status_code=502, detail="短信发送失败，请稍后再试")
+
+        try:
+            payload = response.json()
+            logger.info(
+                "Twilio SMS accepted: sid=%s status=%s to=%s",
+                payload.get("sid"),
+                payload.get("status"),
+                phone,
+            )
+        except ValueError:
+            logger.info("Twilio SMS accepted: status=%s to=%s", response.status_code, phone)
+       
         return
 
     gateway_url = os.getenv("SMS_GATEWAY_URL")
