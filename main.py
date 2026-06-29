@@ -184,6 +184,7 @@ async def send_sms_code(phone: str, code: str) -> None:
         try:
             payload = response.json()
             logger.info(
+            logger.warning(
                 "Twilio SMS accepted: sid=%s status=%s to=%s",
                 payload.get("sid"),
                 payload.get("status"),
@@ -191,6 +192,7 @@ async def send_sms_code(phone: str, code: str) -> None:
             )
         except ValueError:
             logger.info("Twilio SMS accepted: status=%s to=%s", response.status_code, phone)
+            logger.warning("Twilio SMS accepted: status=%s to=%s", response.status_code, phone)
        
         return
 
