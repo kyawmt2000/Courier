@@ -4,12 +4,14 @@ import os
 import random
 import re
 import secrets
+import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -35,6 +37,7 @@ OrderStatus = Literal[
     "cancelled",
 ]
 
+ChatSenderType = Literal["user", "rider"]
 
 class HealthResponse(BaseModel):
     status: str
@@ -125,9 +128,56 @@ class AcceptOrderRequest(BaseModel):
 class UpdateOrderStatusRequest(BaseModel):
     status: OrderStatus
 
+class CreateChatMessageRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+    sender_type: ChatSenderType
+    sender_name: str
+    sender_phone: str | None = None
+    conversation_id: str = "main"
+
+
+class ChatMessageResponse(BaseModel):
+    id: str
+    conversation_id: str
+    text: str
+    sender_type: ChatSenderType
+    sender_name: str
+    sender_phone: str | None = None
+    created_at: datetime
 
 orders: list[OrderResponse] = []
 sms_codes: dict[str, tuple[str, datetime]] = {}
+db_path = Path(os.getenv("COURIER_DB_PATH", os.getenv("CHAT_DB_PATH", "courier_data.sqlite3")))
+
+def connect_db() -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def init_storage() -> None:
+    with connect_db() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                sender_type TEXT NOT NULL,
+                sender_name TEXT NOT NULL,
+                sender_phone TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_created "
+            "ON chat_messages (conversation_id, created_at)"
+        )
+
+
+init_storage()
 
 def normalize_myanmar_phone(phone: str) -> str:
     cleaned = re.sub(r"[^\d+]", "", phone.strip())
@@ -287,6 +337,16 @@ def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) 
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return radius_km * c
 
+def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
+    return ChatMessageResponse(
+        id=row["id"],
+        conversation_id=row["conversation_id"],
+        text=row["text"],
+        sender_type=row["sender_type"],
+        sender_name=row["sender_name"],
+        sender_phone=row["sender_phone"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
 
 @app.get("/", response_model=HealthResponse)
 def health_check() -> HealthResponse:
@@ -335,6 +395,65 @@ async def send_login_sms_code(request: SendSMSCodeRequest) -> SendSMSCodeRespons
         expires_at=expires_at,
     )
 
+@app.get("/chat/messages", response_model=list[ChatMessageResponse])
+def list_chat_messages(
+    conversation_id: str = "main",
+    limit: int = Query(default=100, ge=1, le=300),
+) -> list[ChatMessageResponse]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, created_at
+            FROM chat_messages
+            WHERE conversation_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (conversation_id, limit),
+        ).fetchall()
+
+    return [chat_message_from_row(row) for row in reversed(rows)]
+
+
+@app.post("/chat/messages", response_model=ChatMessageResponse)
+def create_chat_message(request: CreateChatMessageRequest) -> ChatMessageResponse:
+    message_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+    sender_phone = normalize_myanmar_phone(request.sender_phone) if request.sender_phone else None
+    text = request.text.strip()
+    sender_name = request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
+
+    if not text:
+        raise HTTPException(status_code=400, detail="消息不能为空")
+
+    with connect_db() as connection:
+        connection.execute(
+            """
+            INSERT INTO chat_messages (
+                id, conversation_id, text, sender_type, sender_name, sender_phone, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_id,
+                request.conversation_id,
+                text,
+                request.sender_type,
+                sender_name,
+                sender_phone,
+                created_at.isoformat(),
+            ),
+        )
+
+    return ChatMessageResponse(
+        id=message_id,
+        conversation_id=request.conversation_id,
+        text=text,
+        sender_type=request.sender_type,
+        sender_name=sender_name,
+        sender_phone=sender_phone,
+        created_at=created_at,
+    )
 
 @app.get("/orders", response_model=list[OrderResponse])
 def list_orders() -> list[OrderResponse]:
