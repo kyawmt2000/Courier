@@ -33,6 +33,8 @@ FastAPI backend for the courier app.
 
 - `GET /`
 - `POST /auth/login`
+- `GET /chat/messages`
+- `POST /chat/messages`
 - `GET /orders`
 - `POST /orders`
 - `GET /docs`
@@ -52,6 +54,13 @@ Or configure a custom HTTP SMS gateway:
 
 The API sends Myanmar phone numbers in `+95...` format.
 
+## Persistent chat storage
+
+Chat messages are stored in SQLite so both apps can sync the same history after logging in on another phone. For Render production, add a persistent Disk and set:
+
+- `COURIER_DB_PATH=/data/courier_data.sqlite3`
+
+Mount the disk at `/data`. Without a persistent disk, chat still syncs across devices while the service is running, but messages can be lost after redeploys or instance replacement.
 
 ## Pricing
 
