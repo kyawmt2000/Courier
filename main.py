@@ -576,8 +576,14 @@ def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
             """,
             (rider_phone,),
         ).fetchall()
-    return [order_from_row(row) for row in rows]
-
+    orders = [order_from_row(row) for row in rows]
+    return [
+        order
+        for order in orders
+        if order.status != "matching"
+        or order.payment_mode == "cod"
+        or order.user_payment_status == "confirmed"
+    ]
 
 def load_order_record(order_id: str) -> tuple[OrderResponse, str, str | None] | None:
     with connect_db() as connection:
@@ -756,7 +762,10 @@ ADMIN_HTML = r'''
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
           <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${label(order.rider_deposit_status)}</td>
-          <td>${order.payment_mode === "cod" && order.rider_deposit_status === "pending" ? `<button class="confirm" onclick="confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}</td>
+          <td>
+              ${order.payment_mode === "cod" && order.rider_deposit_status === "pending" ? `<button class="confirm" onclick="confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
+              ${order.payment_mode === "prepaid" && order.user_payment_status !== "confirmed" ? `<button class="confirm" onclick="confirmUserPayment('${order.id}')">确认收到付款</button>` : ""}
+          </td>
         </tr>
       `).join("");
     }
@@ -766,6 +775,22 @@ ADMIN_HTML = r'''
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rider_deposit_status: "confirmed" })
+      });
+      if (!res.ok) {
+        document.getElementById("error").textContent = await res.text();
+        return;
+      }
+      await loadData();
+    }
+    async function confirmUserPayment(id) {
+      const key = encodeURIComponent(document.getElementById("key").value);
+      const res = await fetch(`/admin/orders/${id}?key=${key}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_payment_status: "confirmed",
+          rider_deposit_status: "not_required"
+        })
       });
       if (!res.ok) {
         document.getElementById("error").textContent = await res.text();
@@ -1124,6 +1149,8 @@ def accept_order(
         order, user_phone, _ = record
         if order.status != "matching":
             raise HTTPException(status_code=409, detail="订单已被接单或不可接单")
+        if order.payment_mode == "prepaid" and order.user_payment_status != "confirmed":
+            raise HTTPException(status_code=403, detail="平台确认用户付款后骑手才能接单")
         updated = order.model_copy(update={"status": "accepted", "rider_name": request.rider_name})
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
