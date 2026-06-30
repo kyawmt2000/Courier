@@ -396,8 +396,9 @@ def require_account_phone(authorization: str | None) -> str:
 
 
 def account_conversation_id(conversation_id: str, authorization: str | None, fallback_phone: str | None = None) -> str:
+    conversation_id = conversation_id.strip()
     if conversation_id != "main":
-        return conversation_id
+        return conversation_id.lower()
 
     phone = phone_from_authorization(authorization) or clean_optional_text(fallback_phone)
     if not phone:
@@ -913,8 +914,44 @@ async def send_login_sms_code(request: SendSMSCodeRequest) -> SendSMSCodeRespons
 def list_chat_messages(
     conversation_id: str = "main",
     limit: int = Query(default=100, ge=1, le=300),
-) -> list[ChatMessageResponse]:
     authorization: str | None = Header(default=None),
+) -> list[ChatMessageResponse]:
+    if conversation_id == "all":
+        phone = require_account_phone(authorization)
+        main_conversation_id = account_conversation_id("main", authorization, phone)
+
+        with connect_db() as connection:
+            order_rows = connection.execute(
+                """
+                SELECT id
+                FROM orders
+                WHERE user_phone = ? OR rider_phone = ?
+                """,
+                (phone, phone),
+            ).fetchall()
+
+            conversation_ids = [main_conversation_id]
+            for row in order_rows:
+                order_id = str(row["id"])
+                conversation_ids.append(f"order:{order_id.lower()}")
+                conversation_ids.append(f"order:{order_id.upper()}")
+
+            placeholders = ",".join("?" for _ in conversation_ids)
+            rows = connection.execute(
+                f"""
+                SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
+                FROM chat_messages
+                WHERE conversation_id IN ({placeholders})
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (*conversation_ids, limit),
+            ).fetchall()
+
+        return [chat_message_from_row(row) for row in reversed(rows)]
+
+    conversation_id = account_conversation_id(conversation_id, authorization)
+
     with connect_db() as connection:
         rows = connection.execute(
             """
