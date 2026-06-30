@@ -16,6 +16,7 @@ from uuid import uuid4
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 try:
@@ -174,6 +175,12 @@ class ChatMessageResponse(BaseModel):
     sender_name: str
     sender_phone: str | None = None
     created_at: datetime
+
+class AdminUpdateOrderRequest(BaseModel):
+    status: OrderStatus | None = None
+    user_payment_status: PaymentStatus | None = None
+    rider_deposit_status: PaymentStatus | None = None
+    settlement_status: SettlementStatus | None = None
 
 sms_codes: dict[str, tuple[str, datetime]] = {}
 db_path = Path(os.getenv("COURIER_DB_PATH", os.getenv("CHAT_DB_PATH", "courier_data.sqlite3")))
@@ -569,6 +576,157 @@ def save_account(phone: str, nickname: str | None = None) -> None:
             (phone, nickname, datetime.now(timezone.utc).isoformat()),
         )
 
+    tr:hover { background: #f9fafb; }
+    .grid { display: grid; grid-template-columns: 1.4fr .9fr; gap: 16px; align-items: start; }
+    .pill { display: inline-flex; border-radius: 999px; padding: 3px 8px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 700; }
+    .muted { color: #6b7280; }
+    .detail { display: grid; gap: 10px; }
+    .detail img { max-width: 100%; max-height: 260px; object-fit: contain; border-radius: 8px; background: #f3f4f6; }
+    .row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .chat { max-height: 360px; overflow: auto; }
+    @media (max-width: 900px) { .stats, .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>快送后台</h1>
+    <div class="toolbar">
+      <input id="key" type="password" placeholder="后台密码" />
+      <input id="q" placeholder="搜索订单/手机号/地址" />
+      <button onclick="loadData()">刷新</button>
+    </div>
+  </header>
+  <main>
+    <div class="stats">
+      <div class="stat">订单总数<strong id="totalOrders">0</strong></div>
+      <div class="stat">待接单<strong id="matchingOrders">0</strong></div>
+      <div class="stat">配送中<strong id="runningOrders">0</strong></div>
+      <div class="stat">账号数<strong id="accountCount">0</strong></div>
+    </div>
+    <div class="grid">
+      <section>
+        <h2>订单</h2>
+        <table>
+          <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>地址</th></tr></thead>
+          <tbody id="orders"></tbody>
+        </table>
+      </section>
+      <section>
+        <h2>订单详情</h2>
+        <div id="detail" class="detail muted">点击左侧订单查看详情</div>
+      </section>
+    </div>
+    <div class="grid">
+      <section>
+        <h2>账号</h2>
+        <table><thead><tr><th>手机号</th><th>昵称</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
+      </section>
+      <section>
+        <h2>聊天</h2>
+        <div id="chat" class="chat"></div>
+      </section>
+    </div>
+  </main>
+  <script>
+    let state = { orders: [], accounts: [], messages: [] };
+    const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
+    const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
+    const settlementOptions = ["pending","paid_to_user","paid_to_rider","completed"];
+    const labels = {
+      matching: "待接单", accepted: "已接单", picking_up: "取件中", delivering: "配送中", completed: "已完成", cancelled: "已取消",
+      not_required: "无需", unpaid: "未付", pending: "待确认", confirmed: "已确认", rejected: "已拒绝",
+      paid_to_user: "已付用户", paid_to_rider: "已付骑手"
+    };
+
+    function keyParam() { return encodeURIComponent(document.getElementById("key").value); }
+    function label(value) { return labels[value] || value || ""; }
+    function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[s]));
+    }
+    function optionHtml(options, current) {
+      return options.map(v => `<option value="${v}" ${v === current ? "selected" : ""}>${label(v)}</option>`).join("");
+    }
+
+    async function loadData() {
+      const response = await fetch(`/admin/data?key=${keyParam()}`);
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      state = await response.json();
+      render();
+    }
+
+    function render() {
+      const q = document.getElementById("q").value.toLowerCase();
+      const orders = state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q));
+      document.getElementById("totalOrders").textContent = state.orders.length;
+      document.getElementById("matchingOrders").textContent = state.orders.filter(o => o.status === "matching").length;
+      document.getElementById("runningOrders").textContent = state.orders.filter(o => ["accepted","picking_up","delivering"].includes(o.status)).length;
+      document.getElementById("accountCount").textContent = state.accounts.length;
+      document.getElementById("orders").innerHTML = orders.map(order => `
+        <tr onclick="showDetail('${order.id}')">
+          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")}</span></td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
+          <td>${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
+        </tr>`).join("");
+      document.getElementById("accounts").innerHTML = state.accounts.map(account => `
+        <tr><td>${escapeHtml(account.phone)}</td><td>${escapeHtml(account.nickname || "")}</td><td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td></tr>`).join("");
+      document.getElementById("chat").innerHTML = state.messages.map(message => `
+        <p><strong>${escapeHtml(message.sender_name)}</strong> <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>${escapeHtml(message.text)}</p>`).join("");
+    }
+
+    function showDetail(id) {
+      const order = state.orders.find(item => item.id === id);
+      if (!order) return;
+      document.getElementById("detail").innerHTML = `
+        ${order.goods_image_url ? `<img src="${order.goods_image_url}" alt="商品图">` : `<div class="muted">暂无商品图</div>`}
+        <div class="row"><b>订单号</b><span>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</span></div>
+        <div class="row"><b>用户</b><span>${escapeHtml(order.user_phone)}</span></div>
+        <div class="row"><b>骑手</b><span>${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></div>
+        <div class="row"><b>取件</b><span>${escapeHtml(order.pickup_address)}</span></div>
+        <div class="row"><b>收货</b><span>${escapeHtml(order.dropoff_address)}</span></div>
+        <div class="row"><b>备注</b><span>${escapeHtml(order.note || "")}</span></div>
+        <div class="actions">
+          <select id="status">${optionHtml(statusOptions, order.status)}</select>
+          <select id="userPayment">${optionHtml(paymentOptions, order.user_payment_status)}</select>
+          <select id="riderDeposit">${optionHtml(paymentOptions, order.rider_deposit_status)}</select>
+          <select id="settlement">${optionHtml(settlementOptions, order.settlement_status)}</select>
+        </div>
+        <button onclick="saveOrder('${order.id}')">保存订单状态</button>
+      `;
+    }
+
+    async function saveOrder(id) {
+      const body = {
+        status: document.getElementById("status").value,
+        user_payment_status: document.getElementById("userPayment").value,
+        rider_deposit_status: document.getElementById("riderDeposit").value,
+        settlement_status: document.getElementById("settlement").value
+      };
+      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      await loadData();
+      showDetail(id);
+    }
+
+    document.getElementById("q").addEventListener("input", render);
+  </script>
+</body>
+</html>
+"""
+
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     patterns = [
         r"@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
@@ -653,6 +811,49 @@ def health_check() -> HealthResponse:
         timestamp=datetime.now(timezone.utc),
     )
 
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page() -> HTMLResponse:
+    return HTMLResponse(ADMIN_HTML)
+
+
+@app.get("/admin/data")
+def admin_data(key: str = Query(default="")) -> dict:
+    require_admin_key(key)
+    orders_data = load_admin_orders()
+    accounts_data = load_admin_accounts()
+    messages_data = load_admin_chat_messages()
+    return {
+        "orders": orders_data,
+        "accounts": accounts_data,
+        "messages": messages_data,
+    }
+
+
+@app.patch("/admin/orders/{order_id}", response_model=OrderResponse)
+def admin_update_order(
+    order_id: str,
+    request: AdminUpdateOrderRequest,
+    key: str = Query(default=""),
+) -> OrderResponse:
+    require_admin_key(key)
+    record = load_order_record(order_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="订单不存在")
+
+    order, user_phone, rider_phone = record
+    updates = {
+        name: value
+        for name, value in {
+            "status": request.status,
+            "user_payment_status": request.user_payment_status,
+            "rider_deposit_status": request.rider_deposit_status,
+            "settlement_status": request.settlement_status,
+        }.items()
+        if value is not None
+    }
+    updated = order.model_copy(update=updates)
+    save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
+    return order_for_response(updated)
 
 @app.post("/auth/login", response_model=LoginResponse)
 def login(request: LoginRequest) -> LoginResponse:
