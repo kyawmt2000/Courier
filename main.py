@@ -101,7 +101,7 @@ class CreateOrderRequest(BaseModel):
 class CreatePrepaidPaymentRequest(BaseModel):
     amount: float = Field(gt=0)
     distance_km: float = Field(gt=0)
-
+    payment_proof_url: str
 
 class PrepaidPaymentResponse(BaseModel):
     id: str
@@ -111,6 +111,7 @@ class PrepaidPaymentResponse(BaseModel):
     status: PaymentStatus = "pending"
     created_at: datetime
     confirmed_at: datetime | None = None
+    payment_proof_url: str | None = None
 
 class OrderResponse(BaseModel):
     id: str
@@ -608,8 +609,14 @@ def load_admin_prepaid_payments() -> list[dict]:
             ORDER BY created_at DESC
             """
         ).fetchall()
-    return [prepaid_payment_from_row(row).model_dump(mode="json") for row in rows]
-
+    result: list[dict] = []
+    for row in rows:
+        payment = prepaid_payment_from_row(row)
+        data = payment.model_dump(mode="json")
+        data["payment_proof_url"] = signed_gcs_read_url(payment.payment_proof_url)
+        result.append(data)
+    return result
+    
 def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = None) -> None:
     with connect_db() as connection:
         existing = connection.execute(
@@ -814,9 +821,7 @@ ADMIN_HTML = r'''
 
   <h2>付款确认</h2>
   <table style="margin-bottom: 18px;">
-    <thead>
-      <tr><th>付款</th><th>用户</th><th>金额</th><th>状态</th><th>时间</th><th>操作</th></tr>
-    </thead>
+    <thead><tr><th>付款</th><th>用户</th><th>金额</th><th>截图</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
     <tbody id="payments"></tbody>
   </table>
 
@@ -876,6 +881,7 @@ ADMIN_HTML = r'''
       <td><strong>#${shortCode(payment.id)}</strong></td>
       <td>${escapeHtml(payment.user_phone)}</td>
       <td>${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
+      <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : ""}</td>
       <td><span class="pill">${label(payment.status)}</span></td>
       <td>${escapeHtml(new Date(payment.created_at).toLocaleString())}</td>
       <td>
@@ -1205,6 +1211,9 @@ def create_prepaid_payment(
     authorization: str | None = Header(default=None),
 ) -> PrepaidPaymentResponse:
     user_phone = require_account_phone(authorization)
+    payment_proof_url = clean_optional_text(request.payment_proof_url)
+    if not payment_proof_url:
+        raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
     payment = PrepaidPaymentResponse(
         id=str(uuid4()),
         user_phone=user_phone,
@@ -1212,6 +1221,7 @@ def create_prepaid_payment(
         distance_km=request.distance_km,
         status="pending",
         created_at=datetime.now(timezone.utc),
+        payment_proof_url=payment_proof_url,
     )
     save_prepaid_payment(payment)
     return payment
@@ -1268,7 +1278,8 @@ def create_order(
 
         if abs(prepaid_payment.amount - delivery_fee) > 1:
             raise HTTPException(status_code=400, detail="付款金额和当前配送费不一致，请重新计算后付款")
-
+            
+        payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
         user_payment_status = "confirmed"
 
     order = OrderResponse(
