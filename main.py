@@ -811,6 +811,31 @@ def health_check() -> HealthResponse:
         timestamp=datetime.now(timezone.utc),
     )
 
+ADMIN_HTML = r'''
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>快送后台</title>
+</head>
+<body>
+  <h1>快送后台</h1>
+  <p>后台已启动。</p>
+  <input id="key" type="password" placeholder="后台密码">
+  <button onclick="loadData()">加载数据</button>
+  <pre id="out"></pre>
+  <script>
+    async function loadData() {
+      const key = encodeURIComponent(document.getElementById("key").value);
+      const res = await fetch(`/admin/data?key=${key}`);
+      document.getElementById("out").textContent = await res.text();
+    }
+  </script>
+</body>
+</html>
+'''
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page() -> HTMLResponse:
     return HTMLResponse(ADMIN_HTML)
