@@ -713,6 +713,55 @@ ADMIN_HTML = r'''
 def admin_page() -> HTMLResponse:
     return HTMLResponse(ADMIN_HTML)
 
+def require_admin_key(key: str | None) -> None:
+    expected = (os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_KEY") or "admin123").strip()
+    if not key or not secrets.compare_digest(key, expected):
+        raise HTTPException(status_code=401, detail="后台密码不正确")
+
+
+def load_admin_orders() -> list[dict]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT user_phone, rider_phone, payload
+            FROM orders
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+
+    result = []
+    for row in rows:
+        order = order_for_response(order_from_row(row)).model_dump(mode="json")
+        order["user_phone"] = row["user_phone"]
+        order["rider_phone"] = row["rider_phone"]
+        result.append(order)
+    return result
+
+
+def load_admin_accounts() -> list[dict]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT phone, nickname, last_login_at
+            FROM accounts
+            ORDER BY last_login_at DESC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def load_admin_chat_messages(limit: int = 200) -> list[dict]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, created_at
+            FROM chat_messages
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 @app.get("/admin/data")
 def admin_data(key: str = Query(default="")) -> dict:
