@@ -278,7 +278,7 @@ def init_storage() -> None:
             )
             """
         )
-                connection.execute(
+        connection.execute(
             """
             CREATE TABLE IF NOT EXISTS prepaid_payments (
                 id TEXT PRIMARY KEY,
