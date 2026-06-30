@@ -324,6 +324,49 @@ def safe_upload_name(file_name: str) -> str:
         raise HTTPException(status_code=400, detail="文件名不正确")
     return cleaned
 
+def gcs_credentials_info() -> dict | None:
+    credentials_json = clean_optional_text(os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
+    if credentials_json:
+        try:
+            return json.loads(credentials_json)
+        except Exception as error:
+            raise HTTPException(status_code=500, detail=f"GCS 凭证 JSON 格式不正确：{error}") from error
+
+    credentials_base64 = clean_optional_text(os.getenv("GOOGLE_APPLICATION_CREDENTIALS_BASE64"))
+    if credentials_base64:
+        try:
+            decoded = base64.b64decode(credentials_base64).decode("utf-8")
+            return json.loads(decoded)
+        except Exception as error:
+            raise HTTPException(status_code=500, detail=f"GCS base64 凭证格式不正确：{error}") from error
+
+    credentials_value = clean_optional_text(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+    if credentials_value and credentials_value.startswith("{"):
+        try:
+            return json.loads(credentials_value)
+        except Exception as error:
+            raise HTTPException(status_code=500, detail=f"GCS 凭证 JSON 格式不正确：{error}") from error
+
+    return None
+
+
+def gcs_client():
+    if service_account is None:
+        raise HTTPException(status_code=500, detail="服务器未安装 Google service account 依赖")
+
+    credentials_info = gcs_credentials_info()
+    if credentials_info:
+        credentials = service_account.Credentials.from_service_account_info(credentials_info)
+        return storage.Client(credentials=credentials, project=credentials.project_id)
+
+    if not clean_optional_text(os.getenv("GOOGLE_APPLICATION_CREDENTIALS")):
+        raise HTTPException(
+            status_code=500,
+            detail="GCS 未配置凭证。请在 Render 设置 GOOGLE_APPLICATION_CREDENTIALS_JSON 或 GOOGLE_APPLICATION_CREDENTIALS_BASE64。",
+        )
+
+    return storage.Client()
+
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     patterns = [
         r"@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
