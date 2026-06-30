@@ -98,6 +98,19 @@ class CreateOrderRequest(BaseModel):
     dropoff_lat: float | None = None
     dropoff_lng: float | None = None
 
+class CreatePrepaidPaymentRequest(BaseModel):
+    amount: float = Field(gt=0)
+    distance_km: float = Field(gt=0)
+
+
+class PrepaidPaymentResponse(BaseModel):
+    id: str
+    user_phone: str
+    amount: float
+    distance_km: float
+    status: PaymentStatus = "pending"
+    created_at: datetime
+    confirmed_at: datetime | None = None
 
 class OrderResponse(BaseModel):
     id: str
@@ -183,6 +196,9 @@ class AdminUpdateOrderRequest(BaseModel):
     rider_deposit_status: PaymentStatus | None = None
     settlement_status: SettlementStatus | None = None
 
+class AdminUpdatePrepaidPaymentRequest(BaseModel):
+    status: PaymentStatus | None = None
+
 sms_codes: dict[str, tuple[str, datetime]] = {}
 db_path = Path(os.getenv("COURIER_DB_PATH", os.getenv("CHAT_DB_PATH", "courier_data.sqlite3")))
 
@@ -262,6 +278,25 @@ def init_storage() -> None:
             )
             """
         )
+                connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prepaid_payments (
+                id TEXT PRIMARY KEY,
+                user_phone TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_prepaid_payments_user_created "
+            "ON prepaid_payments (user_phone, created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_prepaid_payments_status_created "
+            "ON prepaid_payments (status, created_at)"
+        )
         add_column_if_missing(connection, "chat_messages", "conversation_id", "TEXT NOT NULL DEFAULT 'main'")
         add_column_if_missing(connection, "chat_messages", "sender_phone", "TEXT")
         add_column_if_missing(connection, "chat_messages", "image_url", "TEXT")
@@ -272,6 +307,10 @@ def init_storage() -> None:
         add_column_if_missing(connection, "orders", "payload", "TEXT NOT NULL DEFAULT '{}'")
         add_column_if_missing(connection, "accounts", "nickname", "TEXT")
         add_column_if_missing(connection, "accounts", "last_login_at", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "prepaid_payments", "user_phone", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "prepaid_payments", "status", "TEXT NOT NULL DEFAULT 'pending'")
+        add_column_if_missing(connection, "prepaid_payments", "created_at", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "prepaid_payments", "payload", "TEXT NOT NULL DEFAULT '{}'")
 
 init_storage()
 
@@ -521,6 +560,55 @@ def order_for_response(order: OrderResponse) -> OrderResponse:
 
 def order_from_row(row: sqlite3.Row) -> OrderResponse:
     return OrderResponse.model_validate(json.loads(row["payload"]))
+
+def prepaid_payment_from_row(row: sqlite3.Row) -> PrepaidPaymentResponse:
+    return PrepaidPaymentResponse.model_validate(json.loads(row["payload"]))
+
+
+def save_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
+    with connect_db() as connection:
+        connection.execute(
+            """
+            INSERT INTO prepaid_payments (id, user_phone, status, created_at, payload)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                user_phone = excluded.user_phone,
+                status = excluded.status,
+                created_at = excluded.created_at,
+                payload = excluded.payload
+            """,
+            (
+                payment.id,
+                payment.user_phone,
+                payment.status,
+                payment.created_at.isoformat(),
+                json.dumps(payment.model_dump(mode="json"), ensure_ascii=False),
+            ),
+        )
+
+
+def load_prepaid_payment(payment_id: str) -> PrepaidPaymentResponse | None:
+    with connect_db() as connection:
+        row = connection.execute(
+            "SELECT payload FROM prepaid_payments WHERE id = ?",
+            (payment_id,),
+        ).fetchone()
+
+    if not row:
+        return None
+    return prepaid_payment_from_row(row)
+
+
+def load_admin_prepaid_payments() -> list[dict]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT payload
+            FROM prepaid_payments
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    return [prepaid_payment_from_row(row).model_dump(mode="json") for row in rows]
 
 def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = None) -> None:
     with connect_db() as connection:
@@ -863,11 +951,35 @@ def admin_data(key: str = Query(default="")) -> dict:
     orders_data = load_admin_orders()
     accounts_data = load_admin_accounts()
     messages_data = load_admin_chat_messages()
+    payments_data = load_admin_prepaid_payments()
     return {
         "orders": orders_data,
         "accounts": accounts_data,
         "messages": messages_data,
+        "payments": payments_data,
     }
+
+@app.patch("/admin/payments/{payment_id}", response_model=PrepaidPaymentResponse)
+def admin_update_prepaid_payment(
+    payment_id: str,
+    request: AdminUpdatePrepaidPaymentRequest,
+    key: str = Query(default=""),
+) -> PrepaidPaymentResponse:
+    require_admin_key(key)
+    payment = load_prepaid_payment(payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="付款记录不存在")
+
+    updates: dict[str, object] = {}
+    if request.status is not None:
+        if request.status not in ("pending", "confirmed", "rejected"):
+            raise HTTPException(status_code=400, detail="付款状态只能是待确认、已确认或已拒绝")
+        updates["status"] = request.status
+        updates["confirmed_at"] = datetime.now(timezone.utc) if request.status == "confirmed" else None
+
+    updated = payment.model_copy(update=updates)
+    save_prepaid_payment(updated)
+    return updated
 
 
 @app.patch("/admin/orders/{order_id}", response_model=OrderResponse)
@@ -1046,6 +1158,36 @@ def list_orders(authorization: str | None = Header(default=None)) -> list[OrderR
     user_phone = require_account_phone(authorization)
     return [order_for_response(order) for order in load_user_orders(user_phone)]
 
+@app.post("/payments/prepaid", response_model=PrepaidPaymentResponse)
+def create_prepaid_payment(
+    request: CreatePrepaidPaymentRequest,
+    authorization: str | None = Header(default=None),
+) -> PrepaidPaymentResponse:
+    user_phone = require_account_phone(authorization)
+    payment = PrepaidPaymentResponse(
+        id=str(uuid4()),
+        user_phone=user_phone,
+        amount=round(request.amount, 2),
+        distance_km=request.distance_km,
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+    )
+    save_prepaid_payment(payment)
+    return payment
+
+
+@app.get("/payments/prepaid/{payment_id}", response_model=PrepaidPaymentResponse)
+def get_prepaid_payment(
+    payment_id: str,
+    authorization: str | None = Header(default=None),
+) -> PrepaidPaymentResponse:
+    user_phone = require_account_phone(authorization)
+    payment = load_prepaid_payment(payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="付款记录不存在")
+    if payment.user_phone != user_phone:
+        raise HTTPException(status_code=403, detail="不能查看其他账号的付款记录")
+    return payment
 
 @app.post("/orders", response_model=OrderResponse)
 def create_order(
@@ -1064,15 +1206,30 @@ def create_order(
     if not goods_image_url:
         raise HTTPException(status_code=400, detail="请上传商品图片")
 
-    if request.payment_mode == "prepaid" and not payment_proof_url:
-        raise HTTPException(status_code=400, detail="货费已付款订单需要上传 KPay 转账截图")
-
     user_payment_status: PaymentStatus = "not_required"
     rider_deposit_status: PaymentStatus = "not_required"
+
     if request.payment_mode == "cod":
         rider_deposit_status = "unpaid"
     else:
-        user_payment_status = "pending"
+        if not kpay_transaction_id:
+            raise HTTPException(status_code=400, detail="请先付款，并等待后台确认收到付款")
+
+        prepaid_payment = load_prepaid_payment(kpay_transaction_id)
+        if not prepaid_payment:
+            raise HTTPException(status_code=400, detail="付款记录不存在，请重新付款")
+
+        if prepaid_payment.user_phone != user_phone:
+            raise HTTPException(status_code=403, detail="不能使用其他账号的付款记录")
+
+        if prepaid_payment.status != "confirmed":
+            raise HTTPException(status_code=400, detail="后台确认收到付款后才能下单")
+
+        if abs(prepaid_payment.amount - delivery_fee) > 1:
+            raise HTTPException(status_code=400, detail="付款金额和当前配送费不一致，请重新计算后付款")
+
+        user_payment_status = "confirmed"
+
     order = OrderResponse(
         id=str(uuid4()),
         pickup_address=request.pickup_address,
@@ -1090,7 +1247,7 @@ def create_order(
         rider_deposit_status=rider_deposit_status,
         settlement_status="pending",
         kpay_transaction_id=kpay_transaction_id,
-        payment_proof_url=payment_proof_url,        
+        payment_proof_url=payment_proof_url,
         status="matching",
         created_at=datetime.now(timezone.utc),
         pickup_lat=request.pickup_lat,
@@ -1100,7 +1257,6 @@ def create_order(
     )
     save_order(order, user_phone=user_phone)
     return order_for_response(order)
-
 
 @app.get("/orders/{order_id}", response_model=OrderResponse)
 def get_order(
