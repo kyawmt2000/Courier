@@ -38,6 +38,9 @@ OrderStatus = Literal[
 ]
 
 ChatSenderType = Literal["user", "rider"]
+PaymentMode = Literal["cod", "prepaid"]
+PaymentStatus = Literal["not_required", "unpaid", "pending", "confirmed", "rejected"]
+SettlementStatus = Literal["pending", "paid_to_user", "paid_to_rider", "completed"]
 
 class HealthResponse(BaseModel):
     status: str
@@ -75,6 +78,10 @@ class CreateOrderRequest(BaseModel):
     weight_kg: float = Field(gt=0)
     note: str = ""
     distance_km: float = Field(gt=0)
+    payment_mode: PaymentMode = "cod"
+    goods_amount: float = Field(default=0, ge=0)
+    kpay_transaction_id: str | None = None
+    payment_proof_url: str | None = None
     pickup_lat: float | None = None
     pickup_lng: float | None = None
     dropoff_lat: float | None = None
@@ -90,6 +97,14 @@ class OrderResponse(BaseModel):
     note: str
     distance_km: float
     price: float
+    delivery_fee: float
+    payment_mode: PaymentMode = "cod"
+    goods_amount: float = 0
+    user_payment_status: PaymentStatus = "not_required"
+    rider_deposit_status: PaymentStatus = "unpaid"
+    settlement_status: SettlementStatus = "pending"
+    kpay_transaction_id: str | None = None
+    payment_proof_url: str | None = None
     status: OrderStatus
     rider_name: str | None = None
     created_at: datetime
@@ -271,6 +286,12 @@ async def send_sms_code(phone: str, code: str) -> None:
 
 def estimate_price(distance_km: float, weight_kg: float) -> float:
     return round(distance_km * 1000, 2)
+
+def clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
 
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     patterns = [
@@ -462,6 +483,22 @@ def list_orders() -> list[OrderResponse]:
 
 @app.post("/orders", response_model=OrderResponse)
 def create_order(request: CreateOrderRequest) -> OrderResponse:
+    delivery_fee = estimate_price(request.distance_km, request.weight_kg)
+    kpay_transaction_id = clean_optional_text(request.kpay_transaction_id)
+    payment_proof_url = clean_optional_text(request.payment_proof_url)
+
+    if request.payment_mode == "cod" and request.goods_amount <= 0:
+        raise HTTPException(status_code=400, detail="货到付款订单需要填写货物价格")
+
+    if request.payment_mode == "prepaid" and not kpay_transaction_id:
+        raise HTTPException(status_code=400, detail="货费已付款订单需要填写 KPay 交易号")
+
+    user_payment_status: PaymentStatus = "not_required"
+    rider_deposit_status: PaymentStatus = "not_required"
+    if request.payment_mode == "cod":
+        rider_deposit_status = "unpaid"
+    else:
+        user_payment_status = "pending"
     order = OrderResponse(
         id=str(uuid4()),
         pickup_address=request.pickup_address,
@@ -470,7 +507,15 @@ def create_order(request: CreateOrderRequest) -> OrderResponse:
         weight_kg=request.weight_kg,
         note=request.note,
         distance_km=request.distance_km,
-        price=estimate_price(request.distance_km, request.weight_kg),
+        price=delivery_fee,
+        delivery_fee=delivery_fee,
+        payment_mode=request.payment_mode,
+        goods_amount=request.goods_amount,
+        user_payment_status=user_payment_status,
+        rider_deposit_status=rider_deposit_status,
+        settlement_status="pending",
+        kpay_transaction_id=kpay_transaction_id,
+        payment_proof_url=payment_proof_url,        
         status="matching",
         created_at=datetime.now(timezone.utc),
         pickup_lat=request.pickup_lat,
