@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -15,7 +16,11 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-
+try:
+    from google.cloud import storage
+except ImportError:
+    storage = None
+    
 app = FastAPI(title="Courier API", version="1.0.0")
 logger = logging.getLogger("courier-api")
 
@@ -80,6 +85,7 @@ class CreateOrderRequest(BaseModel):
     distance_km: float = Field(gt=0)
     payment_mode: PaymentMode = "cod"
     goods_amount: float = Field(default=0, ge=0)
+    goods_image_url: str | None = None
     kpay_transaction_id: str | None = None
     payment_proof_url: str | None = None
     pickup_lat: float | None = None
@@ -100,6 +106,7 @@ class OrderResponse(BaseModel):
     delivery_fee: float
     payment_mode: PaymentMode = "cod"
     goods_amount: float = 0
+    goods_image_url: str | None = None
     user_payment_status: PaymentStatus = "not_required"
     rider_deposit_status: PaymentStatus = "unpaid"
     settlement_status: SettlementStatus = "pending"
@@ -117,7 +124,7 @@ class OrderResponse(BaseModel):
 class SignedUploadRequest(BaseModel):
     file_name: str
     content_type: str
-
+    folder: str = "uploads"
 
 class SignedUploadResponse(BaseModel):
     upload_url: str
@@ -292,6 +299,26 @@ def clean_optional_text(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+def upload_folder(value: str) -> str:
+    normalized = value.strip().lower().replace("_", " ")
+    folders = {
+        "goods": "Goods",
+        "kpay ss": "kpay ss",
+        "chats": "Chats",
+        "nrc": "NRC",
+        "profile picture": "profile picture",
+    }
+    if normalized not in folders:
+        raise HTTPException(status_code=400, detail="不支持的上传文件夹")
+    return folders[normalized]
+
+
+def safe_upload_name(file_name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "-", Path(file_name).name.strip())
+    if not cleaned or cleaned in [".", ".."]:
+        raise HTTPException(status_code=400, detail="文件名不正确")
+    return cleaned
 
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     patterns = [
@@ -485,13 +512,17 @@ def list_orders() -> list[OrderResponse]:
 def create_order(request: CreateOrderRequest) -> OrderResponse:
     delivery_fee = estimate_price(request.distance_km, request.weight_kg)
     kpay_transaction_id = clean_optional_text(request.kpay_transaction_id)
+    goods_image_url = clean_optional_text(request.goods_image_url)
     payment_proof_url = clean_optional_text(request.payment_proof_url)
 
     if request.payment_mode == "cod" and request.goods_amount <= 0:
         raise HTTPException(status_code=400, detail="货到付款订单需要填写货物价格")
 
-    if request.payment_mode == "prepaid" and not kpay_transaction_id:
-        raise HTTPException(status_code=400, detail="货费已付款订单需要填写 KPay 交易号")
+    if not goods_image_url:
+        raise HTTPException(status_code=400, detail="请上传商品图片")
+
+    if request.payment_mode == "prepaid" and not payment_proof_url:
+        raise HTTPException(status_code=400, detail="货费已付款订单需要上传 KPay 转账截图")
 
     user_payment_status: PaymentStatus = "not_required"
     rider_deposit_status: PaymentStatus = "not_required"
@@ -511,6 +542,7 @@ def create_order(request: CreateOrderRequest) -> OrderResponse:
         delivery_fee=delivery_fee,
         payment_mode=request.payment_mode,
         goods_amount=request.goods_amount,
+        goods_image_url=goods_image_url,
         user_payment_status=user_payment_status,
         rider_deposit_status=rider_deposit_status,
         settlement_status="pending",
@@ -592,9 +624,28 @@ async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimat
 
 @app.post("/storage/signed-upload-url", response_model=SignedUploadResponse)
 def create_signed_upload_url(request: SignedUploadRequest) -> SignedUploadResponse:
-    # Placeholder for GCS signed URL integration.
-    safe_name = request.file_name.replace("/", "-")
+    if storage is None:
+        raise HTTPException(status_code=500, detail="服务器未安装 Google Cloud Storage 依赖")
+
+    bucket_name = os.getenv("GCS_BUCKET_NAME", "courierblink")
+    folder = upload_folder(request.folder)
+    safe_name = safe_upload_name(request.file_name)
+    object_name = f"{folder}/{uuid4()}-{safe_name}"
+
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(object_name)
+        upload_url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=15),
+            method="PUT",
+            content_type=request.content_type,
+        )
+    except Exception as error:
+        logger.exception("GCS signed upload URL creation failed")
+        raise HTTPException(status_code=500, detail=f"GCS 上传链接创建失败：{error}") from error
     return SignedUploadResponse(
-        upload_url=f"https://storage.googleapis.com/your-bucket/uploads/{safe_name}",
-        public_url=f"https://storage.googleapis.com/your-bucket/uploads/{safe_name}",
+        upload_url=upload_url,
+        public_url=f"https://storage.googleapis.com/{bucket_name}/{quote(object_name)}",
     )
