@@ -191,6 +191,21 @@ def connect_db() -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     return connection
 
+def table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def add_column_if_missing(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    definition: str,
+) -> None:
+    if column_name not in table_columns(connection, table_name):
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
 
 def init_storage() -> None:
     with connect_db() as connection:
@@ -245,6 +260,15 @@ def init_storage() -> None:
             )
             """
         )
+        add_column_if_missing(connection, "chat_messages", "conversation_id", "TEXT NOT NULL DEFAULT 'main'")
+        add_column_if_missing(connection, "chat_messages", "sender_phone", "TEXT")
+        add_column_if_missing(connection, "orders", "user_phone", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "orders", "rider_phone", "TEXT")
+        add_column_if_missing(connection, "orders", "status", "TEXT NOT NULL DEFAULT 'matching'")
+        add_column_if_missing(connection, "orders", "created_at", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "orders", "payload", "TEXT NOT NULL DEFAULT '{}'")
+        add_column_if_missing(connection, "accounts", "nickname", "TEXT")
+        add_column_if_missing(connection, "accounts", "last_login_at", "TEXT NOT NULL DEFAULT ''")
 
 init_storage()
 
