@@ -956,6 +956,8 @@ def list_chat_messages(
             ).fetchall()
 
             conversation_ids = [main_conversation_id]
+            if main_conversation_id != "main":
+                conversation_ids.append("main")
             for row in order_rows:
                 order_id = str(row["id"])
                 conversation_ids.append(f"order:{order_id.lower()}")
