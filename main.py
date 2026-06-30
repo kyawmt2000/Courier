@@ -691,18 +691,82 @@ ADMIN_HTML = r'''
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>快送后台</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; background: #f6f7fb; color: #111827; }
+    header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
+    input, button { font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid #d1d5db; }
+    button { background: #2563eb; color: white; border-color: #2563eb; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+    th { color: #6b7280; font-weight: 700; }
+    .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 700; }
+    .muted { color: #6b7280; font-size: 12px; }
+    .confirm { background: #16a34a; border-color: #16a34a; }
+    .danger { color: #dc2626; white-space: pre-wrap; }
+  </style>
 </head>
 <body>
-  <h1>快送后台</h1>
-  <p>后台已启动。</p>
-  <input id="key" type="password" placeholder="后台密码">
-  <button onclick="loadData()">加载数据</button>
-  <pre id="out"></pre>
+  <header>
+    <h1>快送后台</h1>
+    <input id="key" type="password" placeholder="后台密码">
+    <button onclick="loadData()">刷新</button>
+  </header>
+  <p id="error" class="danger"></p>
+  <table>
+    <thead>
+      <tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>骑手押金</th><th>操作</th></tr>
+    </thead>
+    <tbody id="orders"></tbody>
+  </table>
   <script>
+  const labels = {
+      matching: "待接单", accepted: "已接单", picking_up: "取件中", delivering: "配送中", completed: "已完成", cancelled: "已取消",
+      cod: "货到付款", prepaid: "货费已付款",
+      not_required: "无需", unpaid: "未转账", pending: "骑手已转，待确认", confirmed: "已确认", rejected: "已拒绝"
+    };
+    let orders = [];
+    function label(value) { return labels[value] || value || ""; }
+    function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
+    function shortCode(id) { return String(id || "").slice(0, 6).toUpperCase(); }
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[s]));
+    }
     async function loadData() {
       const key = encodeURIComponent(document.getElementById("key").value);
       const res = await fetch(`/admin/data?key=${key}`);
-      document.getElementById("out").textContent = await res.text();
+      if (!res.ok) {
+        document.getElementById("error").textContent = await res.text();
+        return;
+      }
+      document.getElementById("error").textContent = "";
+      const data = await res.json();
+      orders = data.orders || [];
+      renderOrders();
+    }
+    function renderOrders() {
+      document.getElementById("orders").innerHTML = orders.map(order => `
+        <tr>
+          <td><strong>#${shortCode(order.id)}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
+          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${label(order.rider_deposit_status)}</td>
+          <td>${order.payment_mode === "cod" && order.rider_deposit_status === "pending" ? `<button class="confirm" onclick="confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}</td>
+        </tr>
+      `).join("");
+    }
+    async function confirmDeposit(id) {
+      const key = encodeURIComponent(document.getElementById("key").value);
+      const res = await fetch(`/admin/orders/${id}?key=${key}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rider_deposit_status: "confirmed" })
+      });
+      if (!res.ok) {
+        document.getElementById("error").textContent = await res.text();
+        return;
+      }
+      await loadData();
     }
   </script>
 </body>
@@ -1021,6 +1085,25 @@ def accept_order(
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
+@app.post("/rider/orders/{order_id}/deposit", response_model=OrderResponse)
+def mark_rider_deposit_transferred(
+    order_id: str,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    rider_phone = require_account_phone(authorization)
+    record = load_order_record(order_id)
+    if record:
+        order, user_phone, stored_rider_phone = record
+        if stored_rider_phone != rider_phone:
+            raise HTTPException(status_code=403, detail="不能更新其他骑手的押金状态")
+        if order.payment_mode != "cod":
+            raise HTTPException(status_code=400, detail="只有货到付款订单需要骑手押金")
+        if order.rider_deposit_status == "confirmed":
+            return order_for_response(order)
+        updated = order.model_copy(update={"rider_deposit_status": "pending"})
+        save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
+        return order_for_response(updated)
+    raise HTTPException(status_code=404, detail="订单不存在")
 
 @app.post("/rider/orders/{order_id}/status", response_model=OrderResponse)
 def update_rider_order_status(
@@ -1038,6 +1121,12 @@ def update_rider_order_status(
         order, user_phone, stored_rider_phone = record
         if stored_rider_phone != rider_phone:
             raise HTTPException(status_code=403, detail="不能更新其他骑手的订单")
+        if (
+            order.payment_mode == "cod"
+            and request.status in ["picking_up", "delivering"]
+            and order.rider_deposit_status != "confirmed"
+        ):
+            raise HTTPException(status_code=403, detail="平台确认骑手押金后才能开始取件配送")
         updated = order.model_copy(update={"status": request.status})
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
