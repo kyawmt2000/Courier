@@ -811,6 +811,16 @@ ADMIN_HTML = r'''
     <button onclick="loadData()">刷新</button>
   </header>
   <p id="error" class="danger"></p>
+
+  <h2>付款确认</h2>
+  <table style="margin-bottom: 18px;">
+    <thead>
+      <tr><th>付款</th><th>用户</th><th>金额</th><th>状态</th><th>时间</th><th>操作</th></tr>
+    </thead>
+    <tbody id="payments"></tbody>
+  </table>
+
+  <h2>订单</h2>
   <table>
     <thead>
       <tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>骑手押金</th><th>操作</th></tr>
@@ -824,6 +834,7 @@ ADMIN_HTML = r'''
       not_required: "无需", unpaid: "未转账", pending: "骑手已转，待确认", confirmed: "已确认", rejected: "已拒绝"
     };
     let orders = [];
+    let payments = [];
     function label(value) { return labels[value] || value || ""; }
     function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
     function shortCode(id) { return String(id || "").slice(0, 6).toUpperCase(); }
@@ -840,6 +851,8 @@ ADMIN_HTML = r'''
       document.getElementById("error").textContent = "";
       const data = await res.json();
       orders = data.orders || [];
+      payments = data.payments || [];
+      renderPayments();
       renderOrders();
     }
     function renderOrders() {
@@ -857,6 +870,34 @@ ADMIN_HTML = r'''
         </tr>
       `).join("");
     }
+    function renderPayments() {
+  document.getElementById("payments").innerHTML = payments.map(payment => `
+    <tr>
+      <td><strong>#${shortCode(payment.id)}</strong></td>
+      <td>${escapeHtml(payment.user_phone)}</td>
+      <td>${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
+      <td><span class="pill">${label(payment.status)}</span></td>
+      <td>${escapeHtml(new Date(payment.created_at).toLocaleString())}</td>
+      <td>
+        ${payment.status === "pending" ? `<button class="confirm" onclick="confirmPrepaidPayment('${payment.id}')">确认收到付款</button>` : ""}
+      </td>
+    </tr>
+  `).join("");
+}
+
+async function confirmPrepaidPayment(id) {
+  const key = encodeURIComponent(document.getElementById("key").value);
+  const res = await fetch(`/admin/payments/${id}?key=${key}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: "confirmed" })
+  });
+  if (!res.ok) {
+    document.getElementById("error").textContent = await res.text();
+    return;
+  }
+  await loadData();
+}
     async function confirmDeposit(id) {
       const key = encodeURIComponent(document.getElementById("key").value);
       const res = await fetch(`/admin/orders/${id}?key=${key}`, {
