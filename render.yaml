@@ -22,3 +22,9 @@ services:
         sync: false
       - key: SMS_GATEWAY_TOKEN
         sync: false
+      - key: GCS_BUCKET
+        value: courierblink
+      - key: GOOGLE_APPLICATION_CREDENTIALS_JSON
+        sync: false
+      - key: GOOGLE_APPLICATION_CREDENTIALS_BASE64
+        sync: false
