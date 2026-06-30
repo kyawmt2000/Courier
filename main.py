@@ -154,6 +154,10 @@ class AcceptOrderRequest(BaseModel):
 class UpdateOrderStatusRequest(BaseModel):
     status: OrderStatus
 
+class UpdateRiderLocationRequest(BaseModel):
+    lat: float
+    lng: float
+    
 class CreateChatMessageRequest(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     sender_type: ChatSenderType
