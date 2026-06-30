@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
 
 import httpx
@@ -324,6 +324,9 @@ def safe_upload_name(file_name: str) -> str:
         raise HTTPException(status_code=400, detail="文件名不正确")
     return cleaned
 
+def gcs_bucket_name() -> str:
+    return os.getenv("GCS_BUCKET") or os.getenv("GCS_BUCKET_NAME", "courierblink")
+
 def gcs_credentials_info() -> dict | None:
     credentials_json = clean_optional_text(os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
     if credentials_json:
@@ -366,6 +369,49 @@ def gcs_client():
         )
 
     return storage.Client()
+
+def gcs_object_name_from_url(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    parsed = urlparse(value)
+    bucket_name = gcs_bucket_name()
+    if parsed.netloc == "storage.googleapis.com":
+        parts = parsed.path.lstrip("/").split("/", 1)
+        if len(parts) == 2 and parts[0] == bucket_name:
+            return unquote(parts[1])
+
+    if parsed.netloc == f"{bucket_name}.storage.googleapis.com":
+        return unquote(parsed.path.lstrip("/"))
+
+    return None
+
+
+def signed_gcs_read_url(value: str | None) -> str | None:
+    object_name = gcs_object_name_from_url(value)
+    if not object_name or storage is None:
+        return value
+
+    try:
+        bucket = gcs_client().bucket(gcs_bucket_name())
+        blob = bucket.blob(object_name)
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=30),
+            method="GET",
+        )
+    except Exception:
+        logger.exception("GCS signed read URL creation failed")
+        return value
+
+
+def order_for_response(order: OrderResponse) -> OrderResponse:
+    return order.model_copy(
+        update={
+            "goods_image_url": signed_gcs_read_url(order.goods_image_url),
+            "payment_proof_url": signed_gcs_read_url(order.payment_proof_url),
+        }
+    )
 
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     patterns = [
@@ -552,7 +598,7 @@ def create_chat_message(request: CreateChatMessageRequest) -> ChatMessageRespons
 
 @app.get("/orders", response_model=list[OrderResponse])
 def list_orders() -> list[OrderResponse]:
-    return orders
+    return [order_for_response(order) for order in orders]
 
 
 @app.post("/orders", response_model=OrderResponse)
@@ -603,14 +649,14 @@ def create_order(request: CreateOrderRequest) -> OrderResponse:
         dropoff_lng=request.dropoff_lng,
     )
     orders.insert(0, order)
-    return order
+    return order_for_response(order)
 
 
 @app.get("/orders/{order_id}", response_model=OrderResponse)
 def get_order(order_id: str) -> OrderResponse:
     for order in orders:
         if order.id == order_id:
-            return order
+            return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
@@ -620,12 +666,16 @@ def cancel_order(order_id: str) -> OrderResponse:
         if order.id == order_id:
             updated = order.model_copy(update={"status": "cancelled"})
             orders[index] = updated
-            return updated
+            return order_for_response(order)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 @app.get("/rider/orders", response_model=list[OrderResponse])
 def list_rider_orders() -> list[OrderResponse]:
-    return [order for order in orders if order.status in ["matching", "accepted", "picking_up", "delivering"]]
+    return [
+        order_for_response(order)
+        for order in orders
+        if order.status in ["matching", "accepted", "picking_up", "delivering"]
+    ]
 
 
 @app.post("/rider/orders/{order_id}/accept", response_model=OrderResponse)
@@ -636,7 +686,7 @@ def accept_order(order_id: str, request: AcceptOrderRequest) -> OrderResponse:
                 raise HTTPException(status_code=409, detail="订单已被接单或不可接单")
             updated = order.model_copy(update={"status": "accepted", "rider_name": request.rider_name})
             orders[index] = updated
-            return updated
+            return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
@@ -650,7 +700,7 @@ def update_rider_order_status(order_id: str, request: UpdateOrderStatusRequest) 
         if order.id == order_id:
             updated = order.model_copy(update={"status": request.status})
             orders[index] = updated
-            return updated
+            return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
