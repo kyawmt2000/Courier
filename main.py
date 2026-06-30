@@ -1,3 +1,5 @@
+import base64
+import json
 import math
 import logging
 import os
@@ -18,8 +20,10 @@ from pydantic import BaseModel, Field
 
 try:
     from google.cloud import storage
+    from google.oauth2 import service_account
 except ImportError:
     storage = None
+    service_account = None
     
 app = FastAPI(title="Courier API", version="1.0.0")
 logger = logging.getLogger("courier-api")
@@ -627,13 +631,13 @@ def create_signed_upload_url(request: SignedUploadRequest) -> SignedUploadRespon
     if storage is None:
         raise HTTPException(status_code=500, detail="服务器未安装 Google Cloud Storage 依赖")
 
-    bucket_name = os.getenv("GCS_BUCKET_NAME", "courierblink")
+    bucket_name = os.getenv("GCS_BUCKET") or os.getenv("GCS_BUCKET_NAME", "courierblink")
     folder = upload_folder(request.folder)
     safe_name = safe_upload_name(request.file_name)
     object_name = f"{folder}/{uuid4()}-{safe_name}"
 
     try:
-        client = storage.Client()
+        client = gcs_client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(object_name)
         upload_url = blob.generate_signed_url(
@@ -642,9 +646,12 @@ def create_signed_upload_url(request: SignedUploadRequest) -> SignedUploadRespon
             method="PUT",
             content_type=request.content_type,
         )
+    except HTTPException:
+        raise
     except Exception as error:
         logger.exception("GCS signed upload URL creation failed")
         raise HTTPException(status_code=500, detail=f"GCS 上传链接创建失败：{error}") from error
+
     return SignedUploadResponse(
         upload_url=upload_url,
         public_url=f"https://storage.googleapis.com/{bucket_name}/{quote(object_name)}",
