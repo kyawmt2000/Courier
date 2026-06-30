@@ -14,7 +14,7 @@ from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -171,7 +171,6 @@ class ChatMessageResponse(BaseModel):
     sender_phone: str | None = None
     created_at: datetime
 
-orders: list[OrderResponse] = []
 sms_codes: dict[str, tuple[str, datetime]] = {}
 db_path = Path(os.getenv("COURIER_DB_PATH", os.getenv("CHAT_DB_PATH", "courier_data.sqlite3")))
 
@@ -202,6 +201,39 @@ def init_storage() -> None:
             "ON chat_messages (conversation_id, created_at)"
         )
 
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS orders (
+                id TEXT PRIMARY KEY,
+                user_phone TEXT NOT NULL,
+                rider_phone TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_orders_user_created "
+            "ON orders (user_phone, created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_orders_rider_status_created "
+            "ON orders (rider_phone, status, created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_orders_status_created "
+            "ON orders (status, created_at)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+                phone TEXT PRIMARY KEY,
+                nickname TEXT,
+                last_login_at TEXT NOT NULL
+            )
+            """
+        )
 
 init_storage()
 
@@ -303,6 +335,41 @@ def clean_optional_text(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+def phone_from_authorization(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.startswith("dev-token-"):
+        return None
+
+    try:
+        return normalize_myanmar_phone(token.removeprefix("dev-token-"))
+    except HTTPException:
+        return None
+
+
+def require_account_phone(authorization: str | None) -> str:
+    phone = phone_from_authorization(authorization)
+    if not phone:
+        raise HTTPException(status_code=401, detail="请先登录")
+    return phone
+
+
+def account_conversation_id(conversation_id: str, authorization: str | None, fallback_phone: str | None = None) -> str:
+    if conversation_id != "main":
+        return conversation_id
+
+    phone = phone_from_authorization(authorization) or clean_optional_text(fallback_phone)
+    if not phone:
+        return conversation_id
+
+    try:
+        phone = normalize_myanmar_phone(phone)
+    except HTTPException:
+        pass
+    return f"account:{phone}"
 
 def upload_folder(value: str) -> str:
     normalized = value.strip().lower().replace("_", " ")
@@ -413,6 +480,92 @@ def order_for_response(order: OrderResponse) -> OrderResponse:
         }
     )
 
+def order_from_row(row: sqlite3.Row) -> OrderResponse:
+    return OrderResponse.model_validate_json(row["payload"])
+
+
+def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = None) -> None:
+    with connect_db() as connection:
+        existing = connection.execute(
+            "SELECT user_phone, rider_phone FROM orders WHERE id = ?",
+            (order.id,),
+        ).fetchone()
+        stored_user_phone = existing["user_phone"] if existing else user_phone
+        stored_rider_phone = rider_phone if rider_phone is not None else (existing["rider_phone"] if existing else None)
+        connection.execute(
+            """
+            INSERT INTO orders (id, user_phone, rider_phone, status, created_at, payload)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                user_phone = excluded.user_phone,
+                rider_phone = excluded.rider_phone,
+                status = excluded.status,
+                created_at = excluded.created_at,
+                payload = excluded.payload
+            """,
+            (
+                order.id,
+                stored_user_phone,
+                stored_rider_phone,
+                order.status,
+                order.created_at.isoformat(),
+                order.model_dump_json(),
+            ),
+        )
+
+
+def load_user_orders(user_phone: str) -> list[OrderResponse]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT payload FROM orders
+            WHERE user_phone = ?
+            ORDER BY created_at DESC
+            """,
+            (user_phone,),
+        ).fetchall()
+    return [order_from_row(row) for row in rows]
+
+
+def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT payload FROM orders
+            WHERE status = 'matching'
+               OR rider_phone = ?
+            ORDER BY created_at DESC
+            """,
+            (rider_phone,),
+        ).fetchall()
+    return [order_from_row(row) for row in rows]
+
+
+def load_order_record(order_id: str) -> tuple[OrderResponse, str, str | None] | None:
+    with connect_db() as connection:
+        row = connection.execute(
+            "SELECT user_phone, rider_phone, payload FROM orders WHERE id = ?",
+            (order_id,),
+        ).fetchone()
+
+    if not row:
+        return None
+    return order_from_row(row), row["user_phone"], row["rider_phone"]
+
+
+def save_account(phone: str, nickname: str | None = None) -> None:
+    with connect_db() as connection:
+        connection.execute(
+            """
+            INSERT INTO accounts (phone, nickname, last_login_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(phone) DO UPDATE SET
+                nickname = COALESCE(excluded.nickname, accounts.nickname),
+                last_login_at = excluded.last_login_at
+            """,
+            (phone, nickname, datetime.now(timezone.utc).isoformat()),
+        )
+
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     patterns = [
         r"@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
@@ -511,6 +664,7 @@ def login(request: LoginRequest) -> LoginResponse:
         raise HTTPException(status_code=401, detail="验证码错误")
 
     sms_codes.pop(phone, None)
+    save_account(phone, nickname="快送用户")
 
     user_id_digits = re.sub(r"\D", "", phone)
 
@@ -541,6 +695,7 @@ def list_chat_messages(
     conversation_id: str = "main",
     limit: int = Query(default=100, ge=1, le=300),
 ) -> list[ChatMessageResponse]:
+    authorization: str | None = Header(default=None),
     with connect_db() as connection:
         rows = connection.execute(
             """
@@ -557,12 +712,16 @@ def list_chat_messages(
 
 
 @app.post("/chat/messages", response_model=ChatMessageResponse)
-def create_chat_message(request: CreateChatMessageRequest) -> ChatMessageResponse:
+def create_chat_message(
+    request: CreateChatMessageRequest,
+    authorization: str | None = Header(default=None),
+) -> ChatMessageResponse:
     message_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
     sender_phone = normalize_myanmar_phone(request.sender_phone) if request.sender_phone else None
     text = request.text.strip()
     sender_name = request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
+    conversation_id = account_conversation_id(request.conversation_id, authorization, sender_phone)
 
     if not text:
         raise HTTPException(status_code=400, detail="消息不能为空")
@@ -577,7 +736,7 @@ def create_chat_message(request: CreateChatMessageRequest) -> ChatMessageRespons
             """,
             (
                 message_id,
-                request.conversation_id,
+                conversation_id,
                 text,
                 request.sender_type,
                 sender_name,
@@ -588,7 +747,7 @@ def create_chat_message(request: CreateChatMessageRequest) -> ChatMessageRespons
 
     return ChatMessageResponse(
         id=message_id,
-        conversation_id=request.conversation_id,
+        conversation_id=conversation_id,
         text=text,
         sender_type=request.sender_type,
         sender_name=sender_name,
@@ -597,12 +756,17 @@ def create_chat_message(request: CreateChatMessageRequest) -> ChatMessageRespons
     )
 
 @app.get("/orders", response_model=list[OrderResponse])
-def list_orders() -> list[OrderResponse]:
-    return [order_for_response(order) for order in orders]
+def list_orders(authorization: str | None = Header(default=None)) -> list[OrderResponse]:
+    user_phone = require_account_phone(authorization)
+    return [order_for_response(order) for order in load_user_orders(user_phone)]
 
 
 @app.post("/orders", response_model=OrderResponse)
-def create_order(request: CreateOrderRequest) -> OrderResponse:
+def create_order(
+    request: CreateOrderRequest,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    user_phone = require_account_phone(authorization)
     delivery_fee = estimate_price(request.distance_km, request.weight_kg)
     kpay_transaction_id = clean_optional_text(request.kpay_transaction_id)
     goods_image_url = clean_optional_text(request.goods_image_url)
@@ -648,59 +812,109 @@ def create_order(request: CreateOrderRequest) -> OrderResponse:
         dropoff_lat=request.dropoff_lat,
         dropoff_lng=request.dropoff_lng,
     )
-    orders.insert(0, order)
+    save_order(order, user_phone=user_phone)
     return order_for_response(order)
 
 
 @app.get("/orders/{order_id}", response_model=OrderResponse)
-def get_order(order_id: str) -> OrderResponse:
-    for order in orders:
-        if order.id == order_id:
-            return order_for_response(updated)
+def get_order(
+    order_id: str,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    user_phone = require_account_phone(authorization)
+    record = load_order_record(order_id)
+    if record:
+        order, stored_user_phone, _ = record
+        if stored_user_phone != user_phone:
+            raise HTTPException(status_code=403, detail="不能查看其他账号的订单")
+        return order_for_response(order)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
 @app.post("/orders/{order_id}/cancel", response_model=OrderResponse)
-def cancel_order(order_id: str) -> OrderResponse:
-    for index, order in enumerate(orders):
-        if order.id == order_id:
-            updated = order.model_copy(update={"status": "cancelled"})
-            orders[index] = updated
-            return order_for_response(order)
+def cancel_order(
+    order_id: str,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    user_phone = require_account_phone(authorization)
+    record = load_order_record(order_id)
+    if record:
+        order, stored_user_phone, rider_phone = record
+        if stored_user_phone != user_phone:
+            raise HTTPException(status_code=403, detail="不能取消其他账号的订单")
+        updated = order.model_copy(update={"status": "cancelled"})
+        save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
+        return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 @app.get("/rider/orders", response_model=list[OrderResponse])
-def list_rider_orders() -> list[OrderResponse]:
-    return [
-        order_for_response(order)
-        for order in orders
-        if order.status in ["matching", "accepted", "picking_up", "delivering"]
-    ]
+def list_rider_orders(authorization: str | None = Header(default=None)) -> list[OrderResponse]:
+    rider_phone = require_account_phone(authorization)
+    return [order_for_response(order) for order in load_rider_orders(rider_phone)]
 
 
 @app.post("/rider/orders/{order_id}/accept", response_model=OrderResponse)
-def accept_order(order_id: str, request: AcceptOrderRequest) -> OrderResponse:
-    for index, order in enumerate(orders):
-        if order.id == order_id:
-            if order.status != "matching":
-                raise HTTPException(status_code=409, detail="订单已被接单或不可接单")
-            updated = order.model_copy(update={"status": "accepted", "rider_name": request.rider_name})
-            orders[index] = updated
-            return order_for_response(updated)
+def accept_order(
+    order_id: str,
+    request: AcceptOrderRequest,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    rider_phone = require_account_phone(authorization)
+    record = load_order_record(order_id)
+    if record:
+        order, user_phone, _ = record
+        if order.status != "matching":
+            raise HTTPException(status_code=409, detail="订单已被接单或不可接单")
+        updated = order.model_copy(update={"status": "accepted", "rider_name": request.rider_name})
+        save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
+        return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
 @app.post("/rider/orders/{order_id}/status", response_model=OrderResponse)
-def update_rider_order_status(order_id: str, request: UpdateOrderStatusRequest) -> OrderResponse:
+def update_rider_order_status(
+    order_id: str,
+    request: UpdateOrderStatusRequest,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    rider_phone = require_account_phone(authorization)
     allowed = ["picking_up", "delivering", "completed"]
     if request.status not in allowed:
         raise HTTPException(status_code=400, detail="骑手不能设置这个订单状态")
 
-    for index, order in enumerate(orders):
-        if order.id == order_id:
-            updated = order.model_copy(update={"status": request.status})
-            orders[index] = updated
-            return order_for_response(updated)
+    record = load_order_record(order_id)
+    if record:
+        order, user_phone, stored_rider_phone = record
+        if stored_rider_phone != rider_phone:
+            raise HTTPException(status_code=403, detail="不能更新其他骑手的订单")
+        updated = order.model_copy(update={"status": request.status})
+        save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
+        return order_for_response(updated)
+    raise HTTPException(status_code=404, detail="订单不存在")
+
+@app.post("/rider/orders/{order_id}/location", response_model=OrderResponse)
+def update_rider_location(
+    order_id: str,
+    request: UpdateRiderLocationRequest,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    rider_phone = require_account_phone(authorization)
+    record = load_order_record(order_id)
+    if record:
+        order, user_phone, stored_rider_phone = record
+        if stored_rider_phone != rider_phone:
+            raise HTTPException(status_code=403, detail="不能更新其他骑手的订单位置")
+        if order.status not in ["accepted", "picking_up", "delivering"]:
+            raise HTTPException(status_code=400, detail="订单不在配送中，不能更新骑手位置")
+        updated = order.model_copy(
+            update={
+                "rider_lat": request.lat,
+                "rider_lng": request.lng,
+                "rider_location_updated_at": datetime.now(timezone.utc),
+            }
+        )
+        save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
+        return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
