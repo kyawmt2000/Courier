@@ -160,12 +160,12 @@ class UpdateRiderLocationRequest(BaseModel):
     lng: float
     
 class CreateChatMessageRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=1000)
+    text: str = Field(default="", max_length=1000)
     sender_type: ChatSenderType
     sender_name: str
     sender_phone: str | None = None
     conversation_id: str = "main"
-
+    image_url: str | None = None
 
 class ChatMessageResponse(BaseModel):
     id: str
@@ -174,6 +174,7 @@ class ChatMessageResponse(BaseModel):
     sender_type: ChatSenderType
     sender_name: str
     sender_phone: str | None = None
+    image_url: str | None = None
     created_at: datetime
 
 class AdminUpdateOrderRequest(BaseModel):
@@ -218,6 +219,7 @@ def init_storage() -> None:
                 sender_type TEXT NOT NULL,
                 sender_name TEXT NOT NULL,
                 sender_phone TEXT,
+                image_url TEXT,
                 created_at TEXT NOT NULL
             )
             """
@@ -262,6 +264,7 @@ def init_storage() -> None:
         )
         add_column_if_missing(connection, "chat_messages", "conversation_id", "TEXT NOT NULL DEFAULT 'main'")
         add_column_if_missing(connection, "chat_messages", "sender_phone", "TEXT")
+        add_column_if_missing(connection, "chat_messages", "image_url", "TEXT")
         add_column_if_missing(connection, "orders", "user_phone", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "orders", "rider_phone", "TEXT")
         add_column_if_missing(connection, "orders", "status", "TEXT NOT NULL DEFAULT 'matching'")
@@ -673,6 +676,7 @@ def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
         sender_type=row["sender_type"],
         sender_name=row["sender_name"],
         sender_phone=row["sender_phone"],
+        image_url=row["image_url"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
@@ -818,7 +822,7 @@ def load_admin_chat_messages(limit: int = 200) -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
             """
-            SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, created_at
+            SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
             FROM chat_messages
             ORDER BY created_at DESC
             LIMIT ?
@@ -914,7 +918,7 @@ def list_chat_messages(
     with connect_db() as connection:
         rows = connection.execute(
             """
-            SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, created_at
+            SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
             FROM chat_messages
             WHERE conversation_id = ?
             ORDER BY created_at DESC
@@ -935,19 +939,20 @@ def create_chat_message(
     created_at = datetime.now(timezone.utc)
     sender_phone = normalize_myanmar_phone(request.sender_phone) if request.sender_phone else None
     text = request.text.strip()
+    image_url = request.image_url.strip() if request.image_url else None
     sender_name = request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
     conversation_id = account_conversation_id(request.conversation_id, authorization, sender_phone)
 
-    if not text:
+    if not text and not image_url:
         raise HTTPException(status_code=400, detail="消息不能为空")
 
     with connect_db() as connection:
         connection.execute(
             """
             INSERT INTO chat_messages (
-                id, conversation_id, text, sender_type, sender_name, sender_phone, created_at
+                id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 message_id,
@@ -956,6 +961,7 @@ def create_chat_message(
                 request.sender_type,
                 sender_name,
                 sender_phone,
+                image_url,
                 created_at.isoformat(),
             ),
         )
@@ -967,6 +973,7 @@ def create_chat_message(
         sender_type=request.sender_type,
         sender_name=sender_name,
         sender_phone=sender_phone,
+        image_url=image_url,
         created_at=created_at,
     )
 
