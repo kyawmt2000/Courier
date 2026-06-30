@@ -481,8 +481,7 @@ def order_for_response(order: OrderResponse) -> OrderResponse:
     )
 
 def order_from_row(row: sqlite3.Row) -> OrderResponse:
-    return OrderResponse.model_validate_json(row["payload"])
-
+    return OrderResponse.model_validate(json.loads(row["payload"]))
 
 def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = None) -> None:
     with connect_db() as connection:
@@ -509,7 +508,7 @@ def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = 
                 stored_rider_phone,
                 order.status,
                 order.created_at.isoformat(),
-                order.model_dump_json(),
+                json.dumps(order.model_dump(mode="json"), ensure_ascii=False),
             ),
         )
 
