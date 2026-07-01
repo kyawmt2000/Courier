@@ -205,7 +205,18 @@ class AdminUpdatePrepaidPaymentRequest(BaseModel):
     status: PaymentStatus | None = None
 
 sms_codes: dict[str, tuple[str, datetime]] = {}
-db_path = Path(os.getenv("COURIER_DB_PATH", os.getenv("CHAT_DB_PATH", "courier_data.sqlite3")))
+def resolve_db_path() -> Path:
+    configured = (os.getenv("COURIER_DB_PATH") or os.getenv("CHAT_DB_PATH") or "").strip()
+    if configured:
+        return Path(configured)
+
+    render_disk = Path("/var/data")
+    if render_disk.exists():
+        return render_disk / "courier_data.sqlite3"
+
+    return Path("courier_data.sqlite3")
+
+db_path = resolve_db_path()
 
 def connect_db() -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1196,6 +1207,19 @@ def list_chat_messages(
                 order_id = str(row["id"])
                 conversation_ids.append(f"order:{order_id.lower()}")
                 conversation_ids.append(f"order:{order_id.upper()}")
+
+            message_rows = connection.execute(
+                """
+                SELECT DISTINCT conversation_id
+                FROM chat_messages
+                WHERE sender_phone = ?
+                """,
+                (phone,),
+            ).fetchall()
+            for row in message_rows:
+                conversation_ids.append(row["conversation_id"])
+
+            conversation_ids = list(dict.fromkeys(conversation_ids))
 
             placeholders = ",".join("?" for _ in conversation_ids)
             rows = connection.execute(
