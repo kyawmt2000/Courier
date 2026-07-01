@@ -62,7 +62,7 @@ class UserProfile(BaseModel):
     id: str
     phone: str
     nickname: str | None = None
-
+    avatar_url: str | None = None
 
 class LoginRequest(BaseModel):
     phone: str = Field(min_length=6)
@@ -72,6 +72,10 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     token: str
     user: UserProfile
+
+class UpdateProfileRequest(BaseModel):
+    nickname: str | None = None
+    avatar_url: str | None = None
 
 class SendSMSCodeRequest(BaseModel):
     phone: str = Field(min_length=6)
@@ -275,6 +279,7 @@ def init_storage() -> None:
             CREATE TABLE IF NOT EXISTS accounts (
                 phone TEXT PRIMARY KEY,
                 nickname TEXT,
+                avatar_url TEXT,
                 last_login_at TEXT NOT NULL
             )
             """
@@ -307,6 +312,7 @@ def init_storage() -> None:
         add_column_if_missing(connection, "orders", "created_at", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "orders", "payload", "TEXT NOT NULL DEFAULT '{}'")
         add_column_if_missing(connection, "accounts", "nickname", "TEXT")
+        add_column_if_missing(connection, "accounts", "avatar_url", "TEXT")
         add_column_if_missing(connection, "accounts", "last_login_at", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "prepaid_payments", "user_phone", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "prepaid_payments", "status", "TEXT NOT NULL DEFAULT 'pending'")
@@ -692,18 +698,45 @@ def load_order_record(order_id: str) -> tuple[OrderResponse, str, str | None] | 
     return order_from_row(row), row["user_phone"], row["rider_phone"]
 
 
-def save_account(phone: str, nickname: str | None = None) -> None:
+def user_profile_from_account(phone: str, nickname: str | None, avatar_url: str | None) -> UserProfile:
+    user_id_digits = re.sub(r"\D", "", phone)
+    return UserProfile(
+        id=f"user_{user_id_digits}",
+        phone=phone,
+        nickname=nickname,
+        avatar_url=signed_gcs_read_url(avatar_url),
+    )
+
+def load_account_profile(phone: str) -> UserProfile | None:
+    with connect_db() as connection:
+        row = connection.execute(
+            """
+            SELECT phone, nickname, avatar_url
+            FROM accounts
+            WHERE phone = ?
+            """,
+            (phone,),
+        ).fetchone()
+
+    if not row:
+        return None
+    return user_profile_from_account(row["phone"], row["nickname"], row["avatar_url"])
+
+
+def save_account(phone: str, nickname: str | None = None, avatar_url: str | None = None) -> UserProfile:
     with connect_db() as connection:
         connection.execute(
             """
-            INSERT INTO accounts (phone, nickname, last_login_at)
-            VALUES (?, ?, ?)
+            INSERT INTO accounts (phone, nickname, avatar_url, last_login_at)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(phone) DO UPDATE SET
                 nickname = COALESCE(excluded.nickname, accounts.nickname),
+                avatar_url = COALESCE(excluded.avatar_url, accounts.avatar_url),
                 last_login_at = excluded.last_login_at
             """,
-            (phone, nickname, datetime.now(timezone.utc).isoformat()),
+            (phone, nickname, avatar_url, datetime.now(timezone.utc).isoformat()),
         )
+    return load_account_profile(phone) or user_profile_from_account(phone, nickname, avatar_url)
 
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     patterns = [
@@ -825,13 +858,20 @@ ADMIN_HTML = r'''
     <tbody id="payments"></tbody>
   </table>
 
-  <h2>订单</h2>
-  <table>
+   <h2>订单</h2>
+  <table style="margin-bottom: 18px;">
     <thead>
       <tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>骑手押金</th><th>操作</th></tr>
     </thead>
     <tbody id="orders"></tbody>
   </table>
+
+  <h2>账号资料</h2>
+  <table style="margin-bottom: 18px;">
+    <thead><tr><th>头像</th><th>手机号</th><th>用户名</th><th>最近登录</th></tr></thead>
+    <tbody id="accounts"></tbody>
+  </table>
+
   <script>
   const labels = {
       matching: "待接单", accepted: "已接单", picking_up: "取件中", delivering: "配送中", completed: "已完成", cancelled: "已取消",
@@ -840,6 +880,7 @@ ADMIN_HTML = r'''
     };
     let orders = [];
     let payments = [];
+    let accounts = [];
     function label(value) { return labels[value] || value || ""; }
     function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
     function shortCode(id) { return String(id || "").slice(0, 6).toUpperCase(); }
@@ -857,8 +898,10 @@ ADMIN_HTML = r'''
       const data = await res.json();
       orders = data.orders || [];
       payments = data.payments || [];
+      accounts = data.accounts || [];
       renderPayments();
       renderOrders();
+      renderAccounts();
     }
     function renderOrders() {
       document.getElementById("orders").innerHTML = orders.map(order => `
@@ -887,6 +930,19 @@ ADMIN_HTML = r'''
       <td>
         ${payment.status === "pending" ? `<button class="confirm" onclick="confirmPrepaidPayment('${payment.id}')">确认收到付款</button>` : ""}
       </td>
+    </tr>
+  `).join("");
+}
+
+function renderAccounts() {
+  document.getElementById("accounts").innerHTML = accounts.map(account => `
+    <tr>
+      <td>
+        ${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:52px;height:52px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : `<span class="muted">无头像</span>`}
+      </td>
+      <td>${escapeHtml(account.phone)}</td>
+      <td>${escapeHtml(account.nickname || "")}</td>
+      <td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td>
     </tr>
   `).join("");
 }
@@ -971,13 +1027,17 @@ def load_admin_accounts() -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
             """
-            SELECT phone, nickname, last_login_at
+            SELECT phone, nickname, avatar_url, last_login_at
             FROM accounts
             ORDER BY last_login_at DESC
             """
         ).fetchall()
-    return [dict(row) for row in rows]
-
+    result: list[dict] = []
+    for row in rows:
+        account = dict(row)
+        account["avatar_url"] = signed_gcs_read_url(account.get("avatar_url"))
+        result.append(account)
+    return result
 
 def load_admin_chat_messages(limit: int = 200) -> list[dict]:
     with connect_db() as connection:
@@ -1068,18 +1128,33 @@ def login(request: LoginRequest) -> LoginResponse:
         raise HTTPException(status_code=401, detail="验证码错误")
 
     sms_codes.pop(phone, None)
-    save_account(phone, nickname="快送用户")
-
-    user_id_digits = re.sub(r"\D", "", phone)
+    profile = save_account(phone, nickname=None if load_account_profile(phone) else "快送用户")
 
     return LoginResponse(
         token=f"dev-token-{phone}",
-        user=UserProfile(
-            id=f"user_{user_id_digits}",
-            phone=phone,
-            nickname="快送用户",
-        ),
+        user=profile,
     )
+
+@app.get("/account/profile", response_model=UserProfile)
+def get_account_profile(authorization: str | None = Header(default=None)) -> UserProfile:
+    phone = require_account_phone(authorization)
+    profile = load_account_profile(phone)
+    if profile:
+        return profile
+    return save_account(phone, nickname="快送用户")
+
+
+@app.post("/account/profile", response_model=UserProfile)
+def update_account_profile(
+    request: UpdateProfileRequest,
+    authorization: str | None = Header(default=None),
+) -> UserProfile:
+    phone = require_account_phone(authorization)
+    nickname = clean_optional_text(request.nickname)
+    avatar_url = clean_optional_text(request.avatar_url)
+    if nickname is not None and len(nickname) > 40:
+        raise HTTPException(status_code=400, detail="用户名最多 40 个字符")
+    return save_account(phone, nickname=nickname, avatar_url=avatar_url)
 
 @app.post("/auth/sms-code", response_model=SendSMSCodeResponse)
 async def send_login_sms_code(request: SendSMSCodeRequest) -> SendSMSCodeResponse:
