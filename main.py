@@ -944,15 +944,8 @@ ADMIN_HTML = r'''
     <section id="page-payments" class="page active">
       <h2>货到付款订单</h2>
       <table>
-        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>送货费付款</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
         <tbody id="codOrders"></tbody>
-      </table>
-    </section>
-    <section id="page-orders" class="page">
-      <h2>货费已付款订单</h2>
-      <table>
-        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>地址</th></tr></thead>
-        <tbody id="orders"></tbody>
       </table>
     </section>
     <section id="page-prepaid-confirmation" class="page">
@@ -1020,7 +1013,6 @@ ADMIN_HTML = r'''
         document.getElementById(`page-${name}`)?.classList.toggle("active", name === page);
         document.getElementById(`tab-${name}`)?.classList.toggle("active", name === page);
       });
-      document.getElementById("page-prepaid-confirmation")?.classList.toggle("active", page === "orders");
     }
     function hideDetail() {
       document.getElementById("detailSection")?.classList.add("hidden");
@@ -1054,6 +1046,7 @@ ADMIN_HTML = r'''
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
           <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${paymentProofCell(order)}</td>
           <td>${riderDepositLabel(order.rider_deposit_status)}</td>
           <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
           <td>
@@ -1061,31 +1054,20 @@ ADMIN_HTML = r'''
             ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
           </td>        </tr>`).join("");
       if (!codOrders.length) {
-        document.getElementById("codOrders").innerHTML = `<tr><td colspan="7" class="muted">暂无货到付款订单</td></tr>`;
-      }
-      document.getElementById("payments").innerHTML = (state.payments || []).map(payment => `
-        <tr>
-          <td><strong>#${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong></td>
-          <td>${escapeHtml(payment.user_phone)}</td>
-          <td>${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
-          <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : ""}</td>
-          <td><span class="pill">${label(payment.status)}</span></td>
-          <td>${escapeHtml(new Date(payment.created_at).toLocaleString())}</td>
-          <td>${payment.status === "pending" ? `<button onclick="confirmPrepaidPayment('${payment.id}')">确认收到付款</button>` : escapeHtml(payment.confirmed_at ? new Date(payment.confirmed_at).toLocaleString() : "")}</td>
-        </tr>`).join("");
-      if (!(state.payments || []).length) {
-        document.getElementById("payments").innerHTML = `<tr><td colspan="7" class="muted">暂无送费付款记录</td></tr>`;
+      document.getElementById("codOrders").innerHTML = `<tr><td colspan="8" class="muted">暂无货到付款订单</td></tr>`;
       }
       document.getElementById("orders").innerHTML = prepaidOrders.map(order => `
-                <tr onclick="showDetail('${order.id}')">
+        <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")}</span></td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
           <td>${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${paymentProofCell(order)}</td>
           <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
+          <td>${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">确认送货费</button>` : ""}</td>
         </tr>`).join("");
         if (!prepaidOrders.length) {
-        document.getElementById("orders").innerHTML = `<tr><td colspan="5" class="muted">暂无货费已付款订单</td></tr>`;
+        document.getElementById("orders").innerHTML = `<tr><td colspan="7" class="muted">暂无货费已付款订单</td></tr>`;
       }
       document.getElementById("accounts").innerHTML = state.accounts.map(account => `
         <tr>
@@ -1150,6 +1132,16 @@ ADMIN_HTML = r'''
         rows.push(`送货费：${new Date(order.rider_settlement_paid_at).toLocaleString()}`);
       }
       return rows.length ? `<br><span class="muted">${escapeHtml(rows.join(" / "))}</span>` : "";
+    }
+
+    function paymentProofCell(order) {
+      const image = order.payment_proof_url
+        ? `<img src="${escapeHtml(order.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">`
+        : `<span class="muted">无截图</span>`;
+      const paymentId = order.kpay_transaction_id
+        ? `<br><span class="muted">#${escapeHtml(order.kpay_transaction_id.slice(0, 6).toUpperCase())}</span>`
+        : "";
+      return `${image}<br><span class="pill">${label(order.user_payment_status)}</span>${paymentId}`;
     }
 
     function settlementInfo(order) {
