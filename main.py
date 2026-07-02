@@ -914,26 +914,25 @@ ADMIN_HTML = r'''
         <tbody id="codOrders"></tbody>
       </table>
     </section>
-    <div id="page-orders" class="page grid">
-      <section>
-        <h2>货费已付款订单</h2>
-        <table>
-          <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>地址</th></tr></thead>
-          <tbody id="orders"></tbody>
-        </table>
-      </section>
-      <section>
-        <h2>送费付款确认</h2>
-        <table>
-          <thead><tr><th>付款编号</th><th>用户</th><th>金额</th><th>截图</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
-          <tbody id="payments"></tbody>
-        </table>
-      </section>
-      <section>
-        <h2>订单详情</h2>
-        <div id="detail" class="detail muted">点击左侧订单查看详情</div>
-      </section>
-    </div>
+    <section id="page-orders" class="page">
+      <h2>货费已付款订单</h2>
+      <table>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>地址</th></tr></thead>
+        <tbody id="orders"></tbody>
+      </table>
+    </section>
+    <section id="page-prepaid-confirmation" class="page">
+      <h2>送费付款确认</h2>
+      <table>
+        <thead><tr><th>付款编号</th><th>用户</th><th>金额</th><th>截图</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
+        <tbody id="payments"></tbody>
+      </table>
+    </section>
+    <section id="detailSection" class="hidden">
+      <h2>订单详情</h2>
+      <div id="detail" class="detail muted"></div>
+    </section>
+    
     <section id="page-accounts" class="page">
       <h2>账号资料</h2>
       <table><thead><tr><th>头像</th><th>手机号</th><th>昵称</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
@@ -953,7 +952,7 @@ ADMIN_HTML = r'''
   <script>
     let state = { orders: [], accounts: [], messages: [], payments: [] };
     let currentPage = "payments";
-    const pages = ["payments","orders","accounts","settlements","service"];
+    const pages = ["payments","orders","prepaid-confirmation","accounts","settlements","service"];
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
     const settlementOptions = ["pending","paid_to_user","paid_to_rider","completed"];
@@ -982,10 +981,17 @@ ADMIN_HTML = r'''
     }
     function showPage(page) {
       currentPage = page;
+      hideDetail();
       pages.forEach(name => {
         document.getElementById(`page-${name}`)?.classList.toggle("active", name === page);
         document.getElementById(`tab-${name}`)?.classList.toggle("active", name === page);
       });
+      document.getElementById("page-prepaid-confirmation")?.classList.toggle("active", page === "orders");
+    }
+    function hideDetail() {
+      document.getElementById("detailSection")?.classList.add("hidden");
+      const detail = document.getElementById("detail");
+      if (detail) detail.innerHTML = "";
     }
 
     async function loadData() {
@@ -1072,6 +1078,7 @@ ADMIN_HTML = r'''
     function showDetail(id) {
       const order = state.orders.find(item => item.id === id);
       if (!order) return;
+      document.getElementById("detailSection").classList.remove("hidden");
       document.getElementById("detail").innerHTML = `
         ${order.goods_image_url ? `<img src="${order.goods_image_url}" alt="商品图">` : `<div class="muted">暂无商品图</div>`}
         <div class="row"><b>订单号</b><span>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</span></div>
