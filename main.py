@@ -888,6 +888,7 @@ ADMIN_HTML = r'''
     body { margin: 0; background: #f4f6f8; color: #111827; }
     header { position: sticky; top: 0; z-index: 2; display: flex; gap: 12px; align-items: center; padding: 14px 18px; background: #fff; border-bottom: 1px solid #e5e7eb; }
     h1 { margin: 0; font-size: 20px; }
+    .version { color: #6b7280; font-size: 12px; white-space: nowrap; }
     main { padding: 18px; display: grid; gap: 16px; }
     .toolbar { margin-left: auto; display: flex; gap: 8px; align-items: center; }
     input, select, button { font: inherit; border: 1px solid #d1d5db; border-radius: 8px; padding: 9px 10px; background: #fff; }
@@ -923,6 +924,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
+    <span class="version">orders-ui-v3</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -979,7 +981,7 @@ ADMIN_HTML = r'''
   <script>
     let state = { orders: [], accounts: [], messages: [], payments: [] };
     let currentPage = "payments";
-    const pages = ["payments","orders","prepaid-confirmation","accounts","settlements","service"];
+    const pages = ["payments","orders","accounts","settlements","service"];
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
     const settlementOptions = ["pending","paid_to_user","paid_to_rider","completed"];
@@ -1035,7 +1037,7 @@ ADMIN_HTML = r'''
       const q = document.getElementById("q").value.toLowerCase();
       const orders = state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q));
       const codOrders = orders.filter(order => order.payment_mode === "cod");
-      const prepaidOrders = orders.filter(order => order.payment_mode === "prepaid");
+      const prepaidOrdersTable = document.getElementById("prepaidOrdersTable") || document.getElementById("orders");
       document.getElementById("totalOrders").textContent = state.orders.length;
       document.getElementById("matchingOrders").textContent = state.orders.filter(o => o.status === "matching").length;
       document.getElementById("runningOrders").textContent = state.orders.filter(o => ["accepted","picking_up","delivering"].includes(o.status)).length;
@@ -1376,8 +1378,13 @@ def health_check() -> HealthResponse:
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page() -> HTMLResponse:
-    return HTMLResponse(ADMIN_HTML)
-
+    return HTMLResponse(
+        ADMIN_HTML,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 @app.get("/admin/data")
 def admin_data(key: str = Query(default="")) -> dict:
