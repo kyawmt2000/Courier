@@ -745,7 +745,6 @@ def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
         order
         for order in orders
         if order.status != "matching"
-        or order.payment_mode == "cod"
         or order.user_payment_status == "confirmed"
     ]
 
@@ -1630,25 +1629,20 @@ def create_order(
 
     if not goods_image_url:
         raise HTTPException(status_code=400, detail="请上传商品图片")
-
-    user_payment_status: PaymentStatus = "not_required"
-    rider_deposit_status: PaymentStatus = "not_required"
-    if request.payment_mode == "cod":
-        rider_deposit_status = "unpaid"
-    else:
-        if not kpay_transaction_id:
-            raise HTTPException(status_code=400, detail="请先付款，并等待后台确认收到付款")
-        prepaid_payment = load_prepaid_payment(kpay_transaction_id)
-        if not prepaid_payment:
-            raise HTTPException(status_code=400, detail="付款记录不存在，请重新付款")
-        if prepaid_payment.user_phone != user_phone:
-            raise HTTPException(status_code=403, detail="不能使用其他账号的付款记录")
-        if prepaid_payment.status != "confirmed":
-            raise HTTPException(status_code=400, detail="后台确认收到付款后才能下单")
-        if abs(prepaid_payment.amount - delivery_fee) > 1:
-            raise HTTPException(status_code=400, detail="付款金额和当前配送费不一致，请重新计算后付款")
-        payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
-        user_payment_status = "confirmed"
+    if not kpay_transaction_id:
+        raise HTTPException(status_code=400, detail="请先支付送货费，并等待后台确认收到付款")
+    prepaid_payment = load_prepaid_payment(kpay_transaction_id)
+    if not prepaid_payment:
+        raise HTTPException(status_code=400, detail="付款记录不存在，请重新付款")
+    if prepaid_payment.user_phone != user_phone:
+        raise HTTPException(status_code=403, detail="不能使用其他账号的付款记录")
+    if prepaid_payment.status != "confirmed":
+        raise HTTPException(status_code=400, detail="后台确认收到送货费后才能下单")
+    if abs(prepaid_payment.amount - delivery_fee) > 1:
+        raise HTTPException(status_code=400, detail="付款金额和当前配送费不一致，请重新计算后付款")
+    payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
+    user_payment_status: PaymentStatus = "confirmed"
+    rider_deposit_status: PaymentStatus = "unpaid" if request.payment_mode == "cod" else "not_required"
 
     order = OrderResponse(
         id=str(uuid4()),
@@ -1749,8 +1743,8 @@ def accept_order(
         order, user_phone, _ = record
         if order.status != "matching":
             raise HTTPException(status_code=409, detail="订单已被接单或不可接单")
-        if order.payment_mode == "prepaid" and order.user_payment_status != "confirmed":
-            raise HTTPException(status_code=403, detail="平台确认用户付款后骑手才能接单")
+        if order.user_payment_status != "confirmed":
+            raise HTTPException(status_code=403, detail="平台确认用户送货费付款后骑手才能接单")
         updated = order.model_copy(update={"status": "accepted", "rider_name": request.rider_name})
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
