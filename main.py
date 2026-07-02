@@ -924,7 +924,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v4</span>
+    <span class="version">orders-ui-v7</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1022,6 +1022,28 @@ ADMIN_HTML = r'''
       if (detail) detail.innerHTML = "";
     }
 
+    function ensureOrderTables() {
+      const codSection = document.getElementById("page-payments");
+      let prepaidSection = document.getElementById("page-orders");
+      if (!prepaidSection && codSection) {
+        prepaidSection = document.createElement("section");
+        prepaidSection.id = "page-orders";
+        prepaidSection.className = "page";
+        prepaidSection.innerHTML = `
+          <h2>货费已付款订单</h2>
+          <table>
+            <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>送货费付款</th><th>地址</th><th>操作</th></tr></thead>
+            <tbody id="orders"></tbody>
+          </table>
+        `;
+        codSection.insertAdjacentElement("afterend", prepaidSection);
+      }
+      return {
+        cod: document.getElementById("codOrders"),
+        prepaid: document.getElementById("orders")
+      };
+    }
+
     async function loadData() {
       const response = await fetch(`/admin/data?key=${keyParam()}`);
       if (!response.ok) {
@@ -1036,8 +1058,9 @@ ADMIN_HTML = r'''
     function render() {
       const q = document.getElementById("q").value.toLowerCase();
       const orders = state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q));
-      const codOrders = orders.filter(order => order.payment_mode === "cod");
-      const prepaidOrdersTable = document.getElementById("prepaidOrdersTable");
+      const tables = ensureOrderTables();
+      const codOrdersTable = tables.cod;
+      const prepaidOrdersTable = tables.prepaid;
       document.getElementById("totalOrders").textContent = state.orders.length;
       document.getElementById("matchingOrders").textContent = state.orders.filter(o => o.status === "matching").length;
       document.getElementById("runningOrders").textContent = state.orders.filter(o => ["accepted","picking_up","delivering"].includes(o.status)).length;
