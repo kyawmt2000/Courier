@@ -198,7 +198,6 @@ class UpdateRiderLocationRequest(BaseModel):
 
 class RiderSettlementRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
-    phone: str = Field(min_length=4, max_length=30)
     qr_url: str
 
 class CreateChatMessageRequest(BaseModel):
@@ -1076,7 +1075,6 @@ ADMIN_HTML = r'''
           <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>
             ${escapeHtml(order.rider_settlement_name || "未提交")}
-            <br><span class="muted">${escapeHtml(order.rider_settlement_phone || "")}</span>
             ${order.rider_settlement_requested_at ? `<br><span class="muted">提醒时间：${escapeHtml(new Date(order.rider_settlement_requested_at).toLocaleString())}</span>` : ""}
           </td>
           <td>${order.rider_settlement_qr_url ? `<img class="thumb" src="${escapeHtml(order.rider_settlement_qr_url)}" alt="骑手收款二维码">` : `<span class="muted">未提交</span>`}</td>
@@ -1762,19 +1760,15 @@ def request_rider_settlement(
             return order_for_response(order)
 
         name = request.name.strip()
-        phone = request.phone.strip()
         qr_url = clean_optional_text(request.qr_url)
         if not name:
             raise HTTPException(status_code=400, detail="请填写收款人名字")
-        if not phone:
-            raise HTTPException(status_code=400, detail="请填写收款手机号")
         if not qr_url:
             raise HTTPException(status_code=400, detail="请上传收款二维码")
 
         updated = order.model_copy(
             update={
                 "rider_settlement_name": name,
-                "rider_settlement_phone": phone,
                 "rider_settlement_qr_url": qr_url,
                 "rider_settlement_requested_at": datetime.now(timezone.utc),
                 "settlement_status": "pending",
