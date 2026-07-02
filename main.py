@@ -49,6 +49,7 @@ OrderStatus = Literal[
 
 ChatSenderType = Literal["user", "rider"]
 PaymentMode = Literal["cod", "prepaid"]
+DeliveryFeePayer = Literal["sender", "receiver"]
 PaymentStatus = Literal["not_required", "unpaid", "pending", "confirmed", "rejected"]
 SettlementStatus = Literal["pending", "paid_to_user", "paid_to_rider", "completed"]
 
@@ -98,6 +99,7 @@ class CreateOrderRequest(BaseModel):
     note: str = ""
     distance_km: float = Field(gt=0)
     payment_mode: PaymentMode = "cod"
+    delivery_fee_payer: DeliveryFeePayer = "sender"
     goods_amount: float = Field(default=0, ge=0)
     goods_image_url: str | None = None
     kpay_transaction_id: str | None = None
@@ -136,6 +138,7 @@ class OrderResponse(BaseModel):
     price: float
     delivery_fee: float
     payment_mode: PaymentMode = "cod"
+    delivery_fee_payer: DeliveryFeePayer = "sender"
     goods_amount: float = 0
     goods_image_url: str | None = None
     user_payment_status: PaymentStatus = "not_required"
@@ -1661,6 +1664,7 @@ def create_order(
         price=delivery_fee,
         delivery_fee=delivery_fee,
         payment_mode=request.payment_mode,
+        delivery_fee_payer=request.delivery_fee_payer,
         goods_amount=request.goods_amount,
         goods_image_url=goods_image_url,
         user_payment_status=user_payment_status,
