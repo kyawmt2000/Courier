@@ -760,6 +760,21 @@ def load_order_record(order_id: str) -> tuple[OrderResponse, str, str | None] | 
         return None
     return order_from_row(row), row["user_phone"], row["rider_phone"]
 
+def sync_orders_for_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
+    with connect_db() as connection:
+        rows = connection.execute(
+            "SELECT user_phone, rider_phone, payload FROM orders"
+        ).fetchall()
+
+    for row in rows:
+        order = order_from_row(row)
+        if order.kpay_transaction_id != payment.id:
+            continue
+        if row["user_phone"] != payment.user_phone:
+            continue
+
+        updated = order.model_copy(update={"user_payment_status": payment.status})
+        save_order(updated, user_phone=row["user_phone"], rider_phone=row["rider_phone"])
 
 def user_profile_from_account(phone: str, nickname: str | None, avatar_url: str | None) -> UserProfile:
     user_id_digits = re.sub(r"\D", "", phone)
@@ -1037,12 +1052,14 @@ ADMIN_HTML = r'''
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
-          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
           <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${riderDepositLabel(order.rider_deposit_status)}</td>
           <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
-          <td>${order.rider_deposit_status === "pending" ? `<button onclick="confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}</td>
-        </tr>`).join("");
+          <td>
+            ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">确认送货费</button>` : ""}
+            ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
+          </td>        </tr>`).join("");
       if (!codOrders.length) {
         document.getElementById("codOrders").innerHTML = `<tr><td colspan="7" class="muted">暂无货到付款订单</td></tr>`;
       }
@@ -1063,7 +1080,7 @@ ADMIN_HTML = r'''
                 <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")}</span></td>
-          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}${order.payment_mode === "cod" ? " / 押金：" + riderDepositLabel(order.rider_deposit_status) : " / 用户付款：" + label(order.user_payment_status)}</span></td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
           <td>${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
         </tr>`).join("");
@@ -1119,7 +1136,7 @@ ADMIN_HTML = r'''
           <select id="riderDeposit">${optionHtml(paymentOptions, order.rider_deposit_status)}</select>
           <select id="settlement">${optionHtml(settlementOptions, order.settlement_status)}</select>
         </div>
-        ${order.payment_mode === "prepaid" && order.user_payment_status !== "confirmed" ? `<button onclick="confirmUserPayment('${order.id}')">确认收到付款</button>` : ""}
+        ${order.user_payment_status !== "confirmed" ? `<button onclick="confirmUserPayment('${order.id}')">确认收到送货费</button>` : ""}
         <button onclick="saveOrder('${order.id}')">保存订单状态</button>
       `;
     }
@@ -1158,10 +1175,15 @@ ADMIN_HTML = r'''
 
 
     async function confirmUserPayment(id) {
+      const order = state.orders.find(item => item.id === id);
+      if (order?.kpay_transaction_id) {
+        await confirmPrepaidPayment(order.kpay_transaction_id, id);
+        return;
+      }
       const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_payment_status: "confirmed", rider_deposit_status: "not_required" })
+        body: JSON.stringify({ user_payment_status: "confirmed" })
       });
       if (!response.ok) {
         alert(await response.text());
@@ -1171,7 +1193,7 @@ ADMIN_HTML = r'''
       showDetail(id);
     }
 
-    async function confirmPrepaidPayment(id) {
+    async function confirmPrepaidPayment(id, orderId = null) {
       const response = await fetch(`/admin/payments/${id}?key=${keyParam()}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -1182,6 +1204,9 @@ ADMIN_HTML = r'''
         return;
       }
       await loadData();
+      if (orderId) {
+        showDetail(orderId);
+      }
     }
 
     async function confirmDeposit(id) {
@@ -1397,6 +1422,7 @@ def admin_update_prepaid_payment(
 
     updated = payment.model_copy(update=updates)
     save_prepaid_payment(updated)
+    sync_orders_for_prepaid_payment(updated)
     return updated
 
 
@@ -1670,12 +1696,12 @@ def create_order(
         raise HTTPException(status_code=400, detail="付款记录不存在，请重新付款")
     if prepaid_payment.user_phone != user_phone:
         raise HTTPException(status_code=403, detail="不能使用其他账号的付款记录")
-    if prepaid_payment.status != "confirmed":
-        raise HTTPException(status_code=400, detail="后台确认收到送货费后才能下单")
+    if prepaid_payment.status == "rejected":
+        raise HTTPException(status_code=400, detail="送货费付款未通过，请重新付款")
     if abs(prepaid_payment.amount - delivery_fee) > 1:
         raise HTTPException(status_code=400, detail="付款金额和当前配送费不一致，请重新计算后付款")
     payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
-    user_payment_status: PaymentStatus = "confirmed"
+    user_payment_status: PaymentStatus = prepaid_payment.status
     rider_deposit_status: PaymentStatus = "unpaid" if request.payment_mode == "cod" else "not_required"
 
     order = OrderResponse(
