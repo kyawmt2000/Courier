@@ -1082,15 +1082,12 @@ ADMIN_HTML = r'''
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
           <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${settlementInfo(order)}</td>
+          <td>${settlementQRCodes(order)}</td>
+          <td><span class="pill">${label(order.settlement_status)}</span>${settlementPaidTimes(order)}</td>
           <td>
-            ${order.payment_mode === "cod" ? "货费收款：" : "骑手收款："}${escapeHtml((order.payment_mode === "cod" ? order.user_settlement_name : order.rider_settlement_name) || "未提交")}
-            ${(order.payment_mode === "cod" ? order.user_settlement_requested_at : order.rider_settlement_requested_at) ? `<br><span class="muted">提醒时间：${escapeHtml(new Date(order.payment_mode === "cod" ? order.user_settlement_requested_at : order.rider_settlement_requested_at).toLocaleString())}</span>` : ""}
-          </td>
-          <td>${(order.payment_mode === "cod" ? order.user_settlement_qr_url : order.rider_settlement_qr_url) ? `<img class="thumb" src="${escapeHtml(order.payment_mode === "cod" ? order.user_settlement_qr_url : order.rider_settlement_qr_url)}" alt="收款二维码">` : `<span class="muted">未提交</span>`}</td>
-          <td><span class="pill">${label(order.settlement_status)}</span>${(order.payment_mode === "cod" ? order.user_settlement_paid_at : order.rider_settlement_paid_at) ? `<br><span class="muted">${escapeHtml(new Date(order.payment_mode === "cod" ? order.user_settlement_paid_at : order.rider_settlement_paid_at).toLocaleString())}</span>` : ""}</td>
-          <td>
-            ${order.payment_mode === "cod" && order.user_settlement_qr_url && order.settlement_status !== "paid_to_user" ? `<button onclick="confirmUserSettlement('${order.id}')">确认已转账货费</button>` : ""}
-            ${order.payment_mode !== "cod" && order.rider_settlement_qr_url && order.settlement_status !== "paid_to_rider" ? `<button onclick="confirmRiderSettlement('${order.id}')">确认已转账给骑手</button>` : ""}
+            ${order.payment_mode === "cod" && order.user_settlement_qr_url && !["paid_to_user","completed"].includes(order.settlement_status) ? `<button onclick="confirmUserSettlement('${order.id}')">确认已转账货费</button>` : ""}
+            ${order.rider_settlement_qr_url && !["paid_to_rider","completed"].includes(order.settlement_status) ? `<button onclick="confirmRiderSettlement('${order.id}')">确认已转账送货费</button>` : ""}
           </td>
         </tr>`).join("");
       document.getElementById("chat").innerHTML = state.messages.map(message => `
@@ -1126,6 +1123,39 @@ ADMIN_HTML = r'''
         <button onclick="saveOrder('${order.id}')">保存订单状态</button>
       `;
     }
+
+    function settlementPaidTimes(order) {
+      const rows = [];
+      if (order.user_settlement_paid_at) {
+        rows.push(`货费：${new Date(order.user_settlement_paid_at).toLocaleString()}`);
+      }
+      if (order.rider_settlement_paid_at) {
+        rows.push(`送货费：${new Date(order.rider_settlement_paid_at).toLocaleString()}`);
+      }
+      return rows.length ? `<br><span class="muted">${escapeHtml(rows.join(" / "))}</span>` : "";
+    }
+
+    function settlementInfo(order) {
+      if (order.payment_mode === "cod") {
+        return [
+          `货费收款：${escapeHtml(order.user_settlement_name || "未提交")}${order.user_settlement_requested_at ? `<br><span class="muted">提醒：${escapeHtml(new Date(order.user_settlement_requested_at).toLocaleString())}</span>` : ""}`,
+          `送货费收款：${escapeHtml(order.rider_settlement_name || "未提交")}${order.rider_settlement_requested_at ? `<br><span class="muted">提醒：${escapeHtml(new Date(order.rider_settlement_requested_at).toLocaleString())}</span>` : ""}`
+        ].join("<br>");
+      }
+      return `骑手收款：${escapeHtml(order.rider_settlement_name || "未提交")}${order.rider_settlement_requested_at ? `<br><span class="muted">提醒：${escapeHtml(new Date(order.rider_settlement_requested_at).toLocaleString())}</span>` : ""}`;
+    }
+
+    function settlementQRCodes(order) {
+      const images = [];
+      if (order.payment_mode === "cod" && order.user_settlement_qr_url) {
+        images.push(`<div><span class="muted">货费</span><br><img class="thumb" src="${escapeHtml(order.user_settlement_qr_url)}" alt="用户收款二维码"></div>`);
+      }
+      if (order.rider_settlement_qr_url) {
+        images.push(`<div><span class="muted">送货费</span><br><img class="thumb" src="${escapeHtml(order.rider_settlement_qr_url)}" alt="骑手收款二维码"></div>`);
+      }
+      return images.length ? images.join("") : `<span class="muted">未提交</span>`;
+    }
+
 
     async function confirmUserPayment(id) {
       const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
@@ -1202,10 +1232,12 @@ ADMIN_HTML = r'''
     }
 
     async function confirmRiderSettlement(id) {
+      const order = state.orders.find(item => item.id === id);
+      const status = order?.payment_mode === "cod" && order?.settlement_status === "paid_to_user" ? "completed" : "paid_to_rider";
       const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settlement_status: "paid_to_rider" })
+        body: JSON.stringify({ settlement_status: status })
       });
       if (!response.ok) {
         alert(await response.text());
@@ -1215,10 +1247,12 @@ ADMIN_HTML = r'''
     }
 
     async function confirmUserSettlement(id) {
+      const order = state.orders.find(item => item.id === id);
+      const status = order?.settlement_status === "paid_to_rider" ? "completed" : "paid_to_user";
       const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settlement_status: "paid_to_user" })
+        body: JSON.stringify({ settlement_status: status })
       });
       if (!response.ok) {
         alert(await response.text());
@@ -1388,9 +1422,9 @@ def admin_update_order(
         }.items()
         if value is not None
     }
-    if request.settlement_status == "paid_to_rider":
+    if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_paid_at:
         updates["rider_settlement_paid_at"] = datetime.now(timezone.utc)
-    if request.settlement_status == "paid_to_user":
+    if request.settlement_status in ("paid_to_user", "completed") and not order.user_settlement_paid_at:
         updates["user_settlement_paid_at"] = datetime.now(timezone.utc)
     updated = order.model_copy(update=updates)
     save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
@@ -1703,7 +1737,7 @@ def request_user_settlement(
             raise HTTPException(status_code=400, detail="只有货到付款订单需要提醒平台转货费")
         if order.status != "completed":
             raise HTTPException(status_code=400, detail="骑手完成送货后才能提醒平台转货费")
-        if order.settlement_status == "paid_to_user":
+        if order.settlement_status in ("paid_to_user", "completed"):
             return order_for_response(order)
 
         name = request.name.strip()
@@ -1718,7 +1752,7 @@ def request_user_settlement(
                 "user_settlement_name": name,
                 "user_settlement_qr_url": qr_url,
                 "user_settlement_requested_at": datetime.now(timezone.utc),
-                "settlement_status": "pending",
+                "settlement_status": "paid_to_rider" if order.settlement_status == "paid_to_rider" else "pending",
             }
         )
         save_order(updated, user_phone=stored_user_phone, rider_phone=rider_phone)
@@ -1813,7 +1847,7 @@ def request_rider_settlement(
             raise HTTPException(status_code=403, detail="不能提交其他骑手的收款信息")
         if order.status != "completed":
             raise HTTPException(status_code=400, detail="完成送货后才能提醒平台结算")
-        if order.settlement_status == "paid_to_rider":
+        if order.settlement_status in ("paid_to_rider", "completed"):
             return order_for_response(order)
 
         name = request.name.strip()
@@ -1828,7 +1862,7 @@ def request_rider_settlement(
                 "rider_settlement_name": name,
                 "rider_settlement_qr_url": qr_url,
                 "rider_settlement_requested_at": datetime.now(timezone.utc),
-                "settlement_status": "pending",
+                "settlement_status": "paid_to_user" if order.settlement_status == "paid_to_user" else "pending",
             }
         )
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
