@@ -3,7 +3,6 @@ import json
 import math
 import logging
 import os
-import random
 import re
 import secrets
 import sqlite3
@@ -25,7 +24,8 @@ try:
 except ImportError:
     storage = None
     service_account = None
-    
+
+
 app = FastAPI(title="Courier API", version="1.0.0")
 logger = logging.getLogger("courier-api")
 
@@ -52,6 +52,7 @@ PaymentMode = Literal["cod", "prepaid"]
 PaymentStatus = Literal["not_required", "unpaid", "pending", "confirmed", "rejected"]
 SettlementStatus = Literal["pending", "paid_to_user", "paid_to_rider", "completed"]
 
+
 class HealthResponse(BaseModel):
     status: str
     service: str
@@ -64,6 +65,7 @@ class UserProfile(BaseModel):
     nickname: str | None = None
     avatar_url: str | None = None
 
+
 class LoginRequest(BaseModel):
     phone: str = Field(min_length=6)
     code: str = Field(min_length=4)
@@ -73,9 +75,11 @@ class LoginResponse(BaseModel):
     token: str
     user: UserProfile
 
+
 class UpdateProfileRequest(BaseModel):
     nickname: str | None = None
     avatar_url: str | None = None
+
 
 class SendSMSCodeRequest(BaseModel):
     phone: str = Field(min_length=6)
@@ -84,6 +88,7 @@ class SendSMSCodeRequest(BaseModel):
 class SendSMSCodeResponse(BaseModel):
     phone: str
     expires_at: datetime
+
 
 class CreateOrderRequest(BaseModel):
     pickup_address: str
@@ -102,10 +107,12 @@ class CreateOrderRequest(BaseModel):
     dropoff_lat: float | None = None
     dropoff_lng: float | None = None
 
+
 class CreatePrepaidPaymentRequest(BaseModel):
     amount: float = Field(gt=0)
     distance_km: float = Field(gt=0)
     payment_proof_url: str
+
 
 class PrepaidPaymentResponse(BaseModel):
     id: str
@@ -116,6 +123,7 @@ class PrepaidPaymentResponse(BaseModel):
     created_at: datetime
     confirmed_at: datetime | None = None
     payment_proof_url: str | None = None
+
 
 class OrderResponse(BaseModel):
     id: str
@@ -142,6 +150,9 @@ class OrderResponse(BaseModel):
     pickup_lng: float | None = None
     dropoff_lat: float | None = None
     dropoff_lng: float | None = None
+    rider_lat: float | None = None
+    rider_lng: float | None = None
+    rider_location_updated_at: datetime | None = None
 
 
 class SignedUploadRequest(BaseModel):
@@ -149,9 +160,11 @@ class SignedUploadRequest(BaseModel):
     content_type: str
     folder: str = "uploads"
 
+
 class SignedUploadResponse(BaseModel):
     upload_url: str
     public_url: str
+
 
 class DistanceEstimateRequest(BaseModel):
     pickup_location: str
@@ -166,6 +179,7 @@ class DistanceEstimateResponse(BaseModel):
     dropoff_lat: float
     dropoff_lng: float
 
+
 class AcceptOrderRequest(BaseModel):
     rider_name: str
 
@@ -173,10 +187,12 @@ class AcceptOrderRequest(BaseModel):
 class UpdateOrderStatusRequest(BaseModel):
     status: OrderStatus
 
+
 class UpdateRiderLocationRequest(BaseModel):
     lat: float
     lng: float
-    
+
+
 class CreateChatMessageRequest(BaseModel):
     text: str = Field(default="", max_length=1000)
     sender_type: ChatSenderType
@@ -184,6 +200,7 @@ class CreateChatMessageRequest(BaseModel):
     sender_phone: str | None = None
     conversation_id: str = "main"
     image_url: str | None = None
+
 
 class ChatMessageResponse(BaseModel):
     id: str
@@ -195,16 +212,21 @@ class ChatMessageResponse(BaseModel):
     image_url: str | None = None
     created_at: datetime
 
+
 class AdminUpdateOrderRequest(BaseModel):
     status: OrderStatus | None = None
     user_payment_status: PaymentStatus | None = None
     rider_deposit_status: PaymentStatus | None = None
     settlement_status: SettlementStatus | None = None
 
+
 class AdminUpdatePrepaidPaymentRequest(BaseModel):
     status: PaymentStatus | None = None
 
+
 sms_codes: dict[str, tuple[str, datetime]] = {}
+
+
 def resolve_db_path() -> Path:
     configured = (os.getenv("COURIER_DB_PATH") or os.getenv("CHAT_DB_PATH") or "").strip()
     if configured:
@@ -216,13 +238,16 @@ def resolve_db_path() -> Path:
 
     return Path("courier_data.sqlite3")
 
+
 db_path = resolve_db_path()
+
 
 def connect_db() -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     return connection
+
 
 def table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
     rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
@@ -237,7 +262,6 @@ def add_column_if_missing(
 ) -> None:
     if column_name not in table_columns(connection, table_name):
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
-
 
 
 def init_storage() -> None:
@@ -260,7 +284,6 @@ def init_storage() -> None:
             "CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_created "
             "ON chat_messages (conversation_id, created_at)"
         )
-
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS orders (
@@ -330,7 +353,9 @@ def init_storage() -> None:
         add_column_if_missing(connection, "prepaid_payments", "created_at", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "prepaid_payments", "payload", "TEXT NOT NULL DEFAULT '{}'")
 
+
 init_storage()
+
 
 def normalize_myanmar_phone(phone: str) -> str:
     cleaned = re.sub(r"[^\d+]", "", phone.strip())
@@ -394,7 +419,6 @@ async def send_sms_code(phone: str, code: str) -> None:
             )
         except ValueError:
             logger.warning("Twilio SMS accepted: status=%s to=%s", response.status_code, phone)
-       
         return
 
     gateway_url = os.getenv("SMS_GATEWAY_URL")
@@ -425,11 +449,13 @@ async def send_sms_code(phone: str, code: str) -> None:
 def estimate_price(distance_km: float, weight_kg: float) -> float:
     return round(distance_km * 1000, 2)
 
+
 def clean_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
 
 def phone_from_authorization(authorization: str | None) -> str | None:
     if not authorization:
@@ -467,6 +493,7 @@ def account_conversation_id(conversation_id: str, authorization: str | None, fal
         pass
     return f"account:{phone}"
 
+
 def upload_folder(value: str) -> str:
     normalized = value.strip().lower().replace("_", " ")
     folders = {
@@ -487,8 +514,10 @@ def safe_upload_name(file_name: str) -> str:
         raise HTTPException(status_code=400, detail="文件名不正确")
     return cleaned
 
+
 def gcs_bucket_name() -> str:
     return os.getenv("GCS_BUCKET") or os.getenv("GCS_BUCKET_NAME", "courierblink")
+
 
 def gcs_credentials_info() -> dict | None:
     credentials_json = clean_optional_text(os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
@@ -533,6 +562,7 @@ def gcs_client():
 
     return storage.Client()
 
+
 def gcs_object_name_from_url(value: str | None) -> str | None:
     if not value:
         return None
@@ -576,8 +606,10 @@ def order_for_response(order: OrderResponse) -> OrderResponse:
         }
     )
 
+
 def order_from_row(row: sqlite3.Row) -> OrderResponse:
     return OrderResponse.model_validate(json.loads(row["payload"]))
+
 
 def prepaid_payment_from_row(row: sqlite3.Row) -> PrepaidPaymentResponse:
     return PrepaidPaymentResponse.model_validate(json.loads(row["payload"]))
@@ -633,7 +665,8 @@ def load_admin_prepaid_payments() -> list[dict]:
         data["payment_proof_url"] = signed_gcs_read_url(payment.payment_proof_url)
         result.append(data)
     return result
-    
+
+
 def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = None) -> None:
     with connect_db() as connection:
         existing = connection.execute(
@@ -697,6 +730,7 @@ def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
         or order.user_payment_status == "confirmed"
     ]
 
+
 def load_order_record(order_id: str) -> tuple[OrderResponse, str, str | None] | None:
     with connect_db() as connection:
         row = connection.execute(
@@ -717,6 +751,7 @@ def user_profile_from_account(phone: str, nickname: str | None, avatar_url: str 
         nickname=nickname,
         avatar_url=signed_gcs_read_url(avatar_url),
     )
+
 
 def load_account_profile(phone: str) -> UserProfile | None:
     with connect_db() as connection:
@@ -748,6 +783,357 @@ def save_account(phone: str, nickname: str | None = None, avatar_url: str | None
             (phone, nickname, avatar_url, datetime.now(timezone.utc).isoformat()),
         )
     return load_account_profile(phone) or user_profile_from_account(phone, nickname, avatar_url)
+
+
+def require_admin_key(key: str | None) -> None:
+    expected = clean_optional_text(os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_KEY"))
+    if not expected:
+        raise HTTPException(status_code=500, detail="ADMIN_PASSWORD 未配置")
+    if not key or not secrets.compare_digest(key, expected):
+        raise HTTPException(status_code=401, detail="后台密码不正确")
+
+
+def load_admin_orders() -> list[dict]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT user_phone, rider_phone, payload
+            FROM orders
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+
+    result: list[dict] = []
+    for row in rows:
+        order = order_for_response(order_from_row(row)).model_dump(mode="json")
+        order["user_phone"] = row["user_phone"]
+        order["rider_phone"] = row["rider_phone"]
+        result.append(order)
+    return result
+
+
+def load_admin_accounts() -> list[dict]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT phone, nickname, avatar_url, last_login_at
+            FROM accounts
+            ORDER BY last_login_at DESC
+            """
+        ).fetchall()
+    result: list[dict] = []
+    for row in rows:
+        account = dict(row)
+        account["avatar_url"] = signed_gcs_read_url(account.get("avatar_url"))
+        result.append(account)
+    return result
+
+
+def load_admin_chat_messages(limit: int = 200) -> list[dict]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
+            FROM chat_messages
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+ADMIN_HTML = r'''
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>快送后台</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f4f6f8; color: #111827; }
+    header { position: sticky; top: 0; z-index: 2; display: flex; gap: 12px; align-items: center; padding: 14px 18px; background: #fff; border-bottom: 1px solid #e5e7eb; }
+    h1 { margin: 0; font-size: 20px; }
+    main { padding: 18px; display: grid; gap: 16px; }
+    .toolbar { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+    input, select, button { font: inherit; border: 1px solid #d1d5db; border-radius: 8px; padding: 9px 10px; background: #fff; }
+    button { cursor: pointer; background: #16a34a; color: white; border-color: #16a34a; font-weight: 700; }
+    button.secondary { background: #fff; color: #111827; border-color: #d1d5db; }
+    button.tab { background: #fff; color: #374151; border-color: #d1d5db; }
+    button.tab.active { background: #111827; color: #fff; border-color: #111827; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .stat, section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; }
+    .page { display: none; }
+    .page.active { display: block; }
+    .page.grid.active { display: grid; }
+    .stat strong { display: block; font-size: 26px; margin-top: 6px; }
+    section h2 { margin: 0 0 12px; font-size: 17px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
+    th { color: #6b7280; font-weight: 700; }
+    tr:hover { background: #f9fafb; }
+    .grid { display: grid; grid-template-columns: 1.4fr .9fr; gap: 16px; align-items: start; }
+    .pill { display: inline-flex; border-radius: 999px; padding: 3px 8px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 700; }
+    .muted { color: #6b7280; }
+    .detail { display: grid; gap: 10px; }
+    .detail img { max-width: 100%; max-height: 260px; object-fit: contain; border-radius: 8px; background: #f3f4f6; }
+    .row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .chat { max-height: 360px; overflow: auto; }
+    .chat img { max-width: 180px; max-height: 180px; object-fit: contain; border-radius: 8px; background: #f3f4f6; margin-top: 8px; }
+    .empty { padding: 28px; text-align: center; color: #6b7280; background: #f9fafb; border-radius: 8px; }
+    @media (max-width: 900px) { .stats, .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>快送后台</h1>
+    <div class="toolbar">
+      <input id="key" type="password" placeholder="后台密码" />
+      <input id="q" placeholder="搜索订单/手机号/地址" />
+      <button onclick="loadData()">刷新</button>
+      <button id="tab-payments" class="tab active" onclick="showPage('payments')">付款确认</button>
+      <button id="tab-orders" class="tab" onclick="showPage('orders')">订单</button>
+      <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
+      <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
+      <button id="tab-service" class="tab" onclick="showPage('service')">客服</button>
+    </div>
+  </header>
+  <main>
+    <div class="stats">
+      <div class="stat">订单总数<strong id="totalOrders">0</strong></div>
+      <div class="stat">待接单<strong id="matchingOrders">0</strong></div>
+      <div class="stat">配送中<strong id="runningOrders">0</strong></div>
+      <div class="stat">待确认付款<strong id="pendingPayments">0</strong></div>
+    </div>
+    <section id="page-payments" class="page active">
+      <h2>付款确认</h2>
+      <table>
+        <thead><tr><th>付款编号</th><th>用户</th><th>金额</th><th>截图</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
+        <tbody id="payments"></tbody>
+      </table>
+    </section>
+    <div id="page-orders" class="page grid">
+      <section>
+        <h2>订单</h2>
+        <table>
+          <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>地址</th></tr></thead>
+          <tbody id="orders"></tbody>
+        </table>
+      </section>
+      <section>
+        <h2>订单详情</h2>
+        <div id="detail" class="detail muted">点击左侧订单查看详情</div>
+      </section>
+    </div>
+    <section id="page-accounts" class="page">
+      <h2>账号资料</h2>
+      <table><thead><tr><th>头像</th><th>手机号</th><th>昵称</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
+    </section>
+    <section id="page-settlements" class="page">
+      <h2>结算</h2>
+      <table>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>付款</th><th>金额</th><th>押金/收款</th><th>结算状态</th><th>操作</th></tr></thead>
+        <tbody id="settlements"></tbody>
+      </table>
+    </section>
+    <section id="page-service" class="page">
+      <h2>客服</h2>
+      <div id="chat" class="chat"></div>
+    </section>
+  </main>
+  <script>
+    let state = { orders: [], accounts: [], messages: [], payments: [] };
+    let currentPage = "payments";
+    const pages = ["payments","orders","accounts","settlements","service"];
+    const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
+    const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
+    const settlementOptions = ["pending","paid_to_user","paid_to_rider","completed"];
+    const labels = {
+      matching: "待接单", accepted: "已接单", picking_up: "取件中", delivering: "配送中", completed: "已完成", cancelled: "已取消",
+      cod: "货到付款", prepaid: "货费已付款",
+      not_required: "无需", unpaid: "未付", pending: "待确认", confirmed: "已确认", rejected: "已拒绝",
+      paid_to_user: "已付用户", paid_to_rider: "已付骑手"
+    };
+
+    function keyParam() { return encodeURIComponent(document.getElementById("key").value); }
+    function label(value) { return labels[value] || value || ""; }
+    function riderDepositLabel(value) {
+      if (value === "pending") return "骑手已转，待确认";
+      if (value === "confirmed") return "平台已确认";
+      if (value === "unpaid") return "骑手未转";
+      if (value === "rejected") return "已拒绝";
+      return label(value);
+    }
+    function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[s]));
+    }
+    function optionHtml(options, current) {
+      return options.map(v => `<option value="${v}" ${v === current ? "selected" : ""}>${label(v)}</option>`).join("");
+    }
+    function showPage(page) {
+      currentPage = page;
+      pages.forEach(name => {
+        document.getElementById(`page-${name}`)?.classList.toggle("active", name === page);
+        document.getElementById(`tab-${name}`)?.classList.toggle("active", name === page);
+      });
+    }
+
+    async function loadData() {
+      const response = await fetch(`/admin/data?key=${keyParam()}`);
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      state = await response.json();
+      render();
+      showPage(currentPage);
+    }
+
+    function render() {
+      const q = document.getElementById("q").value.toLowerCase();
+      const orders = state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q));
+      document.getElementById("totalOrders").textContent = state.orders.length;
+      document.getElementById("matchingOrders").textContent = state.orders.filter(o => o.status === "matching").length;
+      document.getElementById("runningOrders").textContent = state.orders.filter(o => ["accepted","picking_up","delivering"].includes(o.status)).length;
+      document.getElementById("pendingPayments").textContent = (state.payments || []).filter(p => p.status === "pending").length;
+      document.getElementById("payments").innerHTML = (state.payments || []).map(payment => `
+        <tr>
+          <td><strong>#${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong></td>
+          <td>${escapeHtml(payment.user_phone)}</td>
+          <td>${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
+          <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : ""}</td>
+          <td><span class="pill">${label(payment.status)}</span></td>
+          <td>${escapeHtml(new Date(payment.created_at).toLocaleString())}</td>
+          <td>${payment.status === "pending" ? `<button onclick="confirmPrepaidPayment('${payment.id}')">确认收到付款</button>` : escapeHtml(payment.confirmed_at ? new Date(payment.confirmed_at).toLocaleString() : "")}</td>
+        </tr>`).join("");
+      document.getElementById("orders").innerHTML = orders.map(order => `
+        <tr onclick="showDetail('${order.id}')">
+          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")}</span></td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}${order.payment_mode === "cod" ? " / 押金：" + riderDepositLabel(order.rider_deposit_status) : " / 用户付款：" + label(order.user_payment_status)}</span></td>
+          <td>${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
+        </tr>`).join("");
+      document.getElementById("accounts").innerHTML = state.accounts.map(account => `
+        <tr>
+          <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
+          <td>${escapeHtml(account.phone)}</td>
+          <td>${escapeHtml(account.nickname || "")}</td>
+          <td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td>
+        </tr>`).join("");
+      document.getElementById("settlements").innerHTML = orders.map(order => `
+        <tr>
+          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
+          <td><span class="pill">${label(order.payment_mode)}</span><br><span class="muted">用户付款：${label(order.user_payment_status)}</span></td>
+          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${order.payment_mode === "cod" ? `骑手押金：${riderDepositLabel(order.rider_deposit_status)}` : "骑手押金：无需"}</td>
+          <td><select id="settlement-${order.id}">${optionHtml(settlementOptions, order.settlement_status)}</select></td>
+          <td><button onclick="saveSettlement('${order.id}')">保存结算</button></td>
+        </tr>`).join("");
+      document.getElementById("chat").innerHTML = state.messages.map(message => `
+        <p><strong>${escapeHtml(message.sender_name)}</strong> <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(message.conversation_id || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>${escapeHtml(message.text)}${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}</p>`).join("");
+      if (!state.messages.length) {
+        document.getElementById("chat").innerHTML = `<div class="empty">暂无客服消息</div>`;
+      }
+    }
+
+    function showDetail(id) {
+      const order = state.orders.find(item => item.id === id);
+      if (!order) return;
+      document.getElementById("detail").innerHTML = `
+        ${order.goods_image_url ? `<img src="${order.goods_image_url}" alt="商品图">` : `<div class="muted">暂无商品图</div>`}
+        <div class="row"><b>订单号</b><span>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</span></div>
+        <div class="row"><b>用户</b><span>${escapeHtml(order.user_phone)}</span></div>
+        <div class="row"><b>骑手</b><span>${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></div>
+        <div class="row"><b>付款方式</b><span>${escapeHtml(label(order.payment_mode))}</span></div>
+        <div class="row"><b>用户付款</b><span>${escapeHtml(label(order.user_payment_status))}</span></div>
+        <div class="row"><b>骑手押金</b><span>${escapeHtml(riderDepositLabel(order.rider_deposit_status))}</span></div>
+        ${order.payment_proof_url ? `<div class="row"><b>KPay 截图</b><span><img src="${order.payment_proof_url}" alt="KPay 转账截图"></span></div>` : ""}
+        <div class="row"><b>取件</b><span>${escapeHtml(order.pickup_address)}</span></div>
+        <div class="row"><b>收货</b><span>${escapeHtml(order.dropoff_address)}</span></div>
+        <div class="row"><b>备注</b><span>${escapeHtml(order.note || "")}</span></div>
+        <div class="actions">
+          <select id="status">${optionHtml(statusOptions, order.status)}</select>
+          <select id="userPayment">${optionHtml(paymentOptions, order.user_payment_status)}</select>
+          <select id="riderDeposit">${optionHtml(paymentOptions, order.rider_deposit_status)}</select>
+          <select id="settlement">${optionHtml(settlementOptions, order.settlement_status)}</select>
+        </div>
+        ${order.payment_mode === "prepaid" && order.user_payment_status !== "confirmed" ? `<button onclick="confirmUserPayment('${order.id}')">确认收到付款</button>` : ""}
+        <button onclick="saveOrder('${order.id}')">保存订单状态</button>
+      `;
+    }
+
+    async function confirmUserPayment(id) {
+      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_payment_status: "confirmed", rider_deposit_status: "not_required" })
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      await loadData();
+      showDetail(id);
+    }
+
+    async function confirmPrepaidPayment(id) {
+      const response = await fetch(`/admin/payments/${id}?key=${keyParam()}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "confirmed" })
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      await loadData();
+    }
+
+    async function saveOrder(id) {
+      const body = {
+        status: document.getElementById("status").value,
+        user_payment_status: document.getElementById("userPayment").value,
+        rider_deposit_status: document.getElementById("riderDeposit").value,
+        settlement_status: document.getElementById("settlement").value
+      };
+      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      await loadData();
+      showDetail(id);
+    }
+
+    async function saveSettlement(id) {
+      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settlement_status: document.getElementById(`settlement-${id}`).value })
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      await loadData();
+    }
+
+    document.getElementById("q").addEventListener("input", render);
+    showPage(currentPage);
+  </script>
+</body>
+</html>
+'''
+
 
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     patterns = [
@@ -814,6 +1200,7 @@ def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) 
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return radius_km * c
 
+
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
     return ChatMessageResponse(
         id=row["id"],
@@ -826,6 +1213,7 @@ def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
+
 @app.get("/", response_model=HealthResponse)
 def health_check() -> HealthResponse:
     return HealthResponse(
@@ -834,234 +1222,11 @@ def health_check() -> HealthResponse:
         timestamp=datetime.now(timezone.utc),
     )
 
-ADMIN_HTML = r'''
-<!doctype html>
-<html lang="zh-Hans">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>快送后台</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; background: #f6f7fb; color: #111827; }
-    header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
-    input, button { font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid #d1d5db; }
-    button { background: #2563eb; color: white; border-color: #2563eb; cursor: pointer; }
-    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; }
-    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
-    th { color: #6b7280; font-weight: 700; }
-    .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 700; }
-    .muted { color: #6b7280; font-size: 12px; }
-    .confirm { background: #16a34a; border-color: #16a34a; }
-    .danger { color: #dc2626; white-space: pre-wrap; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>快送后台</h1>
-    <input id="key" type="password" placeholder="后台密码">
-    <button onclick="loadData()">刷新</button>
-  </header>
-  <p id="error" class="danger"></p>
-
-  <h2>付款确认</h2>
-  <table style="margin-bottom: 18px;">
-    <thead><tr><th>付款</th><th>用户</th><th>金额</th><th>截图</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
-    <tbody id="payments"></tbody>
-  </table>
-
-   <h2>订单</h2>
-  <table style="margin-bottom: 18px;">
-    <thead>
-      <tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>骑手押金</th><th>操作</th></tr>
-    </thead>
-    <tbody id="orders"></tbody>
-  </table>
-
-  <h2>账号资料</h2>
-  <table style="margin-bottom: 18px;">
-    <thead><tr><th>头像</th><th>手机号</th><th>用户名</th><th>最近登录</th></tr></thead>
-    <tbody id="accounts"></tbody>
-  </table>
-
-  <script>
-  const labels = {
-      matching: "待接单", accepted: "已接单", picking_up: "取件中", delivering: "配送中", completed: "已完成", cancelled: "已取消",
-      cod: "货到付款", prepaid: "货费已付款",
-      not_required: "无需", unpaid: "未转账", pending: "骑手已转，待确认", confirmed: "已确认", rejected: "已拒绝"
-    };
-    let orders = [];
-    let payments = [];
-    let accounts = [];
-    function label(value) { return labels[value] || value || ""; }
-    function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
-    function shortCode(id) { return String(id || "").slice(0, 6).toUpperCase(); }
-    function escapeHtml(value) {
-      return String(value ?? "").replace(/[&<>"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[s]));
-    }
-    async function loadData() {
-      const key = encodeURIComponent(document.getElementById("key").value);
-      const res = await fetch(`/admin/data?key=${key}`);
-      if (!res.ok) {
-        document.getElementById("error").textContent = await res.text();
-        return;
-      }
-      document.getElementById("error").textContent = "";
-      const data = await res.json();
-      orders = data.orders || [];
-      payments = data.payments || [];
-      accounts = data.accounts || [];
-      renderPayments();
-      renderOrders();
-      renderAccounts();
-    }
-    function renderOrders() {
-      document.getElementById("orders").innerHTML = orders.map(order => `
-        <tr>
-          <td><strong>#${shortCode(order.id)}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
-          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
-          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
-          <td>${label(order.rider_deposit_status)}</td>
-          <td>
-              ${order.payment_mode === "cod" && order.rider_deposit_status === "pending" ? `<button class="confirm" onclick="confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
-              ${order.payment_mode === "prepaid" && order.user_payment_status !== "confirmed" ? `<button class="confirm" onclick="confirmUserPayment('${order.id}')">确认收到付款</button>` : ""}
-          </td>
-        </tr>
-      `).join("");
-    }
-    function renderPayments() {
-  document.getElementById("payments").innerHTML = payments.map(payment => `
-    <tr>
-      <td><strong>#${shortCode(payment.id)}</strong></td>
-      <td>${escapeHtml(payment.user_phone)}</td>
-      <td>${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
-      <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : ""}</td>
-      <td><span class="pill">${label(payment.status)}</span></td>
-      <td>${escapeHtml(new Date(payment.created_at).toLocaleString())}</td>
-      <td>
-        ${payment.status === "pending" ? `<button class="confirm" onclick="confirmPrepaidPayment('${payment.id}')">确认收到付款</button>` : ""}
-      </td>
-    </tr>
-  `).join("");
-}
-
-function renderAccounts() {
-  document.getElementById("accounts").innerHTML = accounts.map(account => `
-    <tr>
-      <td>
-        ${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:52px;height:52px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : `<span class="muted">无头像</span>`}
-      </td>
-      <td>${escapeHtml(account.phone)}</td>
-      <td>${escapeHtml(account.nickname || "")}</td>
-      <td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td>
-    </tr>
-  `).join("");
-}
-
-async function confirmPrepaidPayment(id) {
-  const key = encodeURIComponent(document.getElementById("key").value);
-  const res = await fetch(`/admin/payments/${id}?key=${key}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ status: "confirmed" })
-  });
-  if (!res.ok) {
-    document.getElementById("error").textContent = await res.text();
-    return;
-  }
-  await loadData();
-}
-    async function confirmDeposit(id) {
-      const key = encodeURIComponent(document.getElementById("key").value);
-      const res = await fetch(`/admin/orders/${id}?key=${key}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rider_deposit_status: "confirmed" })
-      });
-      if (!res.ok) {
-        document.getElementById("error").textContent = await res.text();
-        return;
-      }
-      await loadData();
-    }
-    async function confirmUserPayment(id) {
-      const key = encodeURIComponent(document.getElementById("key").value);
-      const res = await fetch(`/admin/orders/${id}?key=${key}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_payment_status: "confirmed",
-          rider_deposit_status: "not_required"
-        })
-      });
-      if (!res.ok) {
-        document.getElementById("error").textContent = await res.text();
-        return;
-      }
-      await loadData();
-    }
-  </script>
-</body>
-</html>
-'''
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page() -> HTMLResponse:
     return HTMLResponse(ADMIN_HTML)
 
-def require_admin_key(key: str | None) -> None:
-    expected = (os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_KEY") or "admin123").strip()
-    if not key or not secrets.compare_digest(key, expected):
-        raise HTTPException(status_code=401, detail="后台密码不正确")
-
-
-def load_admin_orders() -> list[dict]:
-    with connect_db() as connection:
-        rows = connection.execute(
-            """
-            SELECT user_phone, rider_phone, payload
-            FROM orders
-            ORDER BY created_at DESC
-            """
-        ).fetchall()
-
-    result = []
-    for row in rows:
-        order = order_for_response(order_from_row(row)).model_dump(mode="json")
-        order["user_phone"] = row["user_phone"]
-        order["rider_phone"] = row["rider_phone"]
-        result.append(order)
-    return result
-
-
-def load_admin_accounts() -> list[dict]:
-    with connect_db() as connection:
-        rows = connection.execute(
-            """
-            SELECT phone, nickname, avatar_url, last_login_at
-            FROM accounts
-            ORDER BY last_login_at DESC
-            """
-        ).fetchall()
-    result: list[dict] = []
-    for row in rows:
-        account = dict(row)
-        account["avatar_url"] = signed_gcs_read_url(account.get("avatar_url"))
-        result.append(account)
-    return result
-
-def load_admin_chat_messages(limit: int = 200) -> list[dict]:
-    with connect_db() as connection:
-        rows = connection.execute(
-            """
-            SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
-            FROM chat_messages
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
 
 @app.get("/admin/data")
 def admin_data(key: str = Query(default="")) -> dict:
@@ -1076,6 +1241,7 @@ def admin_data(key: str = Query(default="")) -> dict:
         "messages": messages_data,
         "payments": payments_data,
     }
+
 
 @app.patch("/admin/payments/{payment_id}", response_model=PrepaidPaymentResponse)
 def admin_update_prepaid_payment(
@@ -1126,6 +1292,7 @@ def admin_update_order(
     save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
     return order_for_response(updated)
 
+
 @app.post("/auth/login", response_model=LoginResponse)
 def login(request: LoginRequest) -> LoginResponse:
     phone = normalize_myanmar_phone(request.phone)
@@ -1145,6 +1312,7 @@ def login(request: LoginRequest) -> LoginResponse:
         token=f"dev-token-{phone}",
         user=profile,
     )
+
 
 @app.get("/account/profile", response_model=UserProfile)
 def get_account_profile(authorization: str | None = Header(default=None)) -> UserProfile:
@@ -1167,6 +1335,7 @@ def update_account_profile(
         raise HTTPException(status_code=400, detail="用户名最多 40 个字符")
     return save_account(phone, nickname=nickname, avatar_url=avatar_url)
 
+
 @app.post("/auth/sms-code", response_model=SendSMSCodeResponse)
 async def send_login_sms_code(request: SendSMSCodeRequest) -> SendSMSCodeResponse:
     phone = normalize_myanmar_phone(request.phone)
@@ -1180,6 +1349,7 @@ async def send_login_sms_code(request: SendSMSCodeRequest) -> SendSMSCodeRespons
         expires_at=expires_at,
     )
 
+
 @app.get("/chat/messages", response_model=list[ChatMessageResponse])
 def list_chat_messages(
     conversation_id: str = "main",
@@ -1189,7 +1359,6 @@ def list_chat_messages(
     if conversation_id == "all":
         phone = require_account_phone(authorization)
         main_conversation_id = account_conversation_id("main", authorization, phone)
-
         with connect_db() as connection:
             order_rows = connection.execute(
                 """
@@ -1199,14 +1368,13 @@ def list_chat_messages(
                 """,
                 (phone, phone),
             ).fetchall()
-
             conversation_ids = [main_conversation_id]
             if main_conversation_id != "main":
                 conversation_ids.append("main")
             for row in order_rows:
-                order_id = str(row["id"])
-                conversation_ids.append(f"order:{order_id.lower()}")
-                conversation_ids.append(f"order:{order_id.upper()}")
+                order_conversation_id = f"order:{row['id']}"
+                conversation_ids.append(order_conversation_id.lower())
+                conversation_ids.append(order_conversation_id.upper())
 
             message_rows = connection.execute(
                 """
@@ -1220,7 +1388,6 @@ def list_chat_messages(
                 conversation_ids.append(row["conversation_id"])
 
             conversation_ids = list(dict.fromkeys(conversation_ids))
-
             placeholders = ",".join("?" for _ in conversation_ids)
             rows = connection.execute(
                 f"""
@@ -1236,7 +1403,6 @@ def list_chat_messages(
         return [chat_message_from_row(row) for row in reversed(rows)]
 
     conversation_id = account_conversation_id(conversation_id, authorization)
-
     with connect_db() as connection:
         rows = connection.execute(
             """
@@ -1299,10 +1465,12 @@ def create_chat_message(
         created_at=created_at,
     )
 
+
 @app.get("/orders", response_model=list[OrderResponse])
 def list_orders(authorization: str | None = Header(default=None)) -> list[OrderResponse]:
     user_phone = require_account_phone(authorization)
     return [order_for_response(order) for order in load_user_orders(user_phone)]
+
 
 @app.post("/payments/prepaid", response_model=PrepaidPaymentResponse)
 def create_prepaid_payment(
@@ -1313,6 +1481,7 @@ def create_prepaid_payment(
     payment_proof_url = clean_optional_text(request.payment_proof_url)
     if not payment_proof_url:
         raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
+
     payment = PrepaidPaymentResponse(
         id=str(uuid4()),
         user_phone=user_phone,
@@ -1339,6 +1508,7 @@ def get_prepaid_payment(
         raise HTTPException(status_code=403, detail="不能查看其他账号的付款记录")
     return payment
 
+
 @app.post("/orders", response_model=OrderResponse)
 def create_order(
     request: CreateOrderRequest,
@@ -1358,26 +1528,20 @@ def create_order(
 
     user_payment_status: PaymentStatus = "not_required"
     rider_deposit_status: PaymentStatus = "not_required"
-
     if request.payment_mode == "cod":
         rider_deposit_status = "unpaid"
     else:
         if not kpay_transaction_id:
             raise HTTPException(status_code=400, detail="请先付款，并等待后台确认收到付款")
-
         prepaid_payment = load_prepaid_payment(kpay_transaction_id)
         if not prepaid_payment:
             raise HTTPException(status_code=400, detail="付款记录不存在，请重新付款")
-
         if prepaid_payment.user_phone != user_phone:
             raise HTTPException(status_code=403, detail="不能使用其他账号的付款记录")
-
         if prepaid_payment.status != "confirmed":
             raise HTTPException(status_code=400, detail="后台确认收到付款后才能下单")
-
         if abs(prepaid_payment.amount - delivery_fee) > 1:
             raise HTTPException(status_code=400, detail="付款金额和当前配送费不一致，请重新计算后付款")
-            
         payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
         user_payment_status = "confirmed"
 
@@ -1409,6 +1573,7 @@ def create_order(
     save_order(order, user_phone=user_phone)
     return order_for_response(order)
 
+
 @app.get("/orders/{order_id}", response_model=OrderResponse)
 def get_order(
     order_id: str,
@@ -1423,22 +1588,6 @@ def get_order(
         return order_for_response(order)
     raise HTTPException(status_code=404, detail="订单不存在")
 
-
-@app.post("/orders/{order_id}/cancel", response_model=OrderResponse)
-def cancel_order(
-    order_id: str,
-    authorization: str | None = Header(default=None),
-) -> OrderResponse:
-    user_phone = require_account_phone(authorization)
-    record = load_order_record(order_id)
-    if record:
-        order, stored_user_phone, rider_phone = record
-        if stored_user_phone != user_phone:
-            raise HTTPException(status_code=403, detail="不能取消其他账号的订单")
-        updated = order.model_copy(update={"status": "cancelled"})
-        save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
-        return order_for_response(updated)
-    raise HTTPException(status_code=404, detail="订单不存在")
 
 @app.get("/rider/orders", response_model=list[OrderResponse])
 def list_rider_orders(authorization: str | None = Header(default=None)) -> list[OrderResponse]:
@@ -1465,6 +1614,7 @@ def accept_order(
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
+
 @app.post("/rider/orders/{order_id}/deposit", response_model=OrderResponse)
 def mark_rider_deposit_transferred(
     order_id: str,
@@ -1484,6 +1634,7 @@ def mark_rider_deposit_transferred(
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
+
 
 @app.post("/rider/orders/{order_id}/status", response_model=OrderResponse)
 def update_rider_order_status(
@@ -1512,6 +1663,7 @@ def update_rider_order_status(
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
+
 @app.post("/rider/orders/{order_id}/location", response_model=OrderResponse)
 def update_rider_location(
     order_id: str,
@@ -1533,6 +1685,23 @@ def update_rider_location(
                 "rider_location_updated_at": datetime.now(timezone.utc),
             }
         )
+        save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
+        return order_for_response(updated)
+    raise HTTPException(status_code=404, detail="订单不存在")
+
+
+@app.post("/orders/{order_id}/cancel", response_model=OrderResponse)
+def cancel_order(
+    order_id: str,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    user_phone = require_account_phone(authorization)
+    record = load_order_record(order_id)
+    if record:
+        order, stored_user_phone, rider_phone = record
+        if stored_user_phone != user_phone:
+            raise HTTPException(status_code=403, detail="不能取消其他账号的订单")
+        updated = order.model_copy(update={"status": "cancelled"})
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
