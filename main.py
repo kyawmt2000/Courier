@@ -158,6 +158,10 @@ class OrderResponse(BaseModel):
     rider_settlement_qr_url: str | None = None
     rider_settlement_requested_at: datetime | None = None
     rider_settlement_paid_at: datetime | None = None
+    user_settlement_name: str | None = None
+    user_settlement_qr_url: str | None = None
+    user_settlement_requested_at: datetime | None = None
+    user_settlement_paid_at: datetime | None = None
 
 class SignedUploadRequest(BaseModel):
     file_name: str
@@ -197,6 +201,10 @@ class UpdateRiderLocationRequest(BaseModel):
     lng: float
 
 class RiderSettlementRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    qr_url: str
+
+class UserSettlementRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     qr_url: str
 
@@ -510,6 +518,7 @@ def upload_folder(value: str) -> str:
         "nrc": "NRC",
         "profile picture": "profile picture",
         "rider settlement": "rider settlement",
+        "user settlement": "user settlement",
     }
     if normalized not in folders:
         raise HTTPException(status_code=400, detail="不支持的上传文件夹")
@@ -612,6 +621,7 @@ def order_for_response(order: OrderResponse) -> OrderResponse:
             "goods_image_url": signed_gcs_read_url(order.goods_image_url),
             "payment_proof_url": signed_gcs_read_url(order.payment_proof_url),
             "rider_settlement_qr_url": signed_gcs_read_url(order.rider_settlement_qr_url),
+            "user_settlement_qr_url": signed_gcs_read_url(order.user_settlement_qr_url),
         }
     )
 
@@ -950,7 +960,7 @@ ADMIN_HTML = r'''
     <section id="page-settlements" class="page">
       <h2>结算</h2>
       <table>
-        <thead><tr><th>订单</th><th>用户/骑手</th><th>金额</th><th>骑手收款资料</th><th>二维码</th><th>结算状态</th><th>操作</th></tr></thead>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>金额</th><th>收款资料</th><th>二维码</th><th>结算状态</th><th>操作</th></tr></thead>
         <tbody id="settlements"></tbody>
       </table>
     </section>
@@ -1074,13 +1084,14 @@ ADMIN_HTML = r'''
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
           <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>
-            ${escapeHtml(order.rider_settlement_name || "未提交")}
-            ${order.rider_settlement_requested_at ? `<br><span class="muted">提醒时间：${escapeHtml(new Date(order.rider_settlement_requested_at).toLocaleString())}</span>` : ""}
+            ${order.payment_mode === "cod" ? "货费收款：" : "骑手收款："}${escapeHtml((order.payment_mode === "cod" ? order.user_settlement_name : order.rider_settlement_name) || "未提交")}
+            ${(order.payment_mode === "cod" ? order.user_settlement_requested_at : order.rider_settlement_requested_at) ? `<br><span class="muted">提醒时间：${escapeHtml(new Date(order.payment_mode === "cod" ? order.user_settlement_requested_at : order.rider_settlement_requested_at).toLocaleString())}</span>` : ""}
           </td>
-          <td>${order.rider_settlement_qr_url ? `<img class="thumb" src="${escapeHtml(order.rider_settlement_qr_url)}" alt="骑手收款二维码">` : `<span class="muted">未提交</span>`}</td>
-          <td><span class="pill">${label(order.settlement_status)}</span>${order.rider_settlement_paid_at ? `<br><span class="muted">${escapeHtml(new Date(order.rider_settlement_paid_at).toLocaleString())}</span>` : ""}</td>
+          <td>${(order.payment_mode === "cod" ? order.user_settlement_qr_url : order.rider_settlement_qr_url) ? `<img class="thumb" src="${escapeHtml(order.payment_mode === "cod" ? order.user_settlement_qr_url : order.rider_settlement_qr_url)}" alt="收款二维码">` : `<span class="muted">未提交</span>`}</td>
+          <td><span class="pill">${label(order.settlement_status)}</span>${(order.payment_mode === "cod" ? order.user_settlement_paid_at : order.rider_settlement_paid_at) ? `<br><span class="muted">${escapeHtml(new Date(order.payment_mode === "cod" ? order.user_settlement_paid_at : order.rider_settlement_paid_at).toLocaleString())}</span>` : ""}</td>
           <td>
-            ${order.rider_settlement_qr_url && order.settlement_status !== "paid_to_rider" ? `<button onclick="confirmRiderSettlement('${order.id}')">确认已转账给骑手</button>` : ""}
+            ${order.payment_mode === "cod" && order.user_settlement_qr_url && order.settlement_status !== "paid_to_user" ? `<button onclick="confirmUserSettlement('${order.id}')">确认已转账货费</button>` : ""}
+            ${order.payment_mode !== "cod" && order.rider_settlement_qr_url && order.settlement_status !== "paid_to_rider" ? `<button onclick="confirmRiderSettlement('${order.id}')">确认已转账给骑手</button>` : ""}
           </td>
         </tr>`).join("");
       document.getElementById("chat").innerHTML = state.messages.map(message => `
@@ -1196,6 +1207,19 @@ ADMIN_HTML = r'''
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ settlement_status: "paid_to_rider" })
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      await loadData();
+    }
+
+    async function confirmUserSettlement(id) {
+      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settlement_status: "paid_to_user" })
       });
       if (!response.ok) {
         alert(await response.text());
@@ -1367,6 +1391,8 @@ def admin_update_order(
     }
     if request.settlement_status == "paid_to_rider":
         updates["rider_settlement_paid_at"] = datetime.now(timezone.utc)
+    if request.settlement_status == "paid_to_user":
+        updates["user_settlement_paid_at"] = datetime.now(timezone.utc)
     updated = order.model_copy(update=updates)
     save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
     return order_for_response(updated)
@@ -1667,6 +1693,43 @@ def get_order(
         return order_for_response(order)
     raise HTTPException(status_code=404, detail="订单不存在")
 
+@app.post("/orders/{order_id}/settlement", response_model=OrderResponse)
+def request_user_settlement(
+    order_id: str,
+    request: UserSettlementRequest,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    user_phone = require_account_phone(authorization)
+    record = load_order_record(order_id)
+    if record:
+        order, stored_user_phone, rider_phone = record
+        if stored_user_phone != user_phone:
+            raise HTTPException(status_code=403, detail="不能提交其他账号的收款信息")
+        if order.payment_mode != "cod":
+            raise HTTPException(status_code=400, detail="只有货到付款订单需要提醒平台转货费")
+        if order.status != "completed":
+            raise HTTPException(status_code=400, detail="骑手完成送货后才能提醒平台转货费")
+        if order.settlement_status == "paid_to_user":
+            return order_for_response(order)
+
+        name = request.name.strip()
+        qr_url = clean_optional_text(request.qr_url)
+        if not name:
+            raise HTTPException(status_code=400, detail="请填写收款人名字")
+        if not qr_url:
+            raise HTTPException(status_code=400, detail="请上传收款二维码")
+
+        updated = order.model_copy(
+            update={
+                "user_settlement_name": name,
+                "user_settlement_qr_url": qr_url,
+                "user_settlement_requested_at": datetime.now(timezone.utc),
+                "settlement_status": "pending",
+            }
+        )
+        save_order(updated, user_phone=stored_user_phone, rider_phone=rider_phone)
+        return order_for_response(updated)
+    raise HTTPException(status_code=404, detail="订单不存在")
 
 @app.get("/rider/orders", response_model=list[OrderResponse])
 def list_rider_orders(authorization: str | None = Header(default=None)) -> list[OrderResponse]:
