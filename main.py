@@ -163,6 +163,7 @@ class OrderResponse(BaseModel):
     user_settlement_requested_at: datetime | None = None
     user_settlement_paid_at: datetime | None = None
 
+
 class SignedUploadRequest(BaseModel):
     file_name: str
     content_type: str
@@ -200,13 +201,16 @@ class UpdateRiderLocationRequest(BaseModel):
     lat: float
     lng: float
 
+
 class RiderSettlementRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     qr_url: str
 
+
 class UserSettlementRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     qr_url: str
+
 
 class CreateChatMessageRequest(BaseModel):
     text: str = Field(default="", max_length=1000)
@@ -760,6 +764,7 @@ def load_order_record(order_id: str) -> tuple[OrderResponse, str, str | None] | 
         return None
     return order_from_row(row), row["user_phone"], row["rider_phone"]
 
+
 def sync_orders_for_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
     with connect_db() as connection:
         rows = connection.execute(
@@ -775,6 +780,7 @@ def sync_orders_for_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
 
         updated = order.model_copy(update={"user_payment_status": payment.status})
         save_order(updated, user_phone=row["user_phone"], rider_phone=row["rider_phone"])
+
 
 def user_profile_from_account(phone: str, nickname: str | None, avatar_url: str | None) -> UserProfile:
     user_id_digits = re.sub(r"\D", "", phone)
@@ -918,13 +924,14 @@ ADMIN_HTML = r'''
     .chat { max-height: 360px; overflow: auto; }
     .chat img { max-width: 180px; max-height: 180px; object-fit: contain; border-radius: 8px; background: #f3f4f6; margin-top: 8px; }
     .empty { padding: 28px; text-align: center; color: #6b7280; background: #f9fafb; border-radius: 8px; }
+    .hidden { display: none !important; }
     @media (max-width: 900px) { .stats, .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
   </style>
 </head>
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v7</span>
+    <span class="version">orders-ui-v8</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -950,18 +957,17 @@ ADMIN_HTML = r'''
         <tbody id="codOrders"></tbody>
       </table>
     </section>
-    <section id="page-prepaid-confirmation" class="page">
-      <h2>送费付款确认</h2>
+    <section id="page-orders" class="page">
+      <h2>货费已付款订单</h2>
       <table>
-        <thead><tr><th>付款编号</th><th>用户</th><th>金额</th><th>截图</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
-        <tbody id="payments"></tbody>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>送货费付款</th><th>地址</th><th>操作</th></tr></thead>
+        <tbody id="orders"></tbody>
       </table>
     </section>
     <section id="detailSection" class="hidden">
       <h2>订单详情</h2>
       <div id="detail" class="detail muted"></div>
     </section>
-    
     <section id="page-accounts" class="page">
       <h2>账号资料</h2>
       <table><thead><tr><th>头像</th><th>手机号</th><th>昵称</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
@@ -1058,14 +1064,25 @@ ADMIN_HTML = r'''
     function render() {
       const q = document.getElementById("q").value.toLowerCase();
       const orders = state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q));
-      const tables = ensureOrderTables();
-      const codOrdersTable = tables.cod;
-      const prepaidOrdersTable = tables.prepaid;
+      const codOrderRows = orders.filter(order => order.payment_mode === "cod");
+      const prepaidOrderRows = orders.filter(order => order.payment_mode === "prepaid");
       document.getElementById("totalOrders").textContent = state.orders.length;
       document.getElementById("matchingOrders").textContent = state.orders.filter(o => o.status === "matching").length;
       document.getElementById("runningOrders").textContent = state.orders.filter(o => ["accepted","picking_up","delivering"].includes(o.status)).length;
       document.getElementById("pendingPayments").textContent = (state.payments || []).filter(p => p.status === "pending").length;
-      document.getElementById("codOrders").innerHTML = codOrders.map(order => `
+      const tables = ensureOrderTables();
+      const codOrdersTable = tables.cod;
+      const prepaidOrdersTable = tables.prepaid;
+      if (!codOrdersTable || !prepaidOrdersTable) {
+        console.error("后台订单表格节点缺失，请刷新页面。");
+        const activePage = document.querySelector(".page.active");
+        if (activePage) {
+          activePage.insertAdjacentHTML("beforeend", `<div class="empty">后台页面版本不完整，请重新部署最新 main.py 后刷新。</div>`);
+        }
+        return;
+      }
+
+      codOrdersTable.innerHTML = codOrderRows.map(order => `
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
@@ -1077,11 +1094,12 @@ ADMIN_HTML = r'''
           <td>
             ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">确认送货费</button>` : ""}
             ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
-          </td>        </tr>`).join("");
-      if (!codOrders.length) {
-      document.getElementById("codOrders").innerHTML = `<tr><td colspan="8" class="muted">暂无货到付款订单</td></tr>`;
+          </td>
+        </tr>`).join("");
+      if (!codOrderRows.length) {
+        codOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货到付款订单</td></tr>`;
       }
-      document.getElementById("orders").innerHTML = prepaidOrders.map(order => `
+      prepaidOrdersTable.innerHTML = prepaidOrderRows.map(order => `
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")}</span></td>
@@ -1091,8 +1109,8 @@ ADMIN_HTML = r'''
           <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
           <td>${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">确认送货费</button>` : ""}</td>
         </tr>`).join("");
-        if (!prepaidOrders.length) {
-        document.getElementById("orders").innerHTML = `<tr><td colspan="7" class="muted">暂无货费已付款订单</td></tr>`;
+      if (!prepaidOrderRows.length) {
+        prepaidOrdersTable.innerHTML = `<tr><td colspan="7" class="muted">暂无货费已付款订单</td></tr>`;
       }
       document.getElementById("accounts").innerHTML = state.accounts.map(account => `
         <tr>
@@ -1190,13 +1208,13 @@ ADMIN_HTML = r'''
       return images.length ? images.join("") : `<span class="muted">未提交</span>`;
     }
 
-
     async function confirmUserPayment(id) {
       const order = state.orders.find(item => item.id === id);
       if (order?.kpay_transaction_id) {
         await confirmPrepaidPayment(order.kpay_transaction_id, id);
         return;
       }
+
       const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -1239,7 +1257,7 @@ ADMIN_HTML = r'''
       await loadData();
       showDetail(id);
     }
-    
+
     async function saveOrder(id) {
       const body = {
         status: document.getElementById("status").value,
@@ -1408,6 +1426,7 @@ def admin_page() -> HTMLResponse:
             "Pragma": "no-cache",
         },
     )
+
 
 @app.get("/admin/data")
 def admin_data(key: str = Query(default="")) -> dict:
@@ -1711,6 +1730,7 @@ def create_order(
 
     if not goods_image_url:
         raise HTTPException(status_code=400, detail="请上传商品图片")
+
     if not kpay_transaction_id:
         raise HTTPException(status_code=400, detail="请先支付送货费，并等待后台确认收到付款")
     prepaid_payment = load_prepaid_payment(kpay_transaction_id)
@@ -1769,6 +1789,7 @@ def get_order(
         return order_for_response(order)
     raise HTTPException(status_code=404, detail="订单不存在")
 
+
 @app.post("/orders/{order_id}/settlement", response_model=OrderResponse)
 def request_user_settlement(
     order_id: str,
@@ -1806,6 +1827,7 @@ def request_user_settlement(
         save_order(updated, user_phone=stored_user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
+
 
 @app.get("/rider/orders", response_model=list[OrderResponse])
 def list_rider_orders(authorization: str | None = Header(default=None)) -> list[OrderResponse]:
@@ -1881,6 +1903,7 @@ def update_rider_order_status(
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
 
+
 @app.post("/rider/orders/{order_id}/settlement", response_model=OrderResponse)
 def request_rider_settlement(
     order_id: str,
@@ -1916,6 +1939,7 @@ def request_rider_settlement(
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
+
 
 @app.post("/rider/orders/{order_id}/location", response_model=OrderResponse)
 def update_rider_location(
