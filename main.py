@@ -893,8 +893,8 @@ ADMIN_HTML = r'''
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
       <button onclick="loadData()">刷新</button>
-      <button id="tab-payments" class="tab active" onclick="showPage('payments')">付款确认</button>
-      <button id="tab-orders" class="tab" onclick="showPage('orders')">订单</button>
+      <button id="tab-payments" class="tab active" onclick="showPage('payments')">货到付款订单</button>
+      <button id="tab-orders" class="tab" onclick="showPage('orders')">货费已付款订单</button>
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
       <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
       <button id="tab-service" class="tab" onclick="showPage('service')">客服</button>
@@ -908,18 +908,25 @@ ADMIN_HTML = r'''
       <div class="stat">待确认付款<strong id="pendingPayments">0</strong></div>
     </div>
     <section id="page-payments" class="page active">
-      <h2>付款确认</h2>
+      <h2>货到付款订单</h2>
       <table>
-        <thead><tr><th>付款编号</th><th>用户</th><th>金额</th><th>截图</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
-        <tbody id="payments"></tbody>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
+        <tbody id="codOrders"></tbody>
       </table>
     </section>
     <div id="page-orders" class="page grid">
       <section>
-        <h2>订单</h2>
+        <h2>货费已付款订单</h2>
         <table>
           <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>地址</th></tr></thead>
           <tbody id="orders"></tbody>
+        </table>
+      </section>
+      <section>
+        <h2>送费付款确认</h2>
+        <table>
+          <thead><tr><th>付款编号</th><th>用户</th><th>金额</th><th>截图</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
+          <tbody id="payments"></tbody>
         </table>
       </section>
       <section>
@@ -995,10 +1002,25 @@ ADMIN_HTML = r'''
     function render() {
       const q = document.getElementById("q").value.toLowerCase();
       const orders = state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q));
+      const codOrders = orders.filter(order => order.payment_mode === "cod");
+      const prepaidOrders = orders.filter(order => order.payment_mode === "prepaid");
       document.getElementById("totalOrders").textContent = state.orders.length;
       document.getElementById("matchingOrders").textContent = state.orders.filter(o => o.status === "matching").length;
       document.getElementById("runningOrders").textContent = state.orders.filter(o => ["accepted","picking_up","delivering"].includes(o.status)).length;
       document.getElementById("pendingPayments").textContent = (state.payments || []).filter(p => p.status === "pending").length;
+      document.getElementById("codOrders").innerHTML = codOrders.map(order => `
+        <tr onclick="showDetail('${order.id}')">
+          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
+          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${riderDepositLabel(order.rider_deposit_status)}</td>
+          <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
+          <td>${order.rider_deposit_status === "pending" ? `<button onclick="confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}</td>
+        </tr>`).join("");
+      if (!codOrders.length) {
+        document.getElementById("codOrders").innerHTML = `<tr><td colspan="7" class="muted">暂无货到付款订单</td></tr>`;
+      }
       document.getElementById("payments").innerHTML = (state.payments || []).map(payment => `
         <tr>
           <td><strong>#${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong></td>
@@ -1009,14 +1031,20 @@ ADMIN_HTML = r'''
           <td>${escapeHtml(new Date(payment.created_at).toLocaleString())}</td>
           <td>${payment.status === "pending" ? `<button onclick="confirmPrepaidPayment('${payment.id}')">确认收到付款</button>` : escapeHtml(payment.confirmed_at ? new Date(payment.confirmed_at).toLocaleString() : "")}</td>
         </tr>`).join("");
-      document.getElementById("orders").innerHTML = orders.map(order => `
-        <tr onclick="showDetail('${order.id}')">
+      if (!(state.payments || []).length) {
+        document.getElementById("payments").innerHTML = `<tr><td colspan="7" class="muted">暂无送费付款记录</td></tr>`;
+      }
+      document.getElementById("orders").innerHTML = prepaidOrders.map(order => `
+                <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")}</span></td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}${order.payment_mode === "cod" ? " / 押金：" + riderDepositLabel(order.rider_deposit_status) : " / 用户付款：" + label(order.user_payment_status)}</span></td>
           <td>${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
         </tr>`).join("");
+        if (!prepaidOrders.length) {
+        document.getElementById("orders").innerHTML = `<tr><td colspan="5" class="muted">暂无货费已付款订单</td></tr>`;
+      }
       document.getElementById("accounts").innerHTML = state.accounts.map(account => `
         <tr>
           <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
@@ -1094,6 +1122,20 @@ ADMIN_HTML = r'''
       await loadData();
     }
 
+    async function confirmDeposit(id) {
+      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rider_deposit_status: "confirmed" })
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      await loadData();
+      showDetail(id);
+    }
+    
     async function saveOrder(id) {
       const body = {
         status: document.getElementById("status").value,
