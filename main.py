@@ -47,7 +47,7 @@ OrderStatus = Literal[
     "cancelled",
 ]
 
-ChatSenderType = Literal["user", "rider"]
+ChatSenderType = Literal["user", "rider", "admin"]
 PaymentMode = Literal["cod", "prepaid"]
 PaymentStatus = Literal["not_required", "unpaid", "pending", "confirmed", "rejected"]
 SettlementStatus = Literal["pending", "paid_to_user", "paid_to_rider", "completed"]
@@ -219,6 +219,11 @@ class CreateChatMessageRequest(BaseModel):
     sender_phone: str | None = None
     conversation_id: str = "main"
     image_url: str | None = None
+
+
+class AdminChatReplyRequest(BaseModel):
+    conversation_id: str = Field(min_length=1, max_length=120)
+    text: str = Field(min_length=1, max_length=1000)
 
 
 class ChatMessageResponse(BaseModel):
@@ -923,6 +928,11 @@ ADMIN_HTML = r'''
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .chat { max-height: 360px; overflow: auto; }
     .chat img { max-width: 180px; max-height: 180px; object-fit: contain; border-radius: 8px; background: #f3f4f6; margin-top: 8px; }
+    .conversation-list { display: grid; gap: 8px; }
+    .conversation-row { width: 100%; text-align: left; background: #fff; color: #111827; border: 1px solid #e5e7eb; }
+    .conversation-row.active { border-color: #111827; background: #111827; color: #fff; }
+    .service-reply { display: flex; gap: 8px; margin-top: 12px; }
+    .service-reply textarea { flex: 1; min-height: 44px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; resize: vertical; }
     .empty { padding: 28px; text-align: center; color: #6b7280; background: #f9fafb; border-radius: 8px; }
     .hidden { display: none !important; }
     @media (max-width: 900px) { .stats, .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
@@ -981,12 +991,26 @@ ADMIN_HTML = r'''
     </section>
     <section id="page-service" class="page">
       <h2>客服</h2>
-      <div id="chat" class="chat"></div>
+      <div class="grid">
+        <section>
+          <h3>会话</h3>
+          <div id="chatConversations" class="conversation-list"></div>
+        </section>
+        <section>
+          <h3 id="chatTitle">聊天记录</h3>
+          <div id="chat" class="chat"></div>
+          <div class="service-reply">
+            <textarea id="serviceReply" placeholder="回复用户/骑手"></textarea>
+            <button onclick="sendServiceReply()">发送</button>
+          </div>
+        </section>
+      </div>
     </section>
   </main>
   <script>
     let state = { orders: [], accounts: [], messages: [], payments: [] };
     let currentPage = "payments";
+    let selectedServiceConversationId = null;
     const pages = ["payments","orders","accounts","settlements","service"];
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
@@ -1132,11 +1156,93 @@ ADMIN_HTML = r'''
             ${order.rider_settlement_qr_url && !["paid_to_rider","completed"].includes(order.settlement_status) ? `<button onclick="confirmRiderSettlement('${order.id}')">确认已转账送货费</button>` : ""}
           </td>
         </tr>`).join("");
-      document.getElementById("chat").innerHTML = state.messages.map(message => `
-        <p><strong>${escapeHtml(message.sender_name)}</strong> <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(message.conversation_id || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>${escapeHtml(message.text)}${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}</p>`).join("");
-      if (!state.messages.length) {
-        document.getElementById("chat").innerHTML = `<div class="empty">暂无客服消息</div>`;
+      renderServiceChat();
+    }
+
+    function serviceConversations() {
+      const grouped = new Map();
+      state.messages.forEach(message => {
+        const existing = grouped.get(message.conversation_id);
+        if (!existing || new Date(message.created_at) > new Date(existing.created_at)) {
+          grouped.set(message.conversation_id, message);
+        }
+      });
+      return Array.from(grouped.values()).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    }
+
+    function selectServiceConversation(conversationId) {
+      selectedServiceConversationId = conversationId;
+      renderServiceChat();
+    }
+
+    function renderServiceChat() {
+      const conversations = serviceConversations();
+      if (!selectedServiceConversationId && conversations.length) {
+        selectedServiceConversationId = conversations[0].conversation_id;
       }
+
+      const list = document.getElementById("chatConversations");
+      const chat = document.getElementById("chat");
+      const title = document.getElementById("chatTitle");
+      if (!list || !chat || !title) return;
+
+      list.innerHTML = conversations.map(message => `
+        <button class="conversation-row ${message.conversation_id === selectedServiceConversationId ? "active" : ""}" onclick="selectServiceConversation('${escapeHtml(message.conversation_id)}')">
+          <strong>${escapeHtml(message.conversation_id)}</strong><br>
+          <span class="muted">${escapeHtml(message.sender_name)}：${escapeHtml(message.text || "[图片]")}</span><br>
+          <span class="muted">${escapeHtml(new Date(message.created_at).toLocaleString())}</span>
+        </button>
+      `).join("");
+
+      if (!conversations.length) {
+        list.innerHTML = `<div class="empty">暂无客服会话</div>`;
+        chat.innerHTML = `<div class="empty">暂无客服消息</div>`;
+        title.textContent = "聊天记录";
+        return;
+      }
+
+      const messages = state.messages
+        .filter(message => message.conversation_id === selectedServiceConversationId)
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      title.textContent = selectedServiceConversationId || "聊天记录";
+      chat.innerHTML = messages.map(message => `
+        <p>
+          <strong>${escapeHtml(message.sender_name)}</strong>
+          <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
+          ${escapeHtml(message.text)}
+          ${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}
+        </p>
+      `).join("");
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function sendServiceReply() {
+      const input = document.getElementById("serviceReply");
+      const text = input.value.trim();
+      if (!selectedServiceConversationId) {
+        alert("请先选择一个客服会话");
+        return;
+      }
+      if (!text) {
+        alert("请输入回复内容");
+        return;
+      }
+
+      const response = await fetch(`/admin/chat/messages?key=${keyParam()}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id: selectedServiceConversationId,
+          text
+        })
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      input.value = "";
+      await loadData();
+      selectServiceConversation(selectedServiceConversationId);
     }
 
     function showDetail(id) {
@@ -1441,6 +1547,49 @@ def admin_data(key: str = Query(default="")) -> dict:
         "messages": messages_data,
         "payments": payments_data,
     }
+
+
+@app.post("/admin/chat/messages", response_model=ChatMessageResponse)
+def create_admin_chat_message(
+    request: AdminChatReplyRequest,
+    key: str = Query(default=""),
+) -> ChatMessageResponse:
+    require_admin_key(key)
+    message_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+    conversation_id = request.conversation_id.strip().lower()
+    text = request.text.strip()
+
+    with connect_db() as connection:
+        connection.execute(
+            """
+            INSERT INTO chat_messages (
+                id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_id,
+                conversation_id,
+                text,
+                "admin",
+                "客服",
+                None,
+                None,
+                created_at.isoformat(),
+            ),
+        )
+
+    return ChatMessageResponse(
+        id=message_id,
+        conversation_id=conversation_id,
+        text=text,
+        sender_type="admin",
+        sender_name="客服",
+        sender_phone=None,
+        image_url=None,
+        created_at=created_at,
+    )
 
 
 @app.patch("/admin/payments/{payment_id}", response_model=PrepaidPaymentResponse)
