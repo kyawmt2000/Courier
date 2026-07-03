@@ -223,7 +223,11 @@ class CreateChatMessageRequest(BaseModel):
 
 class AdminChatReplyRequest(BaseModel):
     conversation_id: str = Field(min_length=1, max_length=120)
-    text: str = Field(min_length=1, max_length=1000)
+    text: str = Field(default="", max_length=1000)
+    image_url: str | None = None
+    image_data: str | None = None
+    image_content_type: str | None = None
+    image_file_name: str | None = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -624,6 +628,38 @@ def signed_gcs_read_url(value: str | None) -> str | None:
         return value
 
 
+def upload_base64_image(image_data: str, content_type: str | None, file_name: str | None, folder: str = "chat") -> str:
+    if storage is None:
+        raise HTTPException(status_code=500, detail="google-cloud-storage is not installed")
+
+    content_type = (content_type or "image/jpeg").strip()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="只能上传图片")
+
+    try:
+        data = base64.b64decode(image_data, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="图片数据不正确") from exc
+
+    if not data:
+        raise HTTPException(status_code=400, detail="图片数据为空")
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片最多 8MB")
+
+    safe_name = safe_upload_name(file_name or f"chat-{uuid4().hex}.jpg")
+    object_name = f"{upload_folder(folder)}/{uuid4().hex}-{safe_name}"
+
+    try:
+        bucket_name = gcs_bucket_name()
+        blob = gcs_client().bucket(bucket_name).blob(object_name)
+        blob.upload_from_string(data, content_type=content_type)
+    except Exception as exc:
+        logger.exception("GCS image upload failed")
+        raise HTTPException(status_code=500, detail="图片上传失败") from exc
+
+    return f"https://storage.googleapis.com/{bucket_name}/{quote(object_name)}"
+
+
 def order_for_response(order: OrderResponse) -> OrderResponse:
     return order.model_copy(
         update={
@@ -884,7 +920,12 @@ def load_admin_chat_messages(limit: int = 200) -> list[dict]:
             """,
             (limit,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    result: list[dict] = []
+    for row in rows:
+        message = dict(row)
+        message["image_url"] = signed_gcs_read_url(message.get("image_url"))
+        result.append(message)
+    return result
 
 
 ADMIN_HTML = r'''
@@ -933,6 +974,7 @@ ADMIN_HTML = r'''
     .conversation-row.active { border-color: #111827; background: #111827; color: #fff; }
     .service-reply { display: flex; gap: 8px; margin-top: 12px; }
     .service-reply textarea { flex: 1; min-height: 44px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; resize: vertical; }
+    .service-reply input[type="file"] { max-width: 190px; align-self: center; }
     .empty { padding: 28px; text-align: center; color: #6b7280; background: #f9fafb; border-radius: 8px; }
     .hidden { display: none !important; }
     @media (max-width: 900px) { .stats, .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
@@ -1001,6 +1043,7 @@ ADMIN_HTML = r'''
           <div id="chat" class="chat"></div>
           <div class="service-reply">
             <textarea id="serviceReply" placeholder="回复用户/骑手"></textarea>
+            <input id="serviceImage" type="file" accept="image/*" />
             <button onclick="sendServiceReply()">发送</button>
           </div>
         </section>
@@ -1218,14 +1261,25 @@ ADMIN_HTML = r'''
 
     async function sendServiceReply() {
       const input = document.getElementById("serviceReply");
+      const imageInput = document.getElementById("serviceImage");
       const text = input.value.trim();
+      const imageFile = imageInput?.files?.[0] || null;
       if (!selectedServiceConversationId) {
         alert("请先选择一个客服会话");
         return;
       }
-      if (!text) {
-        alert("请输入回复内容");
+      if (!text && !imageFile) {
+        alert("请输入回复内容或选择图片");
         return;
+      }
+
+      let imageData = null;
+      let imageContentType = null;
+      let imageFileName = null;
+      if (imageFile) {
+        imageData = await readImageAsBase64(imageFile);
+        imageContentType = imageFile.type || "image/jpeg";
+        imageFileName = imageFile.name || `admin-chat-${Date.now()}.jpg`;
       }
 
       const response = await fetch(`/admin/chat/messages?key=${keyParam()}`, {
@@ -1233,7 +1287,10 @@ ADMIN_HTML = r'''
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conversation_id: selectedServiceConversationId,
-          text
+          text,
+          image_data: imageData,
+          image_content_type: imageContentType,
+          image_file_name: imageFileName
         })
       });
       if (!response.ok) {
@@ -1241,8 +1298,21 @@ ADMIN_HTML = r'''
         return;
       }
       input.value = "";
+      if (imageInput) imageInput.value = "";
       await loadData();
       selectServiceConversation(selectedServiceConversationId);
+    }
+
+    function readImageAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const value = String(reader.result || "");
+          resolve(value.includes(",") ? value.split(",").pop() : value);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
     }
 
     function showDetail(id) {
@@ -1509,7 +1579,7 @@ def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
         sender_type=row["sender_type"],
         sender_name=row["sender_name"],
         sender_phone=row["sender_phone"],
-        image_url=row["image_url"],
+        image_url=signed_gcs_read_url(row["image_url"]),
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
@@ -1559,6 +1629,16 @@ def create_admin_chat_message(
     created_at = datetime.now(timezone.utc)
     conversation_id = request.conversation_id.strip().lower()
     text = request.text.strip()
+    image_url = request.image_url.strip() if request.image_url else None
+    if request.image_data:
+        image_url = upload_base64_image(
+            image_data=request.image_data,
+            content_type=request.image_content_type,
+            file_name=request.image_file_name,
+            folder="chat",
+        )
+    if not text and not image_url:
+        raise HTTPException(status_code=400, detail="消息不能为空")
 
     with connect_db() as connection:
         connection.execute(
@@ -1575,7 +1655,7 @@ def create_admin_chat_message(
                 "admin",
                 "客服",
                 None,
-                None,
+                image_url,
                 created_at.isoformat(),
             ),
         )
@@ -1587,7 +1667,7 @@ def create_admin_chat_message(
         sender_type="admin",
         sender_name="客服",
         sender_phone=None,
-        image_url=None,
+        image_url=signed_gcs_read_url(image_url),
         created_at=created_at,
     )
 
@@ -1815,7 +1895,7 @@ def create_chat_message(
         sender_type=request.sender_type,
         sender_name=sender_name,
         sender_phone=sender_phone,
-        image_url=image_url,
+        image_url=signed_gcs_read_url(image_url),
         created_at=created_at,
     )
 
