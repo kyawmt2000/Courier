@@ -949,12 +949,10 @@ ADMIN_HTML = r'''
     button.secondary { background: #fff; color: #111827; border-color: #d1d5db; }
     button.tab { background: #fff; color: #374151; border-color: #d1d5db; }
     button.tab.active { background: #111827; color: #fff; border-color: #111827; }
-    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-    .stat, section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; }
     .page { display: none; }
     .page.active { display: block; }
     .page.grid.active { display: grid; }
-    .stat strong { display: block; font-size: 26px; margin-top: 6px; }
     section h2 { margin: 0 0 12px; font-size: 17px; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
@@ -978,7 +976,7 @@ ADMIN_HTML = r'''
     .service-reply input[type="file"] { max-width: 190px; align-self: center; }
     .empty { padding: 28px; text-align: center; color: #6b7280; background: #f9fafb; border-radius: 8px; }
     .hidden { display: none !important; }
-    @media (max-width: 900px) { .stats, .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
   </style>
 </head>
 <body>
@@ -997,12 +995,6 @@ ADMIN_HTML = r'''
     </div>
   </header>
   <main>
-    <div class="stats">
-      <div class="stat">订单总数<strong id="totalOrders">0</strong></div>
-      <div class="stat">待接单<strong id="matchingOrders">0</strong></div>
-      <div class="stat">配送中<strong id="runningOrders">0</strong></div>
-      <div class="stat">待确认付款<strong id="pendingPayments">0</strong></div>
-    </div>
     <section id="page-payments" class="page active">
       <h2>货到付款订单</h2>
       <table>
@@ -1134,10 +1126,6 @@ ADMIN_HTML = r'''
       const orders = state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q));
       const codOrderRows = orders.filter(order => order.payment_mode === "cod");
       const prepaidOrderRows = orders.filter(order => order.payment_mode === "prepaid");
-      document.getElementById("totalOrders").textContent = state.orders.length;
-      document.getElementById("matchingOrders").textContent = state.orders.filter(o => o.status === "matching").length;
-      document.getElementById("runningOrders").textContent = state.orders.filter(o => ["accepted","picking_up","delivering"].includes(o.status)).length;
-      document.getElementById("pendingPayments").textContent = (state.payments || []).filter(p => p.status === "pending").length;
       const tables = ensureOrderTables();
       const codOrdersTable = tables.cod;
       const prepaidOrdersTable = tables.prepaid;
