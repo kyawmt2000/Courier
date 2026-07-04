@@ -1574,6 +1574,41 @@ def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) 
     return radius_km * c
 
 
+async def route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        return haversine_km(origin, destination)
+
+    origin_value = f"{origin[0]},{origin[1]}"
+    destination_value = f"{destination[0]},{destination[1]}"
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.get(
+            "https://maps.googleapis.com/maps/api/distancematrix/json",
+            params={
+                "origins": origin_value,
+                "destinations": destination_value,
+                "mode": "driving",
+                "units": "metric",
+                "key": api_key,
+            },
+        )
+        payload = response.json()
+
+    try:
+        element = payload["rows"][0]["elements"][0]
+    except (KeyError, IndexError, TypeError):
+        logger.warning("Google Distance Matrix malformed response: %s", payload)
+        return haversine_km(origin, destination)
+
+    if payload.get("status") != "OK" or element.get("status") != "OK":
+        logger.warning("Google Distance Matrix failed: %s", payload)
+        return haversine_km(origin, destination)
+
+    meters = element["distance"]["value"]
+    return float(meters) / 1000
+
+
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
     return ChatMessageResponse(
         id=row["id"],
@@ -1981,6 +2016,8 @@ def create_order(
         raise HTTPException(status_code=403, detail="不能使用其他账号的付款记录")
     if prepaid_payment.status == "rejected":
         raise HTTPException(status_code=400, detail="送货费付款未通过，请重新付款")
+    if prepaid_payment.status != "confirmed":
+        raise HTTPException(status_code=400, detail="请等待后台确认收到送货费后再下单")
     if abs(prepaid_payment.amount - delivery_fee) > 1:
         raise HTTPException(status_code=400, detail="付款金额和当前配送费不一致，请重新计算后付款")
     payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
@@ -2229,7 +2266,7 @@ def cancel_order(
 async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimateResponse:
     pickup = await geocode_location(request.pickup_location)
     dropoff = await geocode_location(request.dropoff_location)
-    distance_km = max(round(haversine_km(pickup, dropoff), 1), 0.1)
+    distance_km = max(round(await route_distance_km(pickup, dropoff), 1), 0.1)
     return DistanceEstimateResponse(
         distance_km=distance_km,
         price=estimate_price(distance_km, 1),
