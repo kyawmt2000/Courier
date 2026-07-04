@@ -255,6 +255,20 @@ class AdminUpdatePrepaidPaymentRequest(BaseModel):
 sms_codes: dict[str, tuple[str, datetime]] = {}
 
 
+def test_login_phone() -> str:
+    return normalize_myanmar_phone(os.getenv("TEST_LOGIN_PHONE", "+959777777777"))
+
+
+def test_login_code() -> str:
+    return os.getenv("TEST_LOGIN_CODE", "000000").strip()
+
+
+def is_test_login(phone: str, code: str | None = None) -> bool:
+    if phone != test_login_phone():
+        return False
+    return code is None or code == test_login_code()
+
+
 def resolve_db_path() -> Path:
     configured = (os.getenv("COURIER_DB_PATH") or os.getenv("CHAT_DB_PATH") or "").strip()
     if configured:
@@ -1719,14 +1733,15 @@ def admin_update_order(
 @app.post("/auth/login", response_model=LoginResponse)
 def login(request: LoginRequest) -> LoginResponse:
     phone = normalize_myanmar_phone(request.phone)
-    stored = sms_codes.get(phone)
-    now = datetime.now(timezone.utc)
+    if not is_test_login(phone, request.code):
+        stored = sms_codes.get(phone)
+        now = datetime.now(timezone.utc)
 
-    if not stored or stored[1] < now:
-        raise HTTPException(status_code=401, detail="验证码已过期，请重新获取")
+        if not stored or stored[1] < now:
+            raise HTTPException(status_code=401, detail="验证码已过期，请重新获取")
 
-    if request.code != stored[0]:
-        raise HTTPException(status_code=401, detail="验证码错误")
+        if request.code != stored[0]:
+            raise HTTPException(status_code=401, detail="验证码错误")
 
     sms_codes.pop(phone, None)
     profile = save_account(phone, nickname=None if load_account_profile(phone) else "快送用户")
@@ -1762,6 +1777,14 @@ def update_account_profile(
 @app.post("/auth/sms-code", response_model=SendSMSCodeResponse)
 async def send_login_sms_code(request: SendSMSCodeRequest) -> SendSMSCodeResponse:
     phone = normalize_myanmar_phone(request.phone)
+    if is_test_login(phone):
+        expires_at = datetime.now(timezone.utc) + timedelta(days=365)
+        sms_codes[phone] = (test_login_code(), expires_at)
+        return SendSMSCodeResponse(
+            phone=phone,
+            expires_at=expires_at,
+        )
+
     code = create_sms_code()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
     await send_sms_code(phone, code)
