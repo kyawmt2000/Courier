@@ -112,6 +112,7 @@ class CreatePrepaidPaymentRequest(BaseModel):
     amount: float = Field(gt=0)
     distance_km: float = Field(gt=0)
     payment_proof_url: str
+    payment_mode: PaymentMode = "cod"
 
 
 class PrepaidPaymentResponse(BaseModel):
@@ -119,6 +120,7 @@ class PrepaidPaymentResponse(BaseModel):
     user_phone: str
     amount: float
     distance_km: float
+    payment_mode: PaymentMode = "cod"
     status: PaymentStatus = "pending"
     created_at: datetime
     confirmed_at: datetime | None = None
@@ -691,7 +693,9 @@ def order_from_row(row: sqlite3.Row) -> OrderResponse:
 
 
 def prepaid_payment_from_row(row: sqlite3.Row) -> PrepaidPaymentResponse:
-    return PrepaidPaymentResponse.model_validate(json.loads(row["payload"]))
+    payload = json.loads(row["payload"])
+    payload.setdefault("payment_mode", "cod")
+    return PrepaidPaymentResponse.model_validate(payload)
 
 
 def save_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
@@ -1140,6 +1144,13 @@ ADMIN_HTML = r'''
       const orders = state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q));
       const codOrderRows = orders.filter(order => order.payment_mode === "cod");
       const prepaidOrderRows = orders.filter(order => order.payment_mode === "prepaid");
+      const usedPaymentIds = new Set(orders.map(order => order.kpay_transaction_id).filter(Boolean));
+      const pendingCodPayments = (state.payments || []).filter(payment =>
+        payment.payment_mode === "cod" && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
+      );
+      const pendingPrepaidPayments = (state.payments || []).filter(payment =>
+        payment.payment_mode === "prepaid" && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
+      );
       const tables = ensureOrderTables();
       const codOrdersTable = tables.cod;
       const prepaidOrdersTable = tables.prepaid;
@@ -1152,7 +1163,17 @@ ADMIN_HTML = r'''
         return;
       }
 
-      codOrdersTable.innerHTML = codOrderRows.map(order => `
+      codOrdersTable.innerHTML = pendingCodPayments.map(payment => `
+        <tr>
+          <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传送货费截图，等待后台确认后才能下单</span></td>
+          <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
+          <td>配送费 ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
+          <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
+          <td><span class="muted">订单创建后显示</span></td>
+          <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
+          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认送货费</button>` : `<span class="pill">已确认</span>`}</td>
+        </tr>`).join("") + codOrderRows.map(order => `
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
@@ -1166,10 +1187,19 @@ ADMIN_HTML = r'''
             ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
           </td>
         </tr>`).join("");
-      if (!codOrderRows.length) {
+      if (!pendingCodPayments.length && !codOrderRows.length) {
         codOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货到付款订单</td></tr>`;
       }
-      prepaidOrdersTable.innerHTML = prepaidOrderRows.map(order => `
+      prepaidOrdersTable.innerHTML = pendingPrepaidPayments.map(payment => `
+        <tr>
+          <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传送货费截图，等待后台确认后才能下单</span></td>
+          <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
+          <td>${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
+          <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
+          <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
+          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认送货费</button>` : `<span class="pill">已确认</span>`}</td>
+        </tr>`).join("") + prepaidOrderRows.map(order => `
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")}</span></td>
@@ -1179,7 +1209,7 @@ ADMIN_HTML = r'''
           <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
           <td>${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">确认送货费</button>` : ""}</td>
         </tr>`).join("");
-      if (!prepaidOrderRows.length) {
+      if (!pendingPrepaidPayments.length && !prepaidOrderRows.length) {
         prepaidOrdersTable.innerHTML = `<tr><td colspan="7" class="muted">暂无货费已付款订单</td></tr>`;
       }
       document.getElementById("accounts").innerHTML = state.accounts.map(account => `
@@ -1509,10 +1539,14 @@ ADMIN_HTML = r'''
 
 
 def parse_coordinate(text: str) -> tuple[float, float] | None:
+    text = unquote(text)
     patterns = [
         r"@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
         r"q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
         r"ll=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
+        r"query=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
+        r"destination=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
+        r"!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)",
         r"(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
     ]
     for pattern in patterns:
@@ -1599,11 +1633,14 @@ async def route_distance_km(origin: tuple[float, float], destination: tuple[floa
         element = payload["rows"][0]["elements"][0]
     except (KeyError, IndexError, TypeError):
         logger.warning("Google Distance Matrix malformed response: %s", payload)
-        return haversine_km(origin, destination)
+        raise HTTPException(status_code=502, detail="Google 路线距离响应异常，请稍后再试")
 
     if payload.get("status") != "OK" or element.get("status") != "OK":
         logger.warning("Google Distance Matrix failed: %s", payload)
-        return haversine_km(origin, destination)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Google 路线距离计算失败：{payload.get('status', 'UNKNOWN')} / {element.get('status', 'UNKNOWN')}",
+        )
 
     meters = element["distance"]["value"]
     return float(meters) / 1000
@@ -1968,6 +2005,7 @@ def create_prepaid_payment(
         user_phone=user_phone,
         amount=round(request.amount, 2),
         distance_km=request.distance_km,
+        payment_mode=request.payment_mode,
         status="pending",
         created_at=datetime.now(timezone.utc),
         payment_proof_url=payment_proof_url,
