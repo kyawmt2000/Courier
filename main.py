@@ -1629,17 +1629,26 @@ async def route_distance_km(origin: tuple[float, float], destination: tuple[floa
         )
         payload = response.json()
 
+    top_status = payload.get("status", "UNKNOWN")
+    if top_status != "OK":
+        logger.warning("Google Distance Matrix failed before rows: %s", payload)
+        detail = payload.get("error_message") or payload.get("error") or "请检查 Distance Matrix API、Billing、API Key 限制"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Google 路线距离计算失败：{top_status} / {detail}",
+        )
+
     try:
         element = payload["rows"][0]["elements"][0]
     except (KeyError, IndexError, TypeError):
         logger.warning("Google Distance Matrix malformed response: %s", payload)
-        raise HTTPException(status_code=502, detail="Google 路线距离响应异常，请稍后再试")
+        raise HTTPException(status_code=502, detail=f"Google 路线距离响应异常：{payload}")
 
-    if payload.get("status") != "OK" or element.get("status") != "OK":
+    if element.get("status") != "OK":
         logger.warning("Google Distance Matrix failed: %s", payload)
         raise HTTPException(
             status_code=400,
-            detail=f"Google 路线距离计算失败：{payload.get('status', 'UNKNOWN')} / {element.get('status', 'UNKNOWN')}",
+            detail=f"Google 路线距离计算失败：{top_status} / {element.get('status', 'UNKNOWN')}",
         )
 
     meters = element["distance"]["value"]
