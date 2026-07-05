@@ -9,7 +9,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import uuid4
 
 import httpx
@@ -1565,10 +1565,29 @@ async def expand_location_text(text: str) -> str:
         return str(response.url)
 
 
+def google_maps_query_text(text: str) -> str:
+    parsed = urlparse(text)
+    if "google.com" not in parsed.netloc and "maps.google" not in parsed.netloc:
+        return text
+
+    params = parse_qs(parsed.query)
+    for key in ("q", "query", "destination", "daddr"):
+        value = params.get(key, [""])[0].strip()
+        if value:
+            return value
+
+    return text
+
+
 async def geocode_location(text: str) -> tuple[float, float]:
     expanded = await expand_location_text(text.strip())
 
     coordinate = parse_coordinate(expanded)
+    if coordinate:
+        return coordinate
+
+    query_text = google_maps_query_text(expanded)
+    coordinate = parse_coordinate(query_text)
     if coordinate:
         return coordinate
 
@@ -1579,7 +1598,7 @@ async def geocode_location(text: str) -> tuple[float, float]:
     async with httpx.AsyncClient(timeout=12) as client:
         response = await client.get(
             "https://maps.googleapis.com/maps/api/geocode/json",
-            params={"address": expanded, "key": api_key},
+            params={"address": query_text, "key": api_key},
         )
         payload = response.json()
 
@@ -1611,7 +1630,7 @@ def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) 
 async def route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
-        return haversine_km(origin, destination)
+        return await osrm_route_distance_km(origin, destination)
 
     origin_value = f"{origin[0]},{origin[1]}"
     destination_value = f"{destination[0]},{destination[1]}"
@@ -1632,20 +1651,46 @@ async def route_distance_km(origin: tuple[float, float], destination: tuple[floa
     top_status = payload.get("status", "UNKNOWN")
     if top_status != "OK":
         logger.warning("Google Distance Matrix failed before rows: %s", payload)
-        return estimated_road_km(origin, destination)
+        return await osrm_route_distance_km(origin, destination)
 
     try:
         element = payload["rows"][0]["elements"][0]
     except (KeyError, IndexError, TypeError):
         logger.warning("Google Distance Matrix malformed response: %s", payload)
-        return estimated_road_km(origin, destination)
+        return await osrm_route_distance_km(origin, destination)
 
     if element.get("status") != "OK":
         logger.warning("Google Distance Matrix failed: %s", payload)
-        return estimated_road_km(origin, destination)
+        return await osrm_route_distance_km(origin, destination)
 
     meters = element["distance"]["value"]
     return float(meters) / 1000
+
+
+async def osrm_route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
+    origin_value = f"{origin[1]},{origin[0]}"
+    destination_value = f"{destination[1]},{destination[0]}"
+    url = f"https://router.project-osrm.org/route/v1/driving/{origin_value};{destination_value}"
+
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.get(
+                url,
+                params={
+                    "overview": "false",
+                    "alternatives": "false",
+                    "steps": "false",
+                },
+            )
+            payload = response.json()
+
+        if payload.get("code") == "Ok" and payload.get("routes"):
+            return float(payload["routes"][0]["distance"]) / 1000
+        logger.warning("OSRM route failed: %s", payload)
+    except Exception as error:
+        logger.warning("OSRM route request failed: %s", error)
+
+    return estimated_road_km(origin, destination)
 
 
 def estimated_road_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
