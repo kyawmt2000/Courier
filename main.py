@@ -1632,27 +1632,24 @@ async def route_distance_km(origin: tuple[float, float], destination: tuple[floa
     top_status = payload.get("status", "UNKNOWN")
     if top_status != "OK":
         logger.warning("Google Distance Matrix failed before rows: %s", payload)
-        detail = payload.get("error_message") or payload.get("error") or "请检查 Distance Matrix API、Billing、API Key 限制"
-        raise HTTPException(
-            status_code=400,
-            detail=f"Google 路线距离计算失败：{top_status} / {detail}",
-        )
+        return estimated_road_km(origin, destination)
 
     try:
         element = payload["rows"][0]["elements"][0]
     except (KeyError, IndexError, TypeError):
         logger.warning("Google Distance Matrix malformed response: %s", payload)
-        raise HTTPException(status_code=502, detail=f"Google 路线距离响应异常：{payload}")
+        return estimated_road_km(origin, destination)
 
     if element.get("status") != "OK":
         logger.warning("Google Distance Matrix failed: %s", payload)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Google 路线距离计算失败：{top_status} / {element.get('status', 'UNKNOWN')}",
-        )
+        return estimated_road_km(origin, destination)
 
     meters = element["distance"]["value"]
     return float(meters) / 1000
+
+
+def estimated_road_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
+    return haversine_km(origin, destination) * 1.35
 
 
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
