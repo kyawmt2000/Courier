@@ -938,7 +938,7 @@ def load_admin_accounts() -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
             """
-            SELECT phone, nickname, avatar_url, last_login_at
+            SELECT phone, nickname, payment_qr_url, avatar_url, last_login_at
             FROM accounts
             ORDER BY last_login_at DESC
             """
@@ -947,6 +947,7 @@ def load_admin_accounts() -> list[dict]:
     for row in rows:
         account = dict(row)
         account["avatar_url"] = signed_gcs_read_url(account.get("avatar_url"))
+        account["payment_qr_url"] = signed_gcs_read_url(account.get("payment_qr_url"))
         result.append(account)
     return result
 
@@ -1056,7 +1057,7 @@ ADMIN_HTML = r'''
     </section>
     <section id="page-accounts" class="page">
       <h2>账号资料</h2>
-      <table><thead><tr><th>头像</th><th>手机号</th><th>昵称</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
+      <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>手机号</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
     </section>
     <section id="page-settlements" class="page">
       <h2>结算</h2>
@@ -1238,8 +1239,9 @@ ADMIN_HTML = r'''
       document.getElementById("accounts").innerHTML = state.accounts.map(account => `
         <tr>
           <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
-          <td>${escapeHtml(account.phone)}</td>
           <td>${escapeHtml(account.nickname || "")}</td>
+          <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
+          <td>${escapeHtml(account.phone)}</td>
           <td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td>
         </tr>`).join("");
       document.getElementById("settlements").innerHTML = orders.map(order => `
