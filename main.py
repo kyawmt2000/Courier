@@ -64,6 +64,7 @@ class UserProfile(BaseModel):
     phone: str
     nickname: str | None = None
     avatar_url: str | None = None
+    payment_qr_url: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -79,6 +80,7 @@ class LoginResponse(BaseModel):
 class UpdateProfileRequest(BaseModel):
     nickname: str | None = None
     avatar_url: str | None = None
+    payment_qr_url: str | None = None
 
 
 class SendSMSCodeRequest(BaseModel):
@@ -358,6 +360,7 @@ def init_storage() -> None:
                 phone TEXT PRIMARY KEY,
                 nickname TEXT,
                 avatar_url TEXT,
+                payment_qr_url TEXT,
                 last_login_at TEXT NOT NULL
             )
             """
@@ -391,6 +394,7 @@ def init_storage() -> None:
         add_column_if_missing(connection, "orders", "payload", "TEXT NOT NULL DEFAULT '{}'")
         add_column_if_missing(connection, "accounts", "nickname", "TEXT")
         add_column_if_missing(connection, "accounts", "avatar_url", "TEXT")
+        add_column_if_missing(connection, "accounts", "payment_qr_url", "TEXT")
         add_column_if_missing(connection, "accounts", "last_login_at", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "prepaid_payments", "user_phone", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "prepaid_payments", "status", "TEXT NOT NULL DEFAULT 'pending'")
@@ -547,6 +551,8 @@ def upload_folder(value: str) -> str:
         "chats": "Chats",
         "nrc": "NRC",
         "profile picture": "profile picture",
+        "payment qr": "payment qr",
+        "payment qr code": "payment qr",
         "rider settlement": "rider settlement",
         "user settlement": "user settlement",
     }
@@ -842,13 +848,19 @@ def sync_orders_for_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
         save_order(updated, user_phone=row["user_phone"], rider_phone=row["rider_phone"])
 
 
-def user_profile_from_account(phone: str, nickname: str | None, avatar_url: str | None) -> UserProfile:
+def user_profile_from_account(
+    phone: str,
+    nickname: str | None,
+    avatar_url: str | None,
+    payment_qr_url: str | None,
+) -> UserProfile:
     user_id_digits = re.sub(r"\D", "", phone)
     return UserProfile(
         id=f"user_{user_id_digits}",
         phone=phone,
         nickname=nickname,
         avatar_url=signed_gcs_read_url(avatar_url),
+        payment_qr_url=signed_gcs_read_url(payment_qr_url),
     )
 
 
@@ -856,7 +868,7 @@ def load_account_profile(phone: str) -> UserProfile | None:
     with connect_db() as connection:
         row = connection.execute(
             """
-            SELECT phone, nickname, avatar_url
+            SELECT phone, nickname, avatar_url, payment_qr_url
             FROM accounts
             WHERE phone = ?
             """,
@@ -865,23 +877,34 @@ def load_account_profile(phone: str) -> UserProfile | None:
 
     if not row:
         return None
-    return user_profile_from_account(row["phone"], row["nickname"], row["avatar_url"])
+    return user_profile_from_account(
+        row["phone"],
+        row["nickname"],
+        row["avatar_url"],
+        row["payment_qr_url"],
+    )
 
 
-def save_account(phone: str, nickname: str | None = None, avatar_url: str | None = None) -> UserProfile:
+def save_account(
+    phone: str,
+    nickname: str | None = None,
+    avatar_url: str | None = None,
+    payment_qr_url: str | None = None,
+) -> UserProfile:
     with connect_db() as connection:
         connection.execute(
             """
-            INSERT INTO accounts (phone, nickname, avatar_url, last_login_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO accounts (phone, nickname, avatar_url, payment_qr_url, last_login_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(phone) DO UPDATE SET
                 nickname = COALESCE(excluded.nickname, accounts.nickname),
                 avatar_url = COALESCE(excluded.avatar_url, accounts.avatar_url),
+                payment_qr_url = COALESCE(excluded.payment_qr_url, accounts.payment_qr_url),
                 last_login_at = excluded.last_login_at
             """,
-            (phone, nickname, avatar_url, datetime.now(timezone.utc).isoformat()),
+            (phone, nickname, avatar_url, payment_qr_url, datetime.now(timezone.utc).isoformat()),
         )
-    return load_account_profile(phone) or user_profile_from_account(phone, nickname, avatar_url)
+    return load_account_profile(phone) or user_profile_from_account(phone, nickname, avatar_url, payment_qr_url)
 
 
 def require_admin_key(key: str | None) -> None:
@@ -1892,9 +1915,15 @@ def update_account_profile(
     phone = require_account_phone(authorization)
     nickname = clean_optional_text(request.nickname)
     avatar_url = clean_optional_text(request.avatar_url)
+    payment_qr_url = clean_optional_text(request.payment_qr_url)
     if nickname is not None and len(nickname) > 40:
         raise HTTPException(status_code=400, detail="用户名最多 40 个字符")
-    return save_account(phone, nickname=nickname, avatar_url=avatar_url)
+    return save_account(
+        phone,
+        nickname=nickname,
+        avatar_url=avatar_url,
+        payment_qr_url=payment_qr_url,
+    )
 
 
 @app.post("/auth/sms-code", response_model=SendSMSCodeResponse)
