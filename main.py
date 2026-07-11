@@ -1866,11 +1866,7 @@ async def osrm_route_distance_km(origin: tuple[float, float], destination: tuple
     except Exception as error:
         logger.warning("OSRM route request failed: %s", error)
 
-    return estimated_road_km(origin, destination)
-
-
-def estimated_road_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
-    return haversine_km(origin, destination) * 1.35
+    raise HTTPException(status_code=502, detail="路线距离计算失败，请检查 Google Map Location 后再试")
 
 
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
