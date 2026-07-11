@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import math
 import logging
@@ -16,7 +17,11 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from cryptography.hazmat.primitives import padding as symmetric_padding
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from pydantic import BaseModel, ConfigDict, Field
 
 try:
     from google.cloud import storage
@@ -117,6 +122,22 @@ class CreatePrepaidPaymentRequest(BaseModel):
     payment_mode: PaymentMode = "cod"
 
 
+class CreateDingerPaymentRequest(BaseModel):
+    amount: float = Field(gt=0)
+    distance_km: float = Field(gt=0)
+    payment_mode: PaymentMode = "cod"
+    provider_name: str = "KBZPAY"
+    method_name: str = "QR"
+    customer_name: str | None = None
+
+
+class DingerCallbackRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    payment_result: str = Field(alias="paymentResult")
+    checksum: str | None = Field(default=None, alias="checkSum")
+
+
 class PrepaidPaymentResponse(BaseModel):
     id: str
     user_phone: str
@@ -127,6 +148,11 @@ class PrepaidPaymentResponse(BaseModel):
     created_at: datetime
     confirmed_at: datetime | None = None
     payment_proof_url: str | None = None
+    dinger_transaction_num: str | None = None
+    dinger_form_token: str | None = None
+    dinger_qr_code: str | None = None
+    dinger_provider_name: str | None = None
+    dinger_method_name: str | None = None
 
 
 class OrderResponse(BaseModel):
@@ -754,6 +780,131 @@ def load_admin_prepaid_payments() -> list[dict]:
         data["payment_proof_url"] = signed_gcs_read_url(payment.payment_proof_url)
         result.append(data)
     return result
+
+
+def dinger_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise HTTPException(status_code=503, detail=f"Dinger 未配置：缺少 {name}")
+    return value
+
+
+def dinger_base_url() -> str:
+    return os.getenv("DINGER_BASE_URL", "https://staging.dinger.asia/").rstrip("/") + "/"
+
+
+def rsa_encrypt_for_dinger(payload: dict) -> str:
+    public_key_text = dinger_env("DINGER_PUBLIC_KEY")
+    if "BEGIN PUBLIC KEY" not in public_key_text:
+        public_key_text = (
+            "-----BEGIN PUBLIC KEY-----\n"
+            + public_key_text.replace("\\n", "\n")
+            + "\n-----END PUBLIC KEY-----"
+        )
+    else:
+        public_key_text = public_key_text.replace("\\n", "\n")
+
+    public_key = serialization.load_pem_public_key(public_key_text.encode("utf-8"))
+    encrypted = public_key.encrypt(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        asymmetric_padding.PKCS1v15(),
+    )
+    return base64.b64encode(encrypted).decode("utf-8")
+
+
+async def create_dinger_charge(
+    payment_id: str,
+    request: CreateDingerPaymentRequest,
+    user_phone: str,
+) -> dict:
+    base_url = dinger_base_url()
+    project_name = dinger_env("DINGER_PROJECT_NAME")
+    api_key = dinger_env("DINGER_API_KEY")
+    merchant_name = dinger_env("DINGER_MERCHANT_NAME")
+    customer_name = clean_optional_text(request.customer_name) or user_phone
+    amount = int(round(request.amount))
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        token_response = await client.get(
+            f"{base_url}api/token",
+            params={
+                "projectName": project_name,
+                "apiKey": api_key,
+                "merchantName": merchant_name,
+            },
+        )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        payment_token = token_data.get("token", {}).get("paymentToken")
+        if not payment_token:
+            raise HTTPException(status_code=502, detail="Dinger token 获取失败")
+
+        payload = {
+            "providerName": request.provider_name,
+            "methodName": request.method_name,
+            "totalAmount": amount,
+            "orderId": payment_id,
+            "customerPhone": user_phone,
+            "customerName": customer_name,
+            "items": json.dumps(
+                [
+                    {
+                        "name": "Blink Delivery Fee",
+                        "amount": amount,
+                    }
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        }
+        encrypted_payload = rsa_encrypt_for_dinger(payload)
+        pay_response = await client.post(
+            f"{base_url}api/pay",
+            headers={"Authorization": f"Bearer {payment_token}"},
+            data={"payload": encrypted_payload},
+        )
+        pay_response.raise_for_status()
+        pay_data = pay_response.json()
+
+    if str(pay_data.get("code")) not in {"0", "000"}:
+        raise HTTPException(status_code=502, detail=pay_data.get("message") or "Dinger 创建付款失败")
+    response = pay_data.get("response")
+    if not isinstance(response, dict):
+        raise HTTPException(status_code=502, detail="Dinger 付款响应异常")
+    return response
+
+
+def dinger_secret_key_bytes() -> bytes:
+    secret = dinger_env("DINGER_SECRET_KEY")
+    raw = secret.encode("utf-8")
+    if len(raw) in (16, 24, 32):
+        return raw
+    try:
+        decoded = bytes.fromhex(secret)
+        if len(decoded) in (16, 24, 32):
+            return decoded
+    except ValueError:
+        pass
+    raise HTTPException(status_code=503, detail="Dinger secret key 长度不正确")
+
+
+def decrypt_dinger_payment_result(payment_result: str) -> tuple[dict, str]:
+    encrypted = base64.b64decode(payment_result)
+    cipher = Cipher(algorithms.AES(dinger_secret_key_bytes()), modes.ECB())
+    decryptor = cipher.decryptor()
+    padded = decryptor.update(encrypted) + decryptor.finalize()
+    unpadder = symmetric_padding.PKCS7(128).unpadder()
+    plaintext = unpadder.update(padded) + unpadder.finalize()
+    text = plaintext.decode("utf-8")
+    return json.loads(text), text
+
+
+def verify_dinger_checksum(result_text: str, checksum: str | None) -> None:
+    if not checksum:
+        return
+    digest = hashlib.sha256(result_text.encode("utf-8")).hexdigest()
+    if digest.lower() != checksum.lower():
+        raise HTTPException(status_code=400, detail="Dinger callback checksum 不正确")
 
 
 def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = None) -> None:
@@ -2094,6 +2245,78 @@ def create_prepaid_payment(
     )
     save_prepaid_payment(payment)
     return payment
+
+
+@app.post("/payments/dinger", response_model=PrepaidPaymentResponse)
+async def create_dinger_payment(
+    request: CreateDingerPaymentRequest,
+    authorization: str | None = Header(default=None),
+) -> PrepaidPaymentResponse:
+    user_phone = require_account_phone(authorization)
+    payment_id = str(uuid4())
+    try:
+        dinger_response = await create_dinger_charge(payment_id, request, user_phone)
+    except httpx.HTTPError as exc:
+        logger.exception("Dinger payment request failed")
+        raise HTTPException(status_code=502, detail="Dinger 付款请求失败") from exc
+
+    payment = PrepaidPaymentResponse(
+        id=payment_id,
+        user_phone=user_phone,
+        amount=round(request.amount, 2),
+        distance_km=request.distance_km,
+        payment_mode=request.payment_mode,
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+        dinger_transaction_num=dinger_response.get("transactionNum"),
+        dinger_form_token=dinger_response.get("formToken"),
+        dinger_qr_code=dinger_response.get("qrCode"),
+        dinger_provider_name=request.provider_name,
+        dinger_method_name=request.method_name,
+    )
+    save_prepaid_payment(payment)
+    return payment
+
+
+@app.post("/payments/dinger/callback")
+def handle_dinger_callback(request: DingerCallbackRequest) -> dict[str, str]:
+    try:
+        result, result_text = decrypt_dinger_payment_result(request.payment_result)
+        verify_dinger_checksum(result_text, request.checksum)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Dinger callback decrypt failed")
+        raise HTTPException(status_code=400, detail="Dinger callback 解密失败") from exc
+
+    payment_id = None
+    for key in ("merchantOrderId", "merchant_order_id", "orderId"):
+        value = result.get(key)
+        if value is not None:
+            payment_id = clean_optional_text(str(value))
+            if payment_id:
+                break
+    if not payment_id:
+        raise HTTPException(status_code=400, detail="Dinger callback 缺少订单号")
+
+    payment = load_prepaid_payment(payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="付款记录不存在")
+
+    transaction_status = str(result.get("transactionStatus") or "").upper()
+    next_status: PaymentStatus = "confirmed" if transaction_status == "SUCCESS" else "rejected"
+    updated = payment.model_copy(
+        update={
+            "status": next_status,
+            "confirmed_at": datetime.now(timezone.utc) if next_status == "confirmed" else None,
+            "dinger_transaction_num": result.get("transactionId") or payment.dinger_transaction_num,
+            "dinger_provider_name": result.get("providerName") or payment.dinger_provider_name,
+            "dinger_method_name": result.get("methodName") or payment.dinger_method_name,
+        }
+    )
+    save_prepaid_payment(updated)
+    sync_orders_for_prepaid_payment(updated)
+    return {"status": "ok"}
 
 
 @app.get("/payments/prepaid/{payment_id}", response_model=PrepaidPaymentResponse)
