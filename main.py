@@ -1882,6 +1882,177 @@ def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
     )
 
 
+PRIVACY_POLICY_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blink Delivery Privacy Policy</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --text: #172033;
+      --muted: #667085;
+      --line: #e5e7eb;
+      --brand: #0f6bff;
+      --bg: #f7f9fc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 48px 20px 72px;
+    }
+    .page {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 34px;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.1;
+    }
+    h2 {
+      margin-top: 30px;
+      font-size: 21px;
+    }
+    p, li { color: var(--muted); }
+    a { color: var(--brand); }
+    .updated {
+      margin-top: 0;
+      color: var(--muted);
+    }
+    ul { padding-left: 22px; }
+  </style>
+</head>
+<body>
+  <main>
+    <article class="page">
+      <h1>Blink Delivery Privacy Policy</h1>
+      <p class="updated">Last updated: July 12, 2026</p>
+
+      <p>
+        Blink Delivery ("Blink", "we", "our", or "us") provides courier ordering,
+        delivery tracking, customer support, and settlement features for users in Myanmar.
+        This Privacy Policy explains how we collect, use, share, and protect information
+        when you use the Blink Delivery mobile app and related services.
+      </p>
+
+      <h2>1. Information We Collect</h2>
+      <p>We may collect the following information when you use Blink Delivery:</p>
+      <ul>
+        <li>Account information, such as your phone number, username, profile photo, and payment QR image.</li>
+        <li>Delivery information, including sender and receiver names, phone numbers, pickup and drop-off addresses, city, township, building, street, notes, and map links.</li>
+        <li>Order information, such as item type, item value, delivery fee, order status, rider assignment, and delivery history.</li>
+        <li>Photos and uploaded content, such as parcel photos, payment screenshots, profile images, and chat images.</li>
+        <li>Messages sent through customer support or order chat.</li>
+        <li>Device and usage information needed to operate the app, troubleshoot problems, and improve service quality.</li>
+      </ul>
+
+      <h2>2. How We Use Information</h2>
+      <p>We use information to:</p>
+      <ul>
+        <li>Create and manage delivery orders.</li>
+        <li>Calculate delivery distance and estimated delivery fees.</li>
+        <li>Match orders with riders and show delivery status updates.</li>
+        <li>Process payment confirmation and settlement requests.</li>
+        <li>Provide customer support and order chat.</li>
+        <li>Send important notifications about orders, payments, rider updates, and account activity.</li>
+        <li>Protect our users, riders, business, and platform from fraud, misuse, and operational errors.</li>
+      </ul>
+
+      <h2>3. Location and Address Information</h2>
+      <p>
+        Blink Delivery uses addresses, city, township, and optional Google Map links to
+        calculate route distance, estimate fees, and help riders complete deliveries.
+        We do not use location information for advertising.
+      </p>
+
+      <h2>4. Photos and Uploaded Content</h2>
+      <p>
+        Uploaded photos may be stored so the platform can verify items, confirm payments,
+        update profiles, support settlement requests, and help resolve order issues.
+      </p>
+
+      <h2>5. Sharing of Information</h2>
+      <p>We share information only as needed to provide the service, including:</p>
+      <ul>
+        <li>With riders, so they can pick up and deliver orders.</li>
+        <li>With platform administrators, so they can manage orders, payments, support, and settlement.</li>
+        <li>With service providers that help us host, store, secure, and operate the app.</li>
+        <li>When required by law or to protect the safety, rights, and security of users, riders, or Blink.</li>
+      </ul>
+      <p>We do not sell personal information.</p>
+
+      <h2>6. Payments</h2>
+      <p>
+        Blink Delivery may collect payment screenshots, payment status, settlement names,
+        and payment QR images to confirm delivery fee payments and complete settlement.
+        We do not store full bank card details in the app.
+      </p>
+
+      <h2>7. Notifications</h2>
+      <p>
+        If you allow notifications, Blink Delivery may send alerts about order status,
+        payment confirmation, rider updates, chat messages, and service notices. You can
+        manage notification permission in your device settings.
+      </p>
+
+      <h2>8. Data Storage and Security</h2>
+      <p>
+        We use reasonable technical and organizational measures to protect information.
+        No method of transmission or storage is completely secure, but we work to keep
+        user information protected and accessible only for legitimate service purposes.
+      </p>
+
+      <h2>9. Data Retention</h2>
+      <p>
+        We keep information for as long as needed to provide delivery services, maintain
+        order records, support users, comply with legal obligations, resolve disputes,
+        and improve platform operations.
+      </p>
+
+      <h2>10. Children&apos;s Privacy</h2>
+      <p>
+        Blink Delivery is not intended for children under 13. We do not knowingly collect
+        personal information from children under 13.
+      </p>
+
+      <h2>11. Your Choices</h2>
+      <p>
+        You may update certain account information in the app. You may also contact us to
+        request help with your account, privacy questions, or data-related requests.
+      </p>
+
+      <h2>12. Changes to This Policy</h2>
+      <p>
+        We may update this Privacy Policy from time to time. When we make changes, we will
+        update the "Last updated" date above.
+      </p>
+
+      <h2>13. Contact Us</h2>
+      <p>
+        If you have questions about this Privacy Policy or need support, contact us at
+        <a href="mailto:support@blinkdelivery.app">support@blinkdelivery.app</a>.
+      </p>
+    </article>
+  </main>
+</body>
+</html>
+"""
+
+
 @app.get("/", response_model=HealthResponse)
 def health_check() -> HealthResponse:
     return HealthResponse(
@@ -1889,6 +2060,19 @@ def health_check() -> HealthResponse:
         service="courier-api",
         timestamp=datetime.now(timezone.utc),
     )
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_policy_page() -> HTMLResponse:
+    return HTMLResponse(
+        PRIVACY_POLICY_HTML,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@app.get("/support", response_class=HTMLResponse)
+def support_page() -> HTMLResponse:
+    return privacy_policy_page()
 
 
 @app.get("/admin", response_class=HTMLResponse)
