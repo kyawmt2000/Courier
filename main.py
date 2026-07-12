@@ -2043,8 +2043,8 @@ PRIVACY_POLICY_HTML = """
 
       <h2>13. Contact Us</h2>
       <p>
-        If you have questions about this Privacy Policy or need support, contact us at
-        <a href="mailto:support@blinkdelivery.app">support@blinkdelivery.app</a>.
+        If you have questions about this Privacy Policy or need support, send us a
+        WhatsApp message at <a href="https://wa.me/959424594930">+95 94245 94930</a>.
       </p>
     </article>
   </main>
