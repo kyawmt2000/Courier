@@ -47,16 +47,14 @@
       }
 
       .mark {
-        display: grid;
-        width: 58px;
-        height: 58px;
-        place-items: center;
-        color: white;
-        background: #0b66d8;
+        display: block;
+        width: 120px;
+        height: 70px;
+        object-fit: contain;
+        object-position: center;
+        background: white;
         border-radius: 8px;
-        box-shadow: 0 10px 22px rgb(10 103 216 / 18%);
-        font-size: 28px;
-        font-weight: 800;
+        box-shadow: 0 10px 22px rgb(15 23 42 / 8%);
       }
 
       .eyebrow {
@@ -194,6 +192,11 @@
         .policy {
           padding: 22px;
         }
+
+        .mark {
+          width: 104px;
+          height: 62px;
+        }
       }
     </style>
   </head>
@@ -201,7 +204,7 @@
     <main>
       <section class="hero">
         <div class="brand">
-          <div class="mark">B</div>
+          <img class="mark" src="/assets/logo.jpg" alt="Blink Delivery logo">
           <div>
             <p class="eyebrow">Blink Delivery</p>
             <h1>Privacy Policy</h1>
