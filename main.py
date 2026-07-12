@@ -1717,28 +1717,85 @@ ADMIN_HTML = r'''
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     text = unquote(text)
     patterns = [
-        r"@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
-        r"q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
-        r"ll=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
-        r"query=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
-        r"destination=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)",
-        r"!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)",
-        r"(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+        (r"@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"q=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"ll=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"query=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"destination=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"!3d(-?\d{1,2}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"!2d(-?\d{1,3}(?:\.\d+)?)!3d(-?\d{1,2}(?:\.\d+)?)", 2, 1),
     ]
-    for pattern in patterns:
+    for pattern, lat_group, lng_group in patterns:
         match = re.search(pattern, text)
         if match:
-            return float(match.group(1)), float(match.group(2))
+            lat = float(match.group(lat_group))
+            lng = float(match.group(lng_group))
+            if is_valid_coordinate(lat, lng):
+                return lat, lng
+
+    bare_match = re.fullmatch(r"\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*", text)
+    if bare_match:
+        lat = float(bare_match.group(1))
+        lng = float(bare_match.group(2))
+        if is_valid_coordinate(lat, lng):
+            return lat, lng
+
+    return None
+
+
+def is_valid_coordinate(lat: float, lng: float) -> bool:
+    return -90 <= lat <= 90 and -180 <= lng <= 180
+
+
+def is_google_maps_short_link(text: str) -> bool:
+    lowered = text.lower()
+    return "maps.app.goo.gl" in lowered or "goo.gl/maps" in lowered
+
+
+def google_maps_url_text(text: str) -> str | None:
+    patterns = [
+        r"https?://(?:www\.)?google\.[^\"'\s<>]+/maps[^\"'\s<>]*",
+        r"https?://maps\.app\.goo\.gl/[^\"'\s<>]+",
+        r"maps\.app\.goo\.gl/[^\"'\s<>]+",
+        r"goo\.gl/maps/[^\"'\s<>]+",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(0).replace("&amp;", "&").strip()
     return None
 
 
 async def expand_location_text(text: str) -> str:
-    if "maps.app.goo.gl" not in text and "goo.gl/maps" not in text:
+    if not is_google_maps_short_link(text):
         return text
 
+    url_text = google_maps_url_text(text) or text.strip()
+    if "://" not in url_text:
+        url_text = f"https://{url_text}"
+
     async with httpx.AsyncClient(follow_redirects=True, timeout=12) as client:
-        response = await client.get(text)
-        return str(response.url)
+        response = await client.get(
+            url_text,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                    "Mobile/15E148 Safari/604.1"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        expanded_url = str(response.url)
+        if not is_google_maps_short_link(expanded_url):
+            return expanded_url
+
+        html_url = google_maps_url_text(response.text)
+        if html_url and not is_google_maps_short_link(html_url):
+            return html_url
+
+        return text
 
 
 def google_maps_query_text(text: str) -> str:
@@ -1757,6 +1814,12 @@ def google_maps_query_text(text: str) -> str:
 
 async def geocode_location(text: str) -> tuple[float, float]:
     expanded = await expand_location_text(text.strip())
+
+    if is_google_maps_short_link(expanded):
+        raise HTTPException(
+            status_code=400,
+            detail="Google Map 短链接无法解析，请检查链接或重新复制分享链接",
+        )
 
     coordinate = parse_coordinate(expanded)
     if coordinate:
