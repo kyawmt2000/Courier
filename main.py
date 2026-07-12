@@ -1806,7 +1806,7 @@ def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) 
 async def route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
-        return await osrm_route_distance_km(origin, destination)
+        return await route_distance_fallback_km(origin, destination)
 
     origin_value = f"{origin[0]},{origin[1]}"
     destination_value = f"{destination[0]},{destination[1]}"
@@ -1827,17 +1827,17 @@ async def route_distance_km(origin: tuple[float, float], destination: tuple[floa
     top_status = payload.get("status", "UNKNOWN")
     if top_status != "OK":
         logger.warning("Google Distance Matrix failed before rows: %s", payload)
-        return await osrm_route_distance_km(origin, destination)
+        return await route_distance_fallback_km(origin, destination)
 
     try:
         element = payload["rows"][0]["elements"][0]
     except (KeyError, IndexError, TypeError):
         logger.warning("Google Distance Matrix malformed response: %s", payload)
-        return await osrm_route_distance_km(origin, destination)
+        return await route_distance_fallback_km(origin, destination)
 
     if element.get("status") != "OK":
         logger.warning("Google Distance Matrix failed: %s", payload)
-        return await osrm_route_distance_km(origin, destination)
+        return await route_distance_fallback_km(origin, destination)
 
     meters = element["distance"]["value"]
     return float(meters) / 1000
@@ -1867,6 +1867,24 @@ async def osrm_route_distance_km(origin: tuple[float, float], destination: tuple
         logger.warning("OSRM route request failed: %s", error)
 
     raise HTTPException(status_code=502, detail="路线距离计算失败，请检查 Google Map Location 后再试")
+
+
+async def route_distance_fallback_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
+    try:
+        return await osrm_route_distance_km(origin, destination)
+    except HTTPException:
+        direct_km = haversine_km(origin, destination)
+        if direct_km <= 0:
+            raise
+        estimated_road_km = direct_km * 1.3
+        logger.warning(
+            "Route APIs failed; using haversine fallback. origin=%s destination=%s direct_km=%.3f estimated_km=%.3f",
+            origin,
+            destination,
+            direct_km,
+            estimated_road_km,
+        )
+        return estimated_road_km
 
 
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
