@@ -2044,7 +2044,7 @@ PRIVACY_POLICY_HTML = """
       <h2>13. Contact Us</h2>
       <p>
         If you have questions about this Privacy Policy or need support, send us a
-        WhatsApp message at <a href="https://wa.me/959424594930">+95 94245 94930</a>.
+        WhatsApp message at <a href="https://wa.me/959424594930">+95 942 459 4930</a>.
       </p>
     </article>
   </main>
@@ -2068,11 +2068,6 @@ def privacy_policy_page() -> HTMLResponse:
         PRIVACY_POLICY_HTML,
         headers={"Cache-Control": "public, max-age=300"},
     )
-
-
-@app.get("/support", response_class=HTMLResponse)
-def support_page() -> HTMLResponse:
-    return privacy_policy_page()
 
 
 @app.get("/admin", response_class=HTMLResponse)
