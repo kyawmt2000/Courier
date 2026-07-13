@@ -2600,8 +2600,8 @@ def create_order(
     goods_image_url = clean_optional_text(request.goods_image_url)
     payment_proof_url = clean_optional_text(request.payment_proof_url)
 
-    if request.payment_mode == "cod" and request.goods_amount <= 0:
-        raise HTTPException(status_code=400, detail="货到付款订单需要填写货物价格")
+    if request.goods_amount <= 0:
+        raise HTTPException(status_code=400, detail="请填写货物价格")
 
     if not goods_image_url:
         raise HTTPException(status_code=400, detail="请上传商品图片")
@@ -2621,7 +2621,7 @@ def create_order(
         raise HTTPException(status_code=400, detail="付款金额和当前配送费不一致，请重新计算后付款")
     payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
     user_payment_status: PaymentStatus = prepaid_payment.status
-    rider_deposit_status: PaymentStatus = "unpaid" if request.payment_mode == "cod" else "not_required"
+    rider_deposit_status: PaymentStatus = "unpaid" if request.goods_amount > 0 else "not_required"
 
     order = OrderResponse(
         id=str(uuid4()),
@@ -2743,8 +2743,8 @@ def mark_rider_deposit_transferred(
         order, user_phone, stored_rider_phone = record
         if stored_rider_phone != rider_phone:
             raise HTTPException(status_code=403, detail="不能更新其他骑手的押金状态")
-        if order.payment_mode != "cod":
-            raise HTTPException(status_code=400, detail="只有货到付款订单需要骑手押金")
+        if order.rider_deposit_status == "not_required":
+            raise HTTPException(status_code=400, detail="这个订单不需要骑手押金")
         if order.rider_deposit_status == "confirmed":
             return order_for_response(order)
         updated = order.model_copy(update={"rider_deposit_status": "pending"})
@@ -2770,8 +2770,8 @@ def update_rider_order_status(
         if stored_rider_phone != rider_phone:
             raise HTTPException(status_code=403, detail="不能更新其他骑手的订单")
         if (
-            order.payment_mode == "cod"
-            and request.status in ["picking_up", "delivering"]
+            request.status in ["picking_up", "delivering"]
+            and order.rider_deposit_status != "not_required"
             and order.rider_deposit_status != "confirmed"
         ):
             raise HTTPException(status_code=403, detail="平台确认骑手押金后才能开始取件配送")
