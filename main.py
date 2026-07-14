@@ -1178,7 +1178,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v9</span>
+    <span class="version">orders-ui-v10</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -2948,7 +2948,13 @@ def cancel_order(
 async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimateResponse:
     pickup = await geocode_location(request.pickup_location)
     dropoff = await geocode_location(request.dropoff_location)
-    distance_km = max(round(await route_distance_km(pickup, dropoff), 1), 0.1)
+    direct_km = haversine_km(pickup, dropoff)
+    if direct_km < 0.05:
+        raise HTTPException(status_code=400, detail="取件和收货位置太近，请检查是否选择了同一个 Google Map Location")
+
+    distance_km = round(await route_distance_km(pickup, dropoff), 1)
+    if distance_km < 0.1:
+        raise HTTPException(status_code=400, detail="路线距离太近，请检查 Google Map Location 是否正确")
     return DistanceEstimateResponse(
         distance_km=distance_km,
         price=estimate_price(distance_km, 1),
