@@ -575,6 +575,7 @@ def upload_folder(value: str) -> str:
     folders = {
         "goods": "Goods",
         "kpay ss": "kpay ss",
+        "payment proof": "kpay ss",
         "chat": "Chats",
         "chats": "Chats",
         "nrc": "NRC",
