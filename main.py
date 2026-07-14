@@ -1177,7 +1177,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v8</span>
+    <span class="version">orders-ui-v9</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1322,11 +1322,12 @@ ADMIN_HTML = r'''
       const codOrderRows = orders.filter(order => order.payment_mode === "cod");
       const prepaidOrderRows = orders.filter(order => order.payment_mode === "prepaid");
       const usedPaymentIds = new Set(orders.map(order => order.kpay_transaction_id).filter(Boolean));
+      const isPrepaidPayment = payment => payment.payment_mode === "prepaid" || Number(payment.goods_amount || 0) > 0;
       const pendingCodPayments = (state.payments || []).filter(payment =>
-        payment.payment_mode === "cod" && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
+        !isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
       );
       const pendingPrepaidPayments = (state.payments || []).filter(payment =>
-        payment.payment_mode === "prepaid" && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
+        isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
       );
       const tables = ensureOrderTables();
       const codOrdersTable = tables.cod;
