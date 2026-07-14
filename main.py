@@ -1723,7 +1723,7 @@ ADMIN_HTML = r'''
 
 
 def parse_coordinate(text: str) -> tuple[float, float] | None:
-    text = unquote(text)
+    text = decoded_google_maps_text(text)
     patterns = [
         (r"@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"q=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
@@ -1741,6 +1741,10 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
             if is_valid_coordinate(lat, lng):
                 return lat, lng
 
+    lite_coordinate = parse_google_lite_coordinate(text)
+    if lite_coordinate:
+        return lite_coordinate
+
     bare_match = re.fullmatch(r"\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*", text)
     if bare_match:
         lat = float(bare_match.group(1))
@@ -1751,8 +1755,22 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
     return None
 
 
+def parse_google_lite_coordinate(text: str) -> tuple[float, float] | None:
+    values = [float(match.group(0)) for match in re.finditer(r"-?\d{1,6}\.\d{4,}", text)]
+    for first, second in zip(values, values[1:]):
+        if is_likely_service_coordinate(first, second):
+            return first, second
+        if is_likely_service_coordinate(second, first):
+            return second, first
+    return None
+
+
 def is_valid_coordinate(lat: float, lng: float) -> bool:
     return -90 <= lat <= 90 and -180 <= lng <= 180
+
+
+def is_likely_service_coordinate(lat: float, lng: float) -> bool:
+    return is_valid_coordinate(lat, lng) and 9 <= lat <= 29 and 92 <= lng <= 102
 
 
 def is_google_maps_short_link(text: str) -> bool:
@@ -1761,8 +1779,11 @@ def is_google_maps_short_link(text: str) -> bool:
 
 
 def google_maps_url_text(text: str) -> str | None:
+    text = decoded_google_maps_text(text)
     patterns = [
         r"https?://(?:www\.)?google\.[^\"'\s<>]+/maps[^\"'\s<>]*",
+        r"https?://(?:www\.)?google\.[^\"'\s<>]+/search[^\"'\s<>]*",
+        r"/maps\?[^\"'\s<>]+",
         r"https?://maps\.app\.goo\.gl/[^\"'\s<>]+",
         r"maps\.app\.goo\.gl/[^\"'\s<>]+",
         r"goo\.gl/maps/[^\"'\s<>]+",
@@ -1770,8 +1791,23 @@ def google_maps_url_text(text: str) -> str | None:
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            return match.group(0).replace("&amp;", "&").strip()
+            value = match.group(0).replace("&amp;", "&").strip()
+            if value.startswith(("/maps", "/search")):
+                value = f"https://www.google.com{value}"
+            return value
     return None
+
+
+def decoded_google_maps_text(text: str) -> str:
+    decoded = (
+        text.replace("\\u003d", "=")
+        .replace("\\u0026", "&")
+        .replace("\\x3d", "=")
+        .replace("\\x26", "&")
+        .replace("\\/", "/")
+        .replace("&amp;", "&")
+    )
+    return unquote(decoded)
 
 
 async def expand_location_text(text: str) -> str:
@@ -1796,17 +1832,22 @@ async def expand_location_text(text: str) -> str:
             },
         )
         expanded_url = str(response.url)
-        if not is_google_maps_short_link(expanded_url):
-            return expanded_url
+        decoded_html = decoded_google_maps_text(response.text)
+        if parse_coordinate(decoded_html):
+            return decoded_html
 
-        html_url = google_maps_url_text(response.text)
+        html_url = google_maps_url_text(decoded_html)
         if html_url and not is_google_maps_short_link(html_url):
             return html_url
+
+        if not is_google_maps_short_link(expanded_url):
+            return expanded_url
 
         return text
 
 
 def google_maps_query_text(text: str) -> str:
+    text = decoded_google_maps_text(text)
     parsed = urlparse(text)
     if "google.com" not in parsed.netloc and "maps.google" not in parsed.netloc:
         return text
@@ -1850,6 +1891,9 @@ async def geocode_location(text: str) -> tuple[float, float]:
         payload = response.json()
 
     if payload.get("status") != "OK" or not payload.get("results"):
+        nominatim_coordinate = await nominatim_geocode_location(query_text)
+        if nominatim_coordinate:
+            return nominatim_coordinate
         raise HTTPException(
             status_code=400,
             detail=f"Google Map Location 不正确或无法解析：{payload.get('status', 'UNKNOWN')}",
@@ -1857,6 +1901,33 @@ async def geocode_location(text: str) -> tuple[float, float]:
 
     location = payload["results"][0]["geometry"]["location"]
     return float(location["lat"]), float(location["lng"])
+
+
+async def nominatim_geocode_location(text: str) -> tuple[float, float] | None:
+    query = text.strip()
+    if not query:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": query, "format": "jsonv2", "limit": "1"},
+                headers={"User-Agent": "BlinkCourier/1.0 support@blink.local"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as error:
+        logger.warning("Nominatim geocode failed for %s: %s", query, error)
+        return None
+
+    if not payload:
+        return None
+
+    try:
+        return float(payload[0]["lat"]), float(payload[0]["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
