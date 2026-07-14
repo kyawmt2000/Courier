@@ -1742,6 +1742,10 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
             if is_valid_coordinate(lat, lng):
                 return lat, lng
 
+    lite_coordinate = parse_google_lite_viewport_coordinate(text)
+    if lite_coordinate:
+        return lite_coordinate
+
     lite_coordinate = parse_google_lite_coordinate(text)
     if lite_coordinate:
         return lite_coordinate
@@ -1753,6 +1757,21 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
         if is_valid_coordinate(lat, lng):
             return lat, lng
 
+    return None
+
+
+def parse_google_lite_viewport_coordinate(text: str) -> tuple[float, float] | None:
+    pattern = (
+        r"\[\s*-?\d{3,6}\.\d{4,}\s*,\s*"
+        r"(-?\d{1,3}\.\d{4,})\s*,\s*"
+        r"(-?\d{1,2}\.\d{4,})\s*\]\s*,\s*"
+        r"\[\s*0\s*,\s*0\s*,\s*0\s*\]"
+    )
+    for match in re.finditer(pattern, text):
+        lng = float(match.group(1))
+        lat = float(match.group(2))
+        if is_likely_service_coordinate(lat, lng):
+            return lat, lng
     return None
 
 
