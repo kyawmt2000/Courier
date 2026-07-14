@@ -118,6 +118,7 @@ class CreateOrderRequest(BaseModel):
 class CreatePrepaidPaymentRequest(BaseModel):
     amount: float = Field(gt=0)
     distance_km: float = Field(gt=0)
+    goods_amount: float = Field(default=0, ge=0)
     payment_proof_url: str
     payment_mode: PaymentMode = "cod"
 
@@ -143,6 +144,7 @@ class PrepaidPaymentResponse(BaseModel):
     user_phone: str
     amount: float
     distance_km: float
+    goods_amount: float = 0
     payment_mode: PaymentMode = "cod"
     status: PaymentStatus = "pending"
     created_at: datetime
@@ -1198,7 +1200,7 @@ ADMIN_HTML = r'''
     <section id="page-orders" class="page">
       <h2>货费已付款订单</h2>
       <table>
-        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>送货费付款</th><th>地址</th><th>操作</th></tr></thead>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>用户付款</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
         <tbody id="orders"></tbody>
       </table>
     </section>
@@ -1291,7 +1293,7 @@ ADMIN_HTML = r'''
         prepaidSection.innerHTML = `
           <h2>货费已付款订单</h2>
           <table>
-            <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>送货费付款</th><th>地址</th><th>操作</th></tr></thead>
+            <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>用户付款</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
             <tbody id="orders"></tbody>
           </table>
         `;
@@ -1341,13 +1343,13 @@ ADMIN_HTML = r'''
       codOrdersTable.innerHTML = pendingCodPayments.map(payment => `
         <tr>
           <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传送货费截图，等待后台确认后才能下单</span></td>
+          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
           <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
           <td>配送费 ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
           <td><span class="muted">订单创建后显示</span></td>
           <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
-          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认送货费</button>` : `<span class="pill">已确认</span>`}</td>
+          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
         </tr>`).join("") + codOrderRows.map(order => `
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
@@ -1368,24 +1370,29 @@ ADMIN_HTML = r'''
       prepaidOrdersTable.innerHTML = pendingPrepaidPayments.map(payment => `
         <tr>
           <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传送货费截图，等待后台确认后才能下单</span></td>
+          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
           <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
-          <td>${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
+          <td>用户付款 ${money(payment.amount)}<br><span class="muted">货值 ${money(payment.goods_amount || 0)} / ${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
+          <td><span class="muted">订单创建后显示</span></td>
           <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
-          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认送货费</button>` : `<span class="pill">已确认</span>`}</td>
+          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
         </tr>`).join("") + prepaidOrderRows.map(order => `
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")}</span></td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
-          <td>${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
+          <td>${riderDepositLabel(order.rider_deposit_status)}</td>
           <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
-          <td>${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">确认送货费</button>` : ""}</td>
+          <td>
+            ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">确认用户付款</button>` : ""}
+            ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
+          </td>
         </tr>`).join("");
       if (!pendingPrepaidPayments.length && !prepaidOrderRows.length) {
-        prepaidOrdersTable.innerHTML = `<tr><td colspan="7" class="muted">暂无货费已付款订单</td></tr>`;
+        prepaidOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货费已付款订单</td></tr>`;
       }
       document.getElementById("accounts").innerHTML = state.accounts.map(account => `
         <tr>
@@ -2494,6 +2501,7 @@ def create_prepaid_payment(
         user_phone=user_phone,
         amount=round(request.amount, 2),
         distance_km=request.distance_km,
+        goods_amount=round(request.goods_amount, 2),
         payment_mode=request.payment_mode,
         status="pending",
         created_at=datetime.now(timezone.utc),
@@ -2617,8 +2625,13 @@ def create_order(
         raise HTTPException(status_code=400, detail="送货费付款未通过，请重新付款")
     if prepaid_payment.status != "confirmed":
         raise HTTPException(status_code=400, detail="请等待后台确认收到送货费后再下单")
-    if abs(prepaid_payment.amount - delivery_fee) > 1:
-        raise HTTPException(status_code=400, detail="付款金额和当前配送费不一致，请重新计算后付款")
+    expected_payment_amount = delivery_fee + (request.goods_amount if request.payment_mode == "prepaid" else 0)
+    if abs(prepaid_payment.amount - expected_payment_amount) > 1:
+        raise HTTPException(status_code=400, detail="付款金额和当前订单金额不一致，请重新付款")
+    if prepaid_payment.payment_mode != request.payment_mode:
+        raise HTTPException(status_code=400, detail="付款方式和当前订单不一致，请重新付款")
+    if request.payment_mode == "prepaid" and abs(prepaid_payment.goods_amount - request.goods_amount) > 1:
+        raise HTTPException(status_code=400, detail="付款货物价格和当前订单不一致，请重新付款")
     payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
     user_payment_status: PaymentStatus = prepaid_payment.status
     rider_deposit_status: PaymentStatus = "unpaid" if request.goods_amount > 0 else "not_required"
