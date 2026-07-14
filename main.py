@@ -1323,7 +1323,7 @@ ADMIN_HTML = r'''
       const codOrderRows = orders.filter(order => order.payment_mode === "cod");
       const prepaidOrderRows = orders.filter(order => order.payment_mode === "prepaid");
       const usedPaymentIds = new Set(orders.map(order => order.kpay_transaction_id).filter(Boolean));
-      const isPrepaidPayment = payment => payment.payment_mode === "prepaid" || Number(payment.goods_amount || 0) > 0;
+      const isPrepaidPayment = payment => payment.payment_mode === "prepaid";
       const pendingCodPayments = (state.payments || []).filter(payment =>
         !isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
       );
