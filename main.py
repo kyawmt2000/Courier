@@ -1725,6 +1725,26 @@ ADMIN_HTML = r'''
 
 def parse_coordinate(text: str) -> tuple[float, float] | None:
     text = decoded_google_maps_text(text)
+    reliable_coordinate = parse_reliable_google_maps_coordinate(text)
+    if reliable_coordinate:
+        return reliable_coordinate
+
+    bare_match = re.fullmatch(r"\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*", text)
+    if bare_match:
+        lat = float(bare_match.group(1))
+        lng = float(bare_match.group(2))
+        if is_valid_coordinate(lat, lng):
+            return lat, lng
+
+    lite_coordinate = parse_google_lite_coordinate(text)
+    if lite_coordinate:
+        return lite_coordinate
+
+    return None
+
+
+def parse_reliable_google_maps_coordinate(text: str) -> tuple[float, float] | None:
+    text = decoded_google_maps_text(text)
     patterns = [
         (r"@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"q=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
@@ -1745,17 +1765,6 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
     lite_coordinate = parse_google_lite_viewport_coordinate(text)
     if lite_coordinate:
         return lite_coordinate
-
-    lite_coordinate = parse_google_lite_coordinate(text)
-    if lite_coordinate:
-        return lite_coordinate
-
-    bare_match = re.fullmatch(r"\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*", text)
-    if bare_match:
-        lat = float(bare_match.group(1))
-        lng = float(bare_match.group(2))
-        if is_valid_coordinate(lat, lng):
-            return lat, lng
 
     return None
 
@@ -1853,7 +1862,7 @@ async def expand_location_text(text: str) -> str:
         )
         expanded_url = str(response.url)
         decoded_html = decoded_google_maps_text(response.text)
-        if parse_coordinate(decoded_html):
+        if parse_reliable_google_maps_coordinate(decoded_html):
             return decoded_html
 
         html_url = google_maps_url_text(decoded_html)
@@ -1877,6 +1886,12 @@ def google_maps_query_text(text: str) -> str:
         value = params.get(key, [""])[0].strip()
         if value:
             return value
+
+    place_match = re.search(r"/(?:maps/)?place/([^?#]+?)(?:/data=|/[@?]|$)", parsed.path, re.IGNORECASE)
+    if place_match:
+        place_text = unquote(place_match.group(1)).replace("+", " ").strip()
+        if place_text:
+            return place_text
 
     return text
 
@@ -1924,30 +1939,57 @@ async def geocode_location(text: str) -> tuple[float, float]:
 
 
 async def nominatim_geocode_location(text: str) -> tuple[float, float] | None:
+    queries = nominatim_query_candidates(text)
+    if not queries:
+        return None
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        for query in queries:
+            try:
+                response = await client.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={"q": query, "format": "jsonv2", "limit": "1"},
+                    headers={"User-Agent": "BlinkCourier/1.0 support@blink.local"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except Exception as error:
+                logger.warning("Nominatim geocode failed for %s: %s", query, error)
+                continue
+
+            if not payload:
+                continue
+
+            try:
+                return float(payload[0]["lat"]), float(payload[0]["lon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    return None
+
+
+def nominatim_query_candidates(text: str) -> list[str]:
     query = text.strip()
     if not query:
-        return None
+        return []
 
-    try:
-        async with httpx.AsyncClient(timeout=12) as client:
-            response = await client.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={"q": query, "format": "jsonv2", "limit": "1"},
-                headers={"User-Agent": "BlinkCourier/1.0 support@blink.local"},
-            )
-            response.raise_for_status()
-            payload = response.json()
-    except Exception as error:
-        logger.warning("Nominatim geocode failed for %s: %s", query, error)
-        return None
+    candidates: list[str] = []
 
-    if not payload:
-        return None
+    def add_candidate(value: str) -> None:
+        value = value.strip()
+        if not value:
+            return
+        normalized = value if re.search(r"\bMyanmar\b", value, re.IGNORECASE) else f"{value}, Myanmar"
+        for candidate in (normalized, re.sub("Centre", "Center", normalized, flags=re.IGNORECASE)):
+            if candidate not in candidates:
+                candidates.append(candidate)
 
-    try:
-        return float(payload[0]["lat"]), float(payload[0]["lon"])
-    except (KeyError, TypeError, ValueError):
-        return None
+    add_candidate(query)
+    primary_name = query.split(",", 1)[0].strip()
+    if primary_name and primary_name != query:
+        add_candidate(f"{primary_name}, Yangon" if re.search(r"\bYangon\b", query, re.IGNORECASE) else primary_name)
+
+    return candidates
 
 
 def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
