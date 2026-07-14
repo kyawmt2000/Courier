@@ -1372,9 +1372,9 @@ ADMIN_HTML = r'''
           <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
           <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
-          <td>用户付款 ${money(payment.amount)}<br><span class="muted">送货费 / ${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
+          <td>送货费 ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
-          <td><span class="muted">订单创建后显示</span></td>
+          <td>${payment.goods_amount ? `骑手押金 ${money(payment.goods_amount)}` : `<span class="muted">订单创建后显示</span>`}</td>
           <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
           <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
         </tr>`).join("") + prepaidOrderRows.map(order => `
