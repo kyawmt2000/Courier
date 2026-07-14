@@ -1372,7 +1372,7 @@ ADMIN_HTML = r'''
           <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
           <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
-          <td>用户付款 ${money(payment.amount)}<br><span class="muted">货值 ${money(payment.goods_amount || 0)} / ${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
+          <td>用户付款 ${money(payment.amount)}<br><span class="muted">送货费 / ${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
           <td><span class="muted">订单创建后显示</span></td>
           <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
@@ -2625,13 +2625,10 @@ def create_order(
         raise HTTPException(status_code=400, detail="送货费付款未通过，请重新付款")
     if prepaid_payment.status != "confirmed":
         raise HTTPException(status_code=400, detail="请等待后台确认收到送货费后再下单")
-    expected_payment_amount = delivery_fee + (request.goods_amount if request.payment_mode == "prepaid" else 0)
-    if abs(prepaid_payment.amount - expected_payment_amount) > 1:
+    if abs(prepaid_payment.amount - delivery_fee) > 1:
         raise HTTPException(status_code=400, detail="付款金额和当前订单金额不一致，请重新付款")
     if prepaid_payment.payment_mode != request.payment_mode:
         raise HTTPException(status_code=400, detail="付款方式和当前订单不一致，请重新付款")
-    if request.payment_mode == "prepaid" and abs(prepaid_payment.goods_amount - request.goods_amount) > 1:
-        raise HTTPException(status_code=400, detail="付款货物价格和当前订单不一致，请重新付款")
     payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
     user_payment_status: PaymentStatus = prepaid_payment.status
     rider_deposit_status: PaymentStatus = "unpaid" if request.goods_amount > 0 else "not_required"
