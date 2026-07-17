@@ -1178,7 +1178,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v10</span>
+    <span class="version">orders-ui-v11</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1270,6 +1270,19 @@ ADMIN_HTML = r'''
     function optionHtml(options, current) {
       return options.map(v => `<option value="${v}" ${v === current ? "selected" : ""}>${label(v)}</option>`).join("");
     }
+    function dateMs(value) {
+      const time = new Date(value || 0).getTime();
+      return Number.isNaN(time) ? 0 : time;
+    }
+    function newestDateMs(item, fields) {
+      return Math.max(...fields.map(field => dateMs(item[field])));
+    }
+    function sortByDateDesc(items, fields = ["created_at"]) {
+      return [...items].sort((a, b) => newestDateMs(b, fields) - newestDateMs(a, fields));
+    }
+    function sortByDateAsc(items, fields = ["created_at"]) {
+      return [...items].sort((a, b) => newestDateMs(a, fields) - newestDateMs(b, fields));
+    }
     function showPage(page) {
       currentPage = page;
       hideDetail();
@@ -1317,19 +1330,62 @@ ADMIN_HTML = r'''
       showPage(currentPage);
     }
 
+    function pendingPaymentRow(payment, prepaid) {
+      return `
+        <tr>
+          <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
+          <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
+          <td>${prepaid ? "送货费" : "配送费"} ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
+          <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
+          <td>${prepaid && payment.goods_amount ? `骑手押金 ${money(payment.goods_amount)}` : `<span class="muted">订单创建后显示</span>`}</td>
+          <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
+          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
+        </tr>`;
+    }
+
+    function orderTableRow(order, prepaid) {
+      return `
+        <tr onclick="showDetail('${order.id}')">
+          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
+          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${paymentProofCell(order)}</td>
+          <td>${riderDepositLabel(order.rider_deposit_status)}</td>
+          <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
+          <td>
+            ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">${prepaid ? "确认用户付款" : "确认送货费"}</button>` : ""}
+            ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
+          </td>
+        </tr>`;
+    }
+
     function render() {
       const q = document.getElementById("q").value.toLowerCase();
-      const orders = state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q));
-      const codOrderRows = orders.filter(order => order.payment_mode === "cod");
-      const prepaidOrderRows = orders.filter(order => order.payment_mode === "prepaid");
+      const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q)));
+      const accounts = sortByDateDesc(
+        (state.accounts || []).filter(account => JSON.stringify(account).toLowerCase().includes(q)),
+        ["last_login_at"]
+      );
+      const codOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "cod"));
+      const prepaidOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "prepaid"));
       const usedPaymentIds = new Set(orders.map(order => order.kpay_transaction_id).filter(Boolean));
       const isPrepaidPayment = payment => payment.payment_mode === "prepaid";
-      const pendingCodPayments = (state.payments || []).filter(payment =>
+      const pendingCodPayments = sortByDateDesc((state.payments || []).filter(payment =>
         !isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
-      );
-      const pendingPrepaidPayments = (state.payments || []).filter(payment =>
+      ));
+      const pendingPrepaidPayments = sortByDateDesc((state.payments || []).filter(payment =>
         isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
-      );
+      ));
+      const codRows = sortByDateDesc([
+        ...pendingCodPayments.map(payment => ({ kind: "payment", payment, created_at: payment.created_at })),
+        ...codOrderRows.map(order => ({ kind: "order", order, created_at: order.created_at }))
+      ]);
+      const prepaidRows = sortByDateDesc([
+        ...pendingPrepaidPayments.map(payment => ({ kind: "payment", payment, created_at: payment.created_at })),
+        ...prepaidOrderRows.map(order => ({ kind: "order", order, created_at: order.created_at }))
+      ]);
       const tables = ensureOrderTables();
       const codOrdersTable = tables.cod;
       const prepaidOrdersTable = tables.prepaid;
@@ -1342,61 +1398,19 @@ ADMIN_HTML = r'''
         return;
       }
 
-      codOrdersTable.innerHTML = pendingCodPayments.map(payment => `
-        <tr>
-          <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
-          <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
-          <td>配送费 ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
-          <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
-          <td><span class="muted">订单创建后显示</span></td>
-          <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
-          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
-        </tr>`).join("") + codOrderRows.map(order => `
-        <tr onclick="showDetail('${order.id}')">
-          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
-          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
-          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
-          <td>${paymentProofCell(order)}</td>
-          <td>${riderDepositLabel(order.rider_deposit_status)}</td>
-          <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
-          <td>
-            ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">确认送货费</button>` : ""}
-            ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
-          </td>
-        </tr>`).join("");
-      if (!pendingCodPayments.length && !codOrderRows.length) {
+      codOrdersTable.innerHTML = codRows.map(row =>
+        row.kind === "payment" ? pendingPaymentRow(row.payment, false) : orderTableRow(row.order, false)
+      ).join("");
+      if (!codRows.length) {
         codOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货到付款订单</td></tr>`;
       }
-      prepaidOrdersTable.innerHTML = pendingPrepaidPayments.map(payment => `
-        <tr>
-          <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
-          <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
-          <td>送货费 ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
-          <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
-          <td>${payment.goods_amount ? `骑手押金 ${money(payment.goods_amount)}` : `<span class="muted">订单创建后显示</span>`}</td>
-          <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
-          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
-        </tr>`).join("") + prepaidOrderRows.map(order => `
-        <tr onclick="showDetail('${order.id}')">
-          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")}</span></td>
-          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
-          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
-          <td>${paymentProofCell(order)}</td>
-          <td>${riderDepositLabel(order.rider_deposit_status)}</td>
-          <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
-          <td>
-            ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">确认用户付款</button>` : ""}
-            ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
-          </td>
-        </tr>`).join("");
-      if (!pendingPrepaidPayments.length && !prepaidOrderRows.length) {
+      prepaidOrdersTable.innerHTML = prepaidRows.map(row =>
+        row.kind === "payment" ? pendingPaymentRow(row.payment, true) : orderTableRow(row.order, true)
+      ).join("");
+      if (!prepaidRows.length) {
         prepaidOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货费已付款订单</td></tr>`;
       }
-      document.getElementById("accounts").innerHTML = state.accounts.map(account => `
+      document.getElementById("accounts").innerHTML = accounts.map(account => `
         <tr>
           <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
           <td>${escapeHtml(account.nickname || "")}</td>
@@ -1404,7 +1418,17 @@ ADMIN_HTML = r'''
           <td>${escapeHtml(account.phone)}</td>
           <td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td>
         </tr>`).join("");
-      document.getElementById("settlements").innerHTML = orders.map(order => `
+      if (!accounts.length) {
+        document.getElementById("accounts").innerHTML = `<tr><td colspan="5" class="muted">暂无账号资料</td></tr>`;
+      }
+      const settlementRows = sortByDateDesc(orders, [
+        "user_settlement_requested_at",
+        "rider_settlement_requested_at",
+        "user_settlement_paid_at",
+        "rider_settlement_paid_at",
+        "created_at"
+      ]);
+      document.getElementById("settlements").innerHTML = settlementRows.map(order => `
         <tr>
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
@@ -1417,6 +1441,9 @@ ADMIN_HTML = r'''
             ${order.rider_settlement_qr_url && !["paid_to_rider","completed"].includes(order.settlement_status) ? `<button onclick="confirmRiderSettlement('${order.id}')">确认已转账送货费</button>` : ""}
           </td>
         </tr>`).join("");
+      if (!settlementRows.length) {
+        document.getElementById("settlements").innerHTML = `<tr><td colspan="7" class="muted">暂无结算记录</td></tr>`;
+      }
       renderServiceChat();
     }
 
@@ -1428,7 +1455,7 @@ ADMIN_HTML = r'''
           grouped.set(message.conversation_id, message);
         }
       });
-      return Array.from(grouped.values()).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      return sortByDateDesc(Array.from(grouped.values()));
     }
 
     function selectServiceConversation(conversationId) {
@@ -1464,7 +1491,7 @@ ADMIN_HTML = r'''
 
       const messages = state.messages
         .filter(message => message.conversation_id === selectedServiceConversationId)
-        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        .sort((a, b) => dateMs(a.created_at) - dateMs(b.created_at));
       title.textContent = selectedServiceConversationId || "聊天记录";
       chat.innerHTML = messages.map(message => `
         <p>
