@@ -1181,7 +1181,9 @@ ADMIN_HTML = r'''
     .conversation-row.active { border-color: #111827; background: #111827; color: #fff; }
     .account-row { cursor: pointer; }
     .account-row.active { background: #eef2ff; }
-    .account-detail { margin-top: 14px; display: grid; gap: 14px; }
+    .accounts-layout { display: grid; grid-template-columns: minmax(460px, .9fr) minmax(560px, 1.1fr); gap: 16px; align-items: start; }
+    .accounts-list { min-width: 0; overflow-x: auto; }
+    .account-detail { min-width: 0; max-height: calc(100vh - 180px); overflow: auto; display: grid; gap: 14px; }
     .account-detail h3 { margin: 0 0 8px; font-size: 15px; }
     .mini-table { table-layout: fixed; }
     .mini-table td, .mini-table th { padding: 8px 6px; font-size: 13px; }
@@ -1195,13 +1197,14 @@ ADMIN_HTML = r'''
     .service-reply input[type="file"] { max-width: 190px; align-self: center; }
     .empty { padding: 28px; text-align: center; color: #6b7280; background: #f9fafb; border-radius: 8px; }
     .hidden { display: none !important; }
+    @media (max-width: 1100px) { .accounts-layout { grid-template-columns: 1fr; } .account-detail { max-height: none; } }
     @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
   </style>
 </head>
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v13</span>
+    <span class="version">orders-ui-v14</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1242,8 +1245,12 @@ ADMIN_HTML = r'''
     </section>
     <section id="page-accounts" class="page">
       <h2>账号资料</h2>
-      <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>手机号</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
-      <div id="accountDetail" class="account-detail"></div>
+      <div class="accounts-layout">
+        <div class="accounts-list">
+          <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>手机号</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
+        </div>
+        <div id="accountDetail" class="account-detail"></div>
+      </div>
     </section>
     <section id="page-settlements" class="page">
       <h2>结算</h2>
