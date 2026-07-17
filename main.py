@@ -1151,9 +1151,21 @@ ADMIN_HTML = r'''
     .page.grid.active { display: grid; }
     section h2 { margin: 0 0 12px; font-size: 17px; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    table.orders-table { table-layout: fixed; }
+    table.orders-table .col-order { width: 130px; }
+    table.orders-table .col-party { width: 170px; }
+    table.orders-table .col-status { width: 88px; }
+    table.orders-table .col-amount { width: 100px; }
+    table.orders-table .col-proof { width: 118px; }
+    table.orders-table .col-deposit { width: 88px; }
+    table.orders-table .col-actions { width: 150px; }
     th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
     th { color: #6b7280; font-weight: 700; }
     tr:hover { background: #f9fafb; }
+    .address-cell { width: 100%; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }
+    .address-cell .muted { display: block; margin-top: 4px; }
+    .actions-cell { width: 150px; }
+    .actions-cell button { width: 100%; margin-bottom: 6px; padding: 8px 6px; white-space: normal; }
     .grid { display: grid; grid-template-columns: 1.4fr .9fr; gap: 16px; align-items: start; }
     .pill { display: inline-flex; border-radius: 999px; padding: 3px 8px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 700; }
     .muted { color: #6b7280; }
@@ -1178,7 +1190,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v11</span>
+    <span class="version">orders-ui-v12</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1193,14 +1205,22 @@ ADMIN_HTML = r'''
   <main>
     <section id="page-payments" class="page active">
       <h2>货到付款订单</h2>
-      <table>
+      <table class="orders-table">
+        <colgroup>
+          <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
+          <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
+        </colgroup>
         <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>送货费付款</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
         <tbody id="codOrders"></tbody>
       </table>
     </section>
     <section id="page-orders" class="page">
       <h2>货费已付款订单</h2>
-      <table>
+      <table class="orders-table">
+        <colgroup>
+          <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
+          <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
+        </colgroup>
         <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>用户付款</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
         <tbody id="orders"></tbody>
       </table>
@@ -1306,7 +1326,11 @@ ADMIN_HTML = r'''
         prepaidSection.className = "page";
         prepaidSection.innerHTML = `
           <h2>货费已付款订单</h2>
-          <table>
+          <table class="orders-table">
+            <colgroup>
+              <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
+              <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
+            </colgroup>
             <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>用户付款</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
             <tbody id="orders"></tbody>
           </table>
@@ -1339,8 +1363,8 @@ ADMIN_HTML = r'''
           <td>${prepaid ? "送货费" : "配送费"} ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
           <td>${prepaid && payment.goods_amount ? `骑手押金 ${money(payment.goods_amount)}` : `<span class="muted">订单创建后显示</span>`}</td>
-          <td><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
-          <td>${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
+          <td class="address-cell"><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
+          <td class="actions-cell">${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
         </tr>`;
     }
 
@@ -1353,8 +1377,8 @@ ADMIN_HTML = r'''
           <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
           <td>${riderDepositLabel(order.rider_deposit_status)}</td>
-          <td>${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
-          <td>
+          <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
+          <td class="actions-cell">
             ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">${prepaid ? "确认用户付款" : "确认送货费"}</button>` : ""}
             ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
           </td>
