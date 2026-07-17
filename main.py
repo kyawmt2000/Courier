@@ -1106,7 +1106,7 @@ def load_admin_accounts() -> list[dict]:
     return result
 
 
-def load_admin_chat_messages(limit: int = 200) -> list[dict]:
+def load_admin_chat_messages(limit: int = 1000) -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
             """
@@ -1179,6 +1179,17 @@ ADMIN_HTML = r'''
     .conversation-list { display: grid; gap: 8px; }
     .conversation-row { width: 100%; text-align: left; background: #fff; color: #111827; border: 1px solid #e5e7eb; }
     .conversation-row.active { border-color: #111827; background: #111827; color: #fff; }
+    .account-row { cursor: pointer; }
+    .account-row.active { background: #eef2ff; }
+    .account-detail { margin-top: 14px; display: grid; gap: 14px; }
+    .account-detail h3 { margin: 0 0 8px; font-size: 15px; }
+    .mini-table { table-layout: fixed; }
+    .mini-table td, .mini-table th { padding: 8px 6px; font-size: 13px; }
+    .chat-thread { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; margin-bottom: 10px; background: #f9fafb; }
+    .chat-thread-title { display: flex; justify-content: space-between; gap: 10px; font-weight: 700; margin-bottom: 8px; }
+    .chat-line { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #e5e7eb; }
+    .chat-line:first-of-type { border-top: 0; padding-top: 0; }
+    .chat-line img { max-width: 160px; max-height: 160px; object-fit: contain; border-radius: 8px; background: #f3f4f6; margin-top: 6px; }
     .service-reply { display: flex; gap: 8px; margin-top: 12px; }
     .service-reply textarea { flex: 1; min-height: 44px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; resize: vertical; }
     .service-reply input[type="file"] { max-width: 190px; align-self: center; }
@@ -1190,7 +1201,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v12</span>
+    <span class="version">orders-ui-v13</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1232,6 +1243,7 @@ ADMIN_HTML = r'''
     <section id="page-accounts" class="page">
       <h2>账号资料</h2>
       <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>手机号</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
+      <div id="accountDetail" class="account-detail"></div>
     </section>
     <section id="page-settlements" class="page">
       <h2>结算</h2>
@@ -1263,6 +1275,7 @@ ADMIN_HTML = r'''
     let state = { orders: [], accounts: [], messages: [], payments: [] };
     let currentPage = "payments";
     let selectedServiceConversationId = null;
+    let selectedAccountPhone = null;
     const pages = ["payments","orders","accounts","settlements","service"];
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
@@ -1286,6 +1299,9 @@ ADMIN_HTML = r'''
     function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[s]));
+    }
+    function jsValue(value) {
+      return escapeHtml(JSON.stringify(String(value ?? "")));
     }
     function optionHtml(options, current) {
       return options.map(v => `<option value="${v}" ${v === current ? "selected" : ""}>${label(v)}</option>`).join("");
@@ -1434,17 +1450,21 @@ ADMIN_HTML = r'''
       if (!prepaidRows.length) {
         prepaidOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货费已付款订单</td></tr>`;
       }
+      if (selectedAccountPhone && !accounts.some(account => account.phone === selectedAccountPhone)) {
+        selectedAccountPhone = null;
+      }
       document.getElementById("accounts").innerHTML = accounts.map(account => `
-        <tr>
+        <tr class="account-row ${account.phone === selectedAccountPhone ? "active" : ""}" onclick="selectAccount(${jsValue(account.phone)})">
           <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
           <td>${escapeHtml(account.nickname || "")}</td>
-          <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
+          <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
           <td>${escapeHtml(account.phone)}</td>
           <td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td>
         </tr>`).join("");
       if (!accounts.length) {
         document.getElementById("accounts").innerHTML = `<tr><td colspan="5" class="muted">暂无账号资料</td></tr>`;
       }
+      renderAccountDetail();
       const settlementRows = sortByDateDesc(orders, [
         "user_settlement_requested_at",
         "rider_settlement_requested_at",
@@ -1469,6 +1489,126 @@ ADMIN_HTML = r'''
         document.getElementById("settlements").innerHTML = `<tr><td colspan="7" class="muted">暂无结算记录</td></tr>`;
       }
       renderServiceChat();
+    }
+
+    function selectAccount(phone) {
+      selectedAccountPhone = phone;
+      render();
+    }
+
+    function orderShortCode(order) {
+      return `#${escapeHtml(order.id.slice(0, 6).toUpperCase())}`;
+    }
+
+    function accountOrderRow(order, roleText) {
+      return `
+        <tr onclick="showDetail('${order.id}')">
+          <td><strong>${orderShortCode(order)}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(roleText)}</td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
+          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
+        </tr>`;
+    }
+
+    function accountOrdersTable(title, orders, roleText) {
+      const rows = sortByDateDesc(orders).map(order => accountOrderRow(order, roleText)).join("");
+      return `
+        <section>
+          <h3>${escapeHtml(title)} (${orders.length})</h3>
+          <table class="mini-table">
+            <thead><tr><th>订单</th><th>身份</th><th>状态</th><th>金额</th><th>地址</th></tr></thead>
+            <tbody>${rows || `<tr><td colspan="5" class="muted">暂无记录</td></tr>`}</tbody>
+          </table>
+        </section>`;
+    }
+
+    function accountConversationTitle(conversationId, phone) {
+      if (conversationId === `account:${phone}`.toLowerCase()) {
+        return "客服主会话";
+      }
+      if (conversationId.startsWith("order:")) {
+        const orderId = conversationId.slice("order:".length);
+        const order = state.orders.find(item => item.id.toLowerCase() === orderId.toLowerCase());
+        if (order) {
+          const otherSide = order.user_phone === phone
+            ? (order.rider_phone || "未接单骑手")
+            : order.user_phone;
+          return `订单 ${order.id.slice(0, 6).toUpperCase()} / 对方：${otherSide}`;
+        }
+      }
+      return conversationId;
+    }
+
+    function accountChatThreads(phone, relatedOrders) {
+      const conversationIds = new Set([`account:${phone}`.toLowerCase()]);
+      relatedOrders.forEach(order => conversationIds.add(`order:${order.id}`.toLowerCase()));
+      const relatedMessages = (state.messages || []).filter(message => {
+        const conversationId = String(message.conversation_id || "").toLowerCase();
+        return message.sender_phone === phone || conversationIds.has(conversationId);
+      });
+      const grouped = new Map();
+      relatedMessages.forEach(message => {
+        const conversationId = String(message.conversation_id || "").toLowerCase();
+        if (!grouped.has(conversationId)) grouped.set(conversationId, []);
+        grouped.get(conversationId).push(message);
+      });
+      return Array.from(grouped.entries())
+        .map(([conversationId, messages]) => ({
+          conversationId,
+          messages: sortByDateAsc(messages),
+          latestAt: Math.max(...messages.map(message => dateMs(message.created_at)))
+        }))
+        .sort((a, b) => b.latestAt - a.latestAt);
+    }
+
+    function accountChatSection(phone, relatedOrders) {
+      const threads = accountChatThreads(phone, relatedOrders);
+      const content = threads.map(thread => `
+        <div class="chat-thread">
+          <div class="chat-thread-title">
+            <span>${escapeHtml(accountConversationTitle(thread.conversationId, phone))}</span>
+            <span class="muted">${escapeHtml(new Date(thread.latestAt).toLocaleString())}</span>
+          </div>
+          ${thread.messages.map(message => `
+            <p class="chat-line">
+              <strong>${escapeHtml(message.sender_name)}</strong>
+              <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
+              ${escapeHtml(message.text || "")}
+              ${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}
+            </p>
+          `).join("")}
+        </div>
+      `).join("");
+      return `
+        <section>
+          <h3>聊天记录 (${threads.length})</h3>
+          ${content || `<div class="empty">暂无相关聊天记录</div>`}
+        </section>`;
+    }
+
+    function renderAccountDetail() {
+      const container = document.getElementById("accountDetail");
+      if (!container) return;
+      if (!selectedAccountPhone) {
+        container.innerHTML = `<div class="empty">点击上方账号，可查看他下的单、接的单和相关聊天记录</div>`;
+        return;
+      }
+      const account = (state.accounts || []).find(item => item.phone === selectedAccountPhone);
+      const placedOrders = (state.orders || []).filter(order => order.user_phone === selectedAccountPhone);
+      const acceptedOrders = (state.orders || []).filter(order => order.rider_phone === selectedAccountPhone);
+      const relatedOrders = Array.from(new Map([...placedOrders, ...acceptedOrders].map(order => [order.id, order])).values());
+      container.innerHTML = `
+        <section>
+          <h3>账号详情</h3>
+          <div class="row"><b>手机号</b><span>${escapeHtml(selectedAccountPhone)}</span></div>
+          <div class="row"><b>昵称</b><span>${escapeHtml(account?.nickname || "")}</span></div>
+          <div class="row"><b>最近登录</b><span>${account?.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</span></div>
+        </section>
+        ${accountOrdersTable("他下的单", placedOrders, "发货人/用户")}
+        ${accountOrdersTable("他接的单", acceptedOrders, "骑手")}
+        ${accountChatSection(selectedAccountPhone, relatedOrders)}
+      `;
     }
 
     function serviceConversations() {
