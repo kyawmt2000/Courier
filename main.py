@@ -1185,6 +1185,10 @@ ADMIN_HTML = r'''
     .accounts-list { min-width: 0; overflow-x: auto; }
     .account-detail { min-width: 0; max-height: calc(100vh - 180px); overflow: auto; display: grid; gap: 14px; }
     .account-detail h3 { margin: 0 0 8px; font-size: 15px; }
+    .account-tabs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .account-tab { background: #fff; color: #374151; border-color: #d1d5db; }
+    .account-tab.active { background: #111827; color: #fff; border-color: #111827; }
+    .account-panel { min-width: 0; }
     .mini-table { table-layout: fixed; }
     .mini-table td, .mini-table th { padding: 8px 6px; font-size: 13px; }
     .chat-thread { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; margin-bottom: 10px; background: #f9fafb; }
@@ -1204,7 +1208,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v14</span>
+    <span class="version">orders-ui-v15</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1283,6 +1287,7 @@ ADMIN_HTML = r'''
     let currentPage = "payments";
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
+    let selectedAccountPanel = "placed";
     const pages = ["payments","orders","accounts","settlements","service"];
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
@@ -1500,7 +1505,13 @@ ADMIN_HTML = r'''
 
     function selectAccount(phone) {
       selectedAccountPhone = phone;
+      selectedAccountPanel = "placed";
       render();
+    }
+
+    function selectAccountPanel(panel) {
+      selectedAccountPanel = panel;
+      renderAccountDetail();
     }
 
     function orderShortCode(order) {
@@ -1518,10 +1529,10 @@ ADMIN_HTML = r'''
         </tr>`;
     }
 
-    function accountOrdersTable(title, orders, roleText) {
+    function accountOrdersPanel(title, orders, roleText) {
       const rows = sortByDateDesc(orders).map(order => accountOrderRow(order, roleText)).join("");
       return `
-        <section>
+        <section class="account-panel">
           <h3>${escapeHtml(title)} (${orders.length})</h3>
           <table class="mini-table">
             <thead><tr><th>订单</th><th>身份</th><th>状态</th><th>金额</th><th>地址</th></tr></thead>
@@ -1588,10 +1599,14 @@ ADMIN_HTML = r'''
         </div>
       `).join("");
       return `
-        <section>
+        <section class="account-panel">
           <h3>聊天记录 (${threads.length})</h3>
           ${content || `<div class="empty">暂无相关聊天记录</div>`}
         </section>`;
+    }
+
+    function accountTabButton(panel, text, count) {
+      return `<button class="account-tab ${selectedAccountPanel === panel ? "active" : ""}" onclick="selectAccountPanel('${panel}')">${escapeHtml(text)} (${count})</button>`;
     }
 
     function renderAccountDetail() {
@@ -1605,6 +1620,12 @@ ADMIN_HTML = r'''
       const placedOrders = (state.orders || []).filter(order => order.user_phone === selectedAccountPhone);
       const acceptedOrders = (state.orders || []).filter(order => order.rider_phone === selectedAccountPhone);
       const relatedOrders = Array.from(new Map([...placedOrders, ...acceptedOrders].map(order => [order.id, order])).values());
+      const chatThreads = accountChatThreads(selectedAccountPhone, relatedOrders);
+      const panelHtml = selectedAccountPanel === "accepted"
+        ? accountOrdersPanel("他接的单", acceptedOrders, "骑手")
+        : selectedAccountPanel === "chat"
+          ? accountChatSection(selectedAccountPhone, relatedOrders)
+          : accountOrdersPanel("他下的单", placedOrders, "发货人/用户");
       container.innerHTML = `
         <section>
           <h3>账号详情</h3>
@@ -1612,9 +1633,14 @@ ADMIN_HTML = r'''
           <div class="row"><b>昵称</b><span>${escapeHtml(account?.nickname || "")}</span></div>
           <div class="row"><b>最近登录</b><span>${account?.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</span></div>
         </section>
-        ${accountOrdersTable("他下的单", placedOrders, "发货人/用户")}
-        ${accountOrdersTable("他接的单", acceptedOrders, "骑手")}
-        ${accountChatSection(selectedAccountPhone, relatedOrders)}
+        <section>
+          <div class="account-tabs">
+            ${accountTabButton("placed", "他下的单", placedOrders.length)}
+            ${accountTabButton("accepted", "他接的单", acceptedOrders.length)}
+            ${accountTabButton("chat", "聊天记录", chatThreads.length)}
+          </div>
+        </section>
+        ${panelHtml}
       `;
     }
 
