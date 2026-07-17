@@ -1736,10 +1736,6 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
         if is_valid_coordinate(lat, lng):
             return lat, lng
 
-    lite_coordinate = parse_google_lite_coordinate(text)
-    if lite_coordinate:
-        return lite_coordinate
-
     return None
 
 
@@ -1762,35 +1758,6 @@ def parse_reliable_google_maps_coordinate(text: str) -> tuple[float, float] | No
             if is_valid_coordinate(lat, lng):
                 return lat, lng
 
-    lite_coordinate = parse_google_lite_viewport_coordinate(text)
-    if lite_coordinate:
-        return lite_coordinate
-
-    return None
-
-
-def parse_google_lite_viewport_coordinate(text: str) -> tuple[float, float] | None:
-    pattern = (
-        r"\[\s*-?\d{3,6}\.\d{4,}\s*,\s*"
-        r"(-?\d{1,3}\.\d{4,})\s*,\s*"
-        r"(-?\d{1,2}\.\d{4,})\s*\]\s*,\s*"
-        r"\[\s*0\s*,\s*0\s*,\s*0\s*\]"
-    )
-    for match in re.finditer(pattern, text):
-        lng = float(match.group(1))
-        lat = float(match.group(2))
-        if is_likely_service_coordinate(lat, lng):
-            return lat, lng
-    return None
-
-
-def parse_google_lite_coordinate(text: str) -> tuple[float, float] | None:
-    values = [float(match.group(0)) for match in re.finditer(r"-?\d{1,6}\.\d{4,}", text)]
-    for first, second in zip(values, values[1:]):
-        if is_likely_service_coordinate(first, second):
-            return first, second
-        if is_likely_service_coordinate(second, first):
-            return second, first
     return None
 
 
