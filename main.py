@@ -1409,7 +1409,7 @@ ADMIN_HTML = r'''
     function pendingPaymentRow(payment, prepaid) {
       return `
         <tr>
-          <td><strong>付款申请 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
+          <td><strong>订单 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
           <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
           <td>${prepaid ? "送货费" : "配送费"} ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
@@ -3007,12 +3007,14 @@ def create_order(
         raise HTTPException(status_code=400, detail="付款金额和当前订单金额不一致，请重新付款")
     if prepaid_payment.payment_mode != request.payment_mode:
         raise HTTPException(status_code=400, detail="付款方式和当前订单不一致，请重新付款")
+    if load_order_record(kpay_transaction_id):
+        raise HTTPException(status_code=400, detail="这个付款订单已经创建过，请刷新订单列表")
     payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
     user_payment_status: PaymentStatus = prepaid_payment.status
     rider_deposit_status: PaymentStatus = "unpaid" if request.goods_amount > 0 else "not_required"
 
     order = OrderResponse(
-        id=str(uuid4()),
+        id=kpay_transaction_id,
         pickup_address=request.pickup_address,
         dropoff_address=request.dropoff_address,
         parcel_type=request.parcel_type,
