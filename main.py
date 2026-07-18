@@ -167,6 +167,8 @@ class OrderResponse(BaseModel):
     distance_km: float
     price: float
     delivery_fee: float
+    platform_delivery_fee: float = 0
+    rider_delivery_fee: float = 0
     payment_mode: PaymentMode = "cod"
     goods_amount: float = 0
     goods_image_url: str | None = None
@@ -720,9 +722,23 @@ def upload_base64_image(image_data: str, content_type: str | None, file_name: st
     return f"https://storage.googleapis.com/{bucket_name}/{quote(object_name)}"
 
 
+def delivery_platform_fee(delivery_fee: float) -> float:
+    rate = 0.08 if delivery_fee >= 10_000 else 0.10
+    return round(delivery_fee * rate)
+
+
+def delivery_payout_fee(delivery_fee: float) -> float:
+    return max(delivery_fee - delivery_platform_fee(delivery_fee), 0)
+
+
 def order_for_response(order: OrderResponse) -> OrderResponse:
+    delivery_fee = order.delivery_fee or order.price
+    platform_fee = order.platform_delivery_fee or delivery_platform_fee(delivery_fee)
+    rider_fee = order.rider_delivery_fee or delivery_payout_fee(delivery_fee)
     return order.model_copy(
         update={
+            "platform_delivery_fee": platform_fee,
+            "rider_delivery_fee": rider_fee,
             "goods_image_url": signed_gcs_read_url(order.goods_image_url),
             "payment_proof_url": signed_gcs_read_url(order.payment_proof_url),
             "rider_settlement_qr_url": signed_gcs_read_url(order.rider_settlement_qr_url),
@@ -2620,10 +2636,13 @@ def admin_update_order(
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_paid_at:
         updates["rider_settlement_paid_at"] = now
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_bill_created_at:
-        rider_amount = order.delivery_fee or order.price
+        delivery_fee = order.delivery_fee or order.price
+        platform_fee = order.platform_delivery_fee or delivery_platform_fee(delivery_fee)
+        rider_amount = order.rider_delivery_fee or delivery_payout_fee(delivery_fee)
         updates["rider_settlement_bill_title"] = "送货费已结算"
         updates["rider_settlement_bill_message"] = (
-            f"订单 #{order.id[:6].upper()} 送货费 {rider_amount:,.0f} MMK 已结算给骑手，请查收。"
+            f"订单 #{order.id[:6].upper()} 原送货费 {delivery_fee:,.0f} MMK，"
+            f"平台扣费 {platform_fee:,.0f} MMK，最终送货费 {rider_amount:,.0f} MMK 已结算给骑手，请查收。"
         )
         updates["rider_settlement_bill_amount"] = rider_amount
         updates["rider_settlement_bill_created_at"] = now
@@ -2961,6 +2980,8 @@ def create_order(
 ) -> OrderResponse:
     user_phone = require_account_phone(authorization)
     delivery_fee = estimate_price(request.distance_km, request.weight_kg)
+    platform_delivery_fee = delivery_platform_fee(delivery_fee)
+    rider_delivery_fee = delivery_payout_fee(delivery_fee)
     kpay_transaction_id = clean_optional_text(request.kpay_transaction_id)
     goods_image_url = clean_optional_text(request.goods_image_url)
     payment_proof_url = clean_optional_text(request.payment_proof_url)
@@ -3000,6 +3021,8 @@ def create_order(
         distance_km=request.distance_km,
         price=delivery_fee,
         delivery_fee=delivery_fee,
+        platform_delivery_fee=platform_delivery_fee,
+        rider_delivery_fee=rider_delivery_fee,
         payment_mode=request.payment_mode,
         goods_amount=request.goods_amount,
         goods_image_url=goods_image_url,
