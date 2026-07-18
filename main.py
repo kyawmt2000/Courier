@@ -190,10 +190,18 @@ class OrderResponse(BaseModel):
     rider_settlement_qr_url: str | None = None
     rider_settlement_requested_at: datetime | None = None
     rider_settlement_paid_at: datetime | None = None
+    rider_settlement_bill_title: str | None = None
+    rider_settlement_bill_message: str | None = None
+    rider_settlement_bill_amount: float | None = None
+    rider_settlement_bill_created_at: datetime | None = None
     user_settlement_name: str | None = None
     user_settlement_qr_url: str | None = None
     user_settlement_requested_at: datetime | None = None
     user_settlement_paid_at: datetime | None = None
+    user_settlement_bill_title: str | None = None
+    user_settlement_bill_message: str | None = None
+    user_settlement_bill_amount: float | None = None
+    user_settlement_bill_created_at: datetime | None = None
 
 
 class SignedUploadRequest(BaseModel):
@@ -2608,10 +2616,34 @@ def admin_update_order(
         }.items()
         if value is not None
     }
+    now = datetime.now(timezone.utc)
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_paid_at:
-        updates["rider_settlement_paid_at"] = datetime.now(timezone.utc)
-    if request.settlement_status in ("paid_to_user", "completed") and not order.user_settlement_paid_at:
-        updates["user_settlement_paid_at"] = datetime.now(timezone.utc)
+        updates["rider_settlement_paid_at"] = now
+    if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_bill_created_at:
+        rider_amount = order.delivery_fee or order.price
+        updates["rider_settlement_bill_title"] = "送货费已结算"
+        updates["rider_settlement_bill_message"] = (
+            f"订单 #{order.id[:6].upper()} 送货费 {rider_amount:,.0f} MMK 已结算给骑手，请查收。"
+        )
+        updates["rider_settlement_bill_amount"] = rider_amount
+        updates["rider_settlement_bill_created_at"] = now
+    if (
+        request.settlement_status in ("paid_to_user", "completed")
+        and order.payment_mode == "cod"
+        and not order.user_settlement_paid_at
+    ):
+        updates["user_settlement_paid_at"] = now
+    if (
+        request.settlement_status in ("paid_to_user", "completed")
+        and order.payment_mode == "cod"
+        and not order.user_settlement_bill_created_at
+    ):
+        updates["user_settlement_bill_title"] = "货费已转请查收"
+        updates["user_settlement_bill_message"] = (
+            f"订单 #{order.id[:6].upper()} 货费 {order.goods_amount:,.0f} MMK 已转给用户，请查收。"
+        )
+        updates["user_settlement_bill_amount"] = order.goods_amount
+        updates["user_settlement_bill_created_at"] = now
     updated = order.model_copy(update=updates)
     save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
     return order_for_response(updated)
