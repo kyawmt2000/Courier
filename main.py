@@ -2659,7 +2659,7 @@ def admin_update_order(
     ):
         updates["user_settlement_bill_title"] = "货费已转请查收"
         updates["user_settlement_bill_message"] = (
-            f"订单 #{order.id[:6].upper()} 货费 {order.goods_amount:,.0f} MMK 已转给用户，请查收。"
+            f"货费 {order.goods_amount:,.0f} MMK 已转给用户，请查收。"
         )
         updates["user_settlement_bill_amount"] = order.goods_amount
         updates["user_settlement_bill_created_at"] = now
