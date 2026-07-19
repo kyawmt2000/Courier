@@ -1990,13 +1990,14 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
 def parse_reliable_google_maps_coordinate(text: str) -> tuple[float, float] | None:
     text = decoded_google_maps_text(text)
     patterns = [
-        (r"@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"!3d(-?\d{1,2}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"!2d(-?\d{1,3}(?:\.\d+)?)!3d(-?\d{1,2}(?:\.\d+)?)", 2, 1),
         (r"q=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"ll=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"query=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"destination=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
-        (r"!3d(-?\d{1,2}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)", 1, 2),
-        (r"!2d(-?\d{1,3}(?:\.\d+)?)!3d(-?\d{1,2}(?:\.\d+)?)", 2, 1),
+        (r"daddr=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
     ]
     for pattern, lat_group, lng_group in patterns:
         match = re.search(pattern, text)
