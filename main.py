@@ -2020,25 +2020,30 @@ def is_likely_service_coordinate(lat: float, lng: float) -> bool:
 
 def is_google_maps_short_link(text: str) -> bool:
     lowered = text.lower()
-    return "maps.app.goo.gl" in lowered or "goo.gl/maps" in lowered
+    return "maps.app.goo.gl" in lowered or "goo.gl/maps" in lowered or "maps.app.goo.gl/" in lowered
 
 
 def google_maps_url_text(text: str) -> str | None:
     text = decoded_google_maps_text(text)
     patterns = [
         r"https?://(?:www\.)?google\.[^\"'\s<>]+/maps[^\"'\s<>]*",
+        r"https?://maps\.google\.[^\"'\s<>]+/maps[^\"'\s<>]*",
+        r"https?://maps\.google\.[^\"'\s<>]+/[^\"'\s<>]*",
         r"https?://(?:www\.)?google\.[^\"'\s<>]+/search[^\"'\s<>]*",
         r"/maps\?[^\"'\s<>]+",
         r"https?://maps\.app\.goo\.gl/[^\"'\s<>]+",
         r"maps\.app\.goo\.gl/[^\"'\s<>]+",
+        r"https?://goo\.gl/maps/[^\"'\s<>]+",
         r"goo\.gl/maps/[^\"'\s<>]+",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            value = match.group(0).replace("&amp;", "&").strip()
+            value = match.group(0).replace("&amp;", "&").strip().rstrip(".,;)")
             if value.startswith(("/maps", "/search")):
                 value = f"https://www.google.com{value}"
+            elif value.startswith(("maps.app.goo.gl/", "goo.gl/maps/")):
+                value = f"https://{value}"
             return value
     return None
 
