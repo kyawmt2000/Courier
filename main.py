@@ -1990,13 +1990,14 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
 def parse_reliable_google_maps_coordinate(text: str) -> tuple[float, float] | None:
     text = decoded_google_maps_text(text)
     patterns = [
-        (r"@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"!3d(-?\d{1,2}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"!2d(-?\d{1,3}(?:\.\d+)?)!3d(-?\d{1,2}(?:\.\d+)?)", 2, 1),
         (r"q=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"ll=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"query=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"destination=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
-        (r"!3d(-?\d{1,2}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)", 1, 2),
-        (r"!2d(-?\d{1,3}(?:\.\d+)?)!3d(-?\d{1,2}(?:\.\d+)?)", 2, 1),
+        (r"daddr=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
     ]
     for pattern, lat_group, lng_group in patterns:
         match = re.search(pattern, text)
@@ -2490,6 +2491,145 @@ PRIVACY_POLICY_HTML = """
 """
 
 
+TERMS_CONDITIONS_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blink Delivery Terms and Conditions</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --text: #172033;
+      --muted: #667085;
+      --line: #e5e7eb;
+      --brand: #0f6bff;
+      --bg: #f7f9fc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 48px 20px 72px;
+    }
+    .page {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 34px;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.1;
+    }
+    h2 {
+      margin-top: 30px;
+      font-size: 21px;
+    }
+    p, li { color: var(--muted); }
+    a { color: var(--brand); }
+    .updated {
+      margin-top: 0;
+      color: var(--muted);
+    }
+    ul { padding-left: 22px; }
+  </style>
+</head>
+<body>
+  <main>
+    <article class="page">
+      <h1>Blink Delivery Terms and Conditions</h1>
+      <p class="updated">Last updated: July 19, 2026</p>
+
+      <p>
+        Blink Delivery ("Blink", "we", "our", or "us") provides a logistics
+        matching and settlement environment for senders, receivers, and riders
+        in Myanmar. By using Blink, you agree to these Terms and Conditions.
+      </p>
+
+      <h2>1. Platform Role</h2>
+      <p>
+        Blink acts as an intermediary platform. We help connect delivery users
+        and riders, provide order management, chat, payment confirmation, and
+        settlement tools, and may hold delivery fees, item value payments, and
+        rider deposits until the delivery process is completed or resolved.
+      </p>
+
+      <h2>2. Allowed and Prohibited Items</h2>
+      <p>
+        Users and riders may use Blink only for lawful deliveries, such as food,
+        daily-use goods, documents, parcels, and other products that are not
+        prohibited by Myanmar law.
+      </p>
+      <p>
+        Users must not send prohibited or illegal items, including weapons,
+        military equipment, drones where restricted, drugs, controlled substances,
+        or any goods prohibited by Myanmar government rules. If prohibited items
+        are discovered by police or authorities, the sender, receiver, and rider
+        involved are responsible. Blink is not a participant in illegal goods,
+        and Blink has no responsibility for unlawful items placed into delivery.
+      </p>
+
+      <h2>3. Pickup and Drop-off Address Accuracy</h2>
+      <p>
+        Pickup and drop-off locations should be based mainly on the Google Map
+        Location provided in the order. Written address details such as building,
+        street, city, and township are supporting information only and may not be
+        enough for the rider to find the correct location.
+      </p>
+      <p>
+        Riders will primarily follow the Google Map Location for pickup and
+        delivery. The user is responsible for checking that the Google Map
+        Location is correct before submitting the order. If the user provides an
+        incorrect Google Map Location, wrong address, or unclear delivery
+        information, the user is responsible for any delivery fee loss, extra
+        trip cost, delay, failed delivery, or related loss caused by that mistake.
+      </p>
+
+      <h2>4. Payments and Settlement</h2>
+      <p>
+        Delivery fees, item value payments, and rider deposits may be held by the
+        platform during the order process. Blink releases settlement only after
+        the relevant delivery, payment, and confirmation steps are completed.
+        This process is designed to reduce fraud risk for users and riders.
+      </p>
+
+      <h2>5. User and Rider Responsibility</h2>
+      <p>
+        Users are responsible for accurate order details, lawful goods, correct
+        payment screenshots, and valid settlement QR codes. Riders are responsible
+        for handling accepted orders carefully, following lawful delivery
+        practices, and providing correct settlement information.
+      </p>
+
+      <h2>6. Changes to These Terms</h2>
+      <p>
+        We may update these Terms from time to time. When we make changes, we
+        will update the "Last updated" date above.
+      </p>
+
+      <h2>7. Contact Us</h2>
+      <p>
+        If you have questions about these Terms or need support, send us a
+        WhatsApp message at <a href="https://wa.me/959424594930">+95 942 459 4930</a>.
+      </p>
+    </article>
+  </main>
+</body>
+</html>
+"""
+
+
 @app.get("/", response_model=HealthResponse)
 def health_check() -> HealthResponse:
     return HealthResponse(
@@ -2503,6 +2643,14 @@ def health_check() -> HealthResponse:
 def privacy_policy_page() -> HTMLResponse:
     return HTMLResponse(
         PRIVACY_POLICY_HTML,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms_conditions_page() -> HTMLResponse:
+    return HTMLResponse(
+        TERMS_CONDITIONS_HTML,
         headers={"Cache-Control": "public, max-age=300"},
     )
 
