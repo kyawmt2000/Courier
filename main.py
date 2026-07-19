@@ -2233,6 +2233,58 @@ async def route_distance_km(origin: tuple[float, float], destination: tuple[floa
     if not api_key:
         return await route_distance_fallback_km(origin, destination)
 
+    directions_distance = await google_directions_distance_km(origin, destination, api_key)
+    if directions_distance is not None:
+        return directions_distance
+
+    matrix_distance = await google_distance_matrix_km(origin, destination, api_key)
+    if matrix_distance is not None:
+        return matrix_distance
+
+    return await route_distance_fallback_km(origin, destination)
+
+
+async def google_directions_distance_km(
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    api_key: str,
+) -> float | None:
+    origin_value = f"{origin[0]},{origin[1]}"
+    destination_value = f"{destination[0]},{destination[1]}"
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.get(
+            "https://maps.googleapis.com/maps/api/directions/json",
+            params={
+                "origin": origin_value,
+                "destination": destination_value,
+                "mode": "driving",
+                "units": "metric",
+                "key": api_key,
+            },
+        )
+        payload = response.json()
+
+    status = payload.get("status", "UNKNOWN")
+    if status != "OK":
+        logger.warning("Google Directions failed: %s", payload)
+        return None
+
+    try:
+        legs = payload["routes"][0]["legs"]
+        meters = sum(float(leg["distance"]["value"]) for leg in legs)
+    except (KeyError, IndexError, TypeError, ValueError):
+        logger.warning("Google Directions malformed response: %s", payload)
+        return None
+
+    return meters / 1000
+
+
+async def google_distance_matrix_km(
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    api_key: str,
+) -> float | None:
     origin_value = f"{origin[0]},{origin[1]}"
     destination_value = f"{destination[0]},{destination[1]}"
 
@@ -2252,17 +2304,17 @@ async def route_distance_km(origin: tuple[float, float], destination: tuple[floa
     top_status = payload.get("status", "UNKNOWN")
     if top_status != "OK":
         logger.warning("Google Distance Matrix failed before rows: %s", payload)
-        return await route_distance_fallback_km(origin, destination)
+        return None
 
     try:
         element = payload["rows"][0]["elements"][0]
     except (KeyError, IndexError, TypeError):
         logger.warning("Google Distance Matrix malformed response: %s", payload)
-        return await route_distance_fallback_km(origin, destination)
+        return None
 
     if element.get("status") != "OK":
         logger.warning("Google Distance Matrix failed: %s", payload)
-        return await route_distance_fallback_km(origin, destination)
+        return None
 
     meters = element["distance"]["value"]
     return float(meters) / 1000
