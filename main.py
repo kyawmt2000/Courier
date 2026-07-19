@@ -3003,7 +3003,8 @@ def create_order(
         raise HTTPException(status_code=400, detail="送货费付款未通过，请重新付款")
     if prepaid_payment.status != "confirmed":
         raise HTTPException(status_code=400, detail="请等待后台确认收到送货费后再下单")
-    if abs(prepaid_payment.amount - delivery_fee) > 1:
+    accepted_payment_amounts = (delivery_fee, rider_delivery_fee)
+    if all(abs(prepaid_payment.amount - amount) > 1 for amount in accepted_payment_amounts):
         raise HTTPException(status_code=400, detail="付款金额和当前订单金额不一致，请重新付款")
     if prepaid_payment.payment_mode != request.payment_mode:
         raise HTTPException(status_code=400, detail="付款方式和当前订单不一致，请重新付款")
