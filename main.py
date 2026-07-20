@@ -32,7 +32,7 @@ except ImportError:
 
 
 app = FastAPI(title="Courier API", version="1.0.0")
-CURRENT_TERMS_VERSION = "2026-07-19"
+CURRENT_TERMS_VERSION = "2026-07-20"
 logger = logging.getLogger("courier-api")
 
 app.add_middleware(
