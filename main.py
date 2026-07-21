@@ -33,6 +33,7 @@ except ImportError:
 
 app = FastAPI(title="Courier API", version="1.0.0")
 CURRENT_TERMS_VERSION = "2026-07-20"
+RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
 logger = logging.getLogger("courier-api")
 
 app.add_middleware(
@@ -177,6 +178,8 @@ class OrderResponse(BaseModel):
     goods_image_url: str | None = None
     user_payment_status: PaymentStatus = "not_required"
     rider_deposit_status: PaymentStatus = "unpaid"
+    rider_deposit_due_at: datetime | None = None
+    rider_deposit_submitted_at: datetime | None = None
     settlement_status: SettlementStatus = "pending"
     kpay_transaction_id: str | None = None
     payment_proof_url: str | None = None
@@ -972,6 +975,7 @@ def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = 
 
 
 def load_user_orders(user_phone: str) -> list[OrderResponse]:
+    release_expired_rider_deposit_orders()
     with connect_db() as connection:
         rows = connection.execute(
             """
@@ -985,6 +989,7 @@ def load_user_orders(user_phone: str) -> list[OrderResponse]:
 
 
 def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
+    release_expired_rider_deposit_orders()
     with connect_db() as connection:
         rows = connection.execute(
             """
@@ -1014,6 +1019,76 @@ def load_order_record(order_id: str) -> tuple[OrderResponse, str, str | None] | 
     if not row:
         return None
     return order_from_row(row), row["user_phone"], row["rider_phone"]
+
+
+def utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def rider_deposit_due_at(now: datetime | None = None) -> datetime:
+    return (now or datetime.now(timezone.utc)) + RIDER_DEPOSIT_CONFIRM_WINDOW
+
+
+def release_expired_rider_deposit_orders() -> None:
+    now = datetime.now(timezone.utc)
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, user_phone, payload
+            FROM orders
+            WHERE status = 'accepted'
+            """
+        ).fetchall()
+
+        for row in rows:
+            order = order_from_row(row)
+            if order.rider_deposit_status in ("not_required", "confirmed"):
+                continue
+            due_at = utc_datetime(order.rider_deposit_due_at)
+            if due_at is None:
+                initialized = order.model_copy(update={"rider_deposit_due_at": rider_deposit_due_at(now)})
+                connection.execute(
+                    """
+                    UPDATE orders
+                    SET payload = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(initialized.model_dump(mode="json"), ensure_ascii=False),
+                        row["id"],
+                    ),
+                )
+                continue
+            if due_at > now:
+                continue
+
+            released = order.model_copy(
+                update={
+                    "status": "matching",
+                    "rider_name": None,
+                    "rider_deposit_status": "unpaid",
+                    "rider_deposit_due_at": None,
+                    "rider_deposit_submitted_at": None,
+                }
+            )
+            connection.execute(
+                """
+                UPDATE orders
+                SET rider_phone = NULL,
+                    status = ?,
+                    payload = ?
+                WHERE id = ?
+                """,
+                (
+                    released.status,
+                    json.dumps(released.model_dump(mode="json"), ensure_ascii=False),
+                    row["id"],
+                ),
+            )
 
 
 def sync_orders_for_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
@@ -1126,6 +1201,7 @@ def require_admin_key(key: str | None) -> None:
 
 
 def load_admin_orders() -> list[dict]:
+    release_expired_rider_deposit_orders()
     with connect_db() as connection:
         rows = connection.execute(
             """
@@ -2854,11 +2930,18 @@ def admin_update_order(
     key: str = Query(default=""),
 ) -> OrderResponse:
     require_admin_key(key)
+    release_expired_rider_deposit_orders()
     record = load_order_record(order_id)
     if not record:
         raise HTTPException(status_code=404, detail="订单不存在")
 
     order, user_phone, rider_phone = record
+    if (
+        request.rider_deposit_status == "confirmed"
+        and (order.status == "matching" or not rider_phone or order.rider_deposit_status == "unpaid")
+    ):
+        raise HTTPException(status_code=409, detail="骑手押金确认已超时，订单已重新开放给其他骑手")
+
     updates = {
         name: value
         for name, value in {
@@ -2870,6 +2953,8 @@ def admin_update_order(
         if value is not None
     }
     now = datetime.now(timezone.utc)
+    if request.rider_deposit_status == "confirmed":
+        updates["rider_deposit_due_at"] = None
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_paid_at:
         updates["rider_settlement_paid_at"] = now
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_bill_created_at:
@@ -3298,6 +3383,7 @@ def get_order(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     user_phone = require_account_phone(authorization)
+    release_expired_rider_deposit_orders()
     record = load_order_record(order_id)
     if record:
         order, stored_user_phone, _ = record
@@ -3359,6 +3445,7 @@ def accept_order(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
+    release_expired_rider_deposit_orders()
     record = load_order_record(order_id)
     if record:
         order, user_phone, _ = record
@@ -3366,7 +3453,14 @@ def accept_order(
             raise HTTPException(status_code=409, detail="订单已被接单或不可接单")
         if order.user_payment_status != "confirmed":
             raise HTTPException(status_code=403, detail="平台确认用户送货费付款后骑手才能接单")
-        updated = order.model_copy(update={"status": "accepted", "rider_name": request.rider_name})
+        updates: dict[str, object] = {
+            "status": "accepted",
+            "rider_name": request.rider_name,
+        }
+        if order.rider_deposit_status != "not_required":
+            updates["rider_deposit_due_at"] = rider_deposit_due_at()
+            updates["rider_deposit_submitted_at"] = None
+        updated = order.model_copy(update=updates)
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
@@ -3378,16 +3472,24 @@ def mark_rider_deposit_transferred(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
+    release_expired_rider_deposit_orders()
     record = load_order_record(order_id)
     if record:
         order, user_phone, stored_rider_phone = record
         if stored_rider_phone != rider_phone:
+            if order.status == "matching":
+                raise HTTPException(status_code=409, detail="押金确认超时，订单已重新开放给其他骑手")
             raise HTTPException(status_code=403, detail="不能更新其他骑手的押金状态")
         if order.rider_deposit_status == "not_required":
             raise HTTPException(status_code=400, detail="这个订单不需要骑手押金")
         if order.rider_deposit_status == "confirmed":
             return order_for_response(order)
-        updated = order.model_copy(update={"rider_deposit_status": "pending"})
+        updated = order.model_copy(
+            update={
+                "rider_deposit_status": "pending",
+                "rider_deposit_submitted_at": datetime.now(timezone.utc),
+            }
+        )
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
@@ -3400,6 +3502,7 @@ def update_rider_order_status(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
+    release_expired_rider_deposit_orders()
     allowed = ["picking_up", "delivering", "completed"]
     if request.status not in allowed:
         raise HTTPException(status_code=400, detail="骑手不能设置这个订单状态")
