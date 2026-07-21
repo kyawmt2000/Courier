@@ -1352,7 +1352,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v16</span>
+    <span class="version">orders-ui-v17</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -2157,11 +2157,6 @@ ADMIN_HTML = r'''
       clearTimeout(searchTimer);
       searchTimer = setTimeout(render, 120);
     });
-    setInterval(() => {
-      if (document.visibilityState === "visible" && document.getElementById("key").value) {
-        loadData({ silent: true });
-      }
-    }, 10000);
     showPage(currentPage);
   </script>
 </body>
