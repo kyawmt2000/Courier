@@ -66,6 +66,10 @@ class HealthResponse(BaseModel):
     timestamp: datetime
 
 
+class EmptyResponse(BaseModel):
+    ok: bool = True
+
+
 class UserProfile(BaseModel):
     id: str
     phone: str
@@ -407,6 +411,8 @@ def init_storage() -> None:
                 payment_qr_url TEXT,
                 terms_accepted_at TEXT,
                 terms_version TEXT,
+                app_deleted_at TEXT,
+                app_data_hidden_before TEXT,
                 last_login_at TEXT NOT NULL
             )
             """
@@ -443,6 +449,8 @@ def init_storage() -> None:
         add_column_if_missing(connection, "accounts", "payment_qr_url", "TEXT")
         add_column_if_missing(connection, "accounts", "terms_accepted_at", "TEXT")
         add_column_if_missing(connection, "accounts", "terms_version", "TEXT")
+        add_column_if_missing(connection, "accounts", "app_deleted_at", "TEXT")
+        add_column_if_missing(connection, "accounts", "app_data_hidden_before", "TEXT")
         add_column_if_missing(connection, "accounts", "last_login_at", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "prepaid_payments", "user_phone", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "prepaid_payments", "status", "TEXT NOT NULL DEFAULT 'pending'")
@@ -976,31 +984,60 @@ def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = 
 
 def load_user_orders(user_phone: str) -> list[OrderResponse]:
     release_expired_rider_deposit_orders()
+    hidden_before = account_data_hidden_before(user_phone)
     with connect_db() as connection:
-        rows = connection.execute(
-            """
-            SELECT payload FROM orders
-            WHERE user_phone = ?
-            ORDER BY created_at DESC
-            """,
-            (user_phone,),
-        ).fetchall()
+        if hidden_before:
+            rows = connection.execute(
+                """
+                SELECT payload FROM orders
+                WHERE user_phone = ?
+                  AND created_at > ?
+                ORDER BY created_at DESC
+                """,
+                (user_phone, hidden_before),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT payload FROM orders
+                WHERE user_phone = ?
+                ORDER BY created_at DESC
+                """,
+                (user_phone,),
+            ).fetchall()
     return [order_from_row(row) for row in rows]
 
 
 def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
     release_expired_rider_deposit_orders()
+    hidden_before = account_data_hidden_before(rider_phone)
     with connect_db() as connection:
-        rows = connection.execute(
-            """
-            SELECT payload FROM orders
-            WHERE status = 'matching'
-               OR rider_phone = ?
-            ORDER BY created_at DESC
-            """,
-            (rider_phone,),
-        ).fetchall()
-    orders = [order_from_row(row) for row in rows]
+        if hidden_before:
+            rows = connection.execute(
+                """
+                SELECT user_phone, payload FROM orders
+                WHERE status = 'matching'
+                   OR (rider_phone = ? AND created_at > ?)
+                ORDER BY created_at DESC
+                """,
+                (rider_phone, hidden_before),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT user_phone, payload FROM orders
+                WHERE status = 'matching'
+                   OR rider_phone = ?
+                ORDER BY created_at DESC
+                """,
+                (rider_phone,),
+            ).fetchall()
+    orders = [
+        order
+        for row in rows
+        for order in [order_from_row(row)]
+        if order.status != "matching" or app_data_visible_to_account(row["user_phone"], order.created_at)
+    ]
     return [
         order
         for order in orders
@@ -1132,7 +1169,7 @@ def load_account_profile(phone: str) -> UserProfile | None:
     with connect_db() as connection:
         row = connection.execute(
             """
-            SELECT phone, nickname, avatar_url, payment_qr_url, terms_accepted_at, terms_version
+            SELECT phone, nickname, avatar_url, payment_qr_url, terms_accepted_at, terms_version, app_deleted_at
             FROM accounts
             WHERE phone = ?
             """,
@@ -1141,6 +1178,20 @@ def load_account_profile(phone: str) -> UserProfile | None:
 
     if not row:
         return None
+    if row["app_deleted_at"]:
+        terms_accepted_at = row["terms_accepted_at"]
+        terms_version = row["terms_version"]
+        if not terms_accepted_at or terms_accepted_at <= row["app_deleted_at"]:
+            terms_accepted_at = None
+            terms_version = None
+        return user_profile_from_account(
+            row["phone"],
+            None,
+            None,
+            None,
+            terms_accepted_at,
+            terms_version,
+        )
     return user_profile_from_account(
         row["phone"],
         row["nickname"],
@@ -1158,6 +1209,7 @@ def save_account(
     payment_qr_url: str | None = None,
     terms_accepted_at: str | None = None,
     terms_version: str | None = None,
+    clear_app_deleted_at: bool = False,
 ) -> UserProfile:
     with connect_db() as connection:
         connection.execute(
@@ -1182,6 +1234,8 @@ def save_account(
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
+        if clear_app_deleted_at:
+            connection.execute("UPDATE accounts SET app_deleted_at = NULL WHERE phone = ?", (phone,))
     return load_account_profile(phone) or user_profile_from_account(
         phone,
         nickname,
@@ -1190,6 +1244,51 @@ def save_account(
         terms_accepted_at,
         terms_version,
     )
+
+
+def account_data_hidden_before(phone: str) -> str | None:
+    with connect_db() as connection:
+        row = connection.execute(
+            """
+            SELECT app_data_hidden_before
+            FROM accounts
+            WHERE phone = ?
+            """,
+            (phone,),
+        ).fetchone()
+    return row["app_data_hidden_before"] if row else None
+
+
+def app_data_visible_to_account(phone: str, created_at: datetime) -> bool:
+    hidden_before = account_data_hidden_before(phone)
+    return not hidden_before or created_at.isoformat() > hidden_before
+
+
+def mark_account_deleted_for_app(phone: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with connect_db() as connection:
+        connection.execute(
+            """
+            UPDATE accounts
+            SET app_deleted_at = ?,
+                app_data_hidden_before = ?
+            WHERE phone = ?
+            """,
+            (now, now, phone),
+        )
+        if connection.total_changes == 0:
+            connection.execute(
+                """
+                INSERT INTO accounts (
+                    phone, nickname, avatar_url, payment_qr_url,
+                    terms_accepted_at, terms_version, app_deleted_at,
+                    app_data_hidden_before, last_login_at
+                )
+                VALUES (?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
+                """,
+                (phone, now, now, now),
+            )
+    sms_codes.pop(phone, None)
 
 
 def require_admin_key(key: str | None) -> None:
@@ -2849,6 +2948,7 @@ ACCOUNT_DELETION_HTML = """
 </html>
 """
 
+
 TERMS_CONDITIONS_HTML = """
 <!doctype html>
 <html lang="en">
@@ -3004,12 +3104,14 @@ def privacy_policy_page() -> HTMLResponse:
         headers={"Cache-Control": "public, max-age=300"},
     )
 
+
 @app.get("/account-deletion", response_class=HTMLResponse)
 def account_deletion_page() -> HTMLResponse:
     return HTMLResponse(
         ACCOUNT_DELETION_HTML,
         headers={"Cache-Control": "public, max-age=300"},
     )
+
 
 @app.get("/terms", response_class=HTMLResponse)
 def terms_conditions_page() -> HTMLResponse:
@@ -3236,6 +3338,7 @@ def update_account_profile(
         nickname=nickname,
         avatar_url=avatar_url,
         payment_qr_url=payment_qr_url,
+        clear_app_deleted_at=True,
     )
 
 
@@ -3247,6 +3350,13 @@ def accept_account_terms(authorization: str | None = Header(default=None)) -> Us
         terms_accepted_at=datetime.now(timezone.utc).isoformat(),
         terms_version=CURRENT_TERMS_VERSION,
     )
+
+
+@app.delete("/account", response_model=EmptyResponse)
+def delete_current_account(authorization: str | None = Header(default=None)) -> EmptyResponse:
+    phone = require_account_phone(authorization)
+    mark_account_deleted_for_app(phone)
+    return EmptyResponse()
 
 
 @app.post("/auth/sms-code", response_model=SendSMSCodeResponse)
@@ -3279,16 +3389,28 @@ def list_chat_messages(
 ) -> list[ChatMessageResponse]:
     if conversation_id == "all":
         phone = require_account_phone(authorization)
+        hidden_before = account_data_hidden_before(phone)
         main_conversation_id = account_conversation_id("main", authorization, phone)
         with connect_db() as connection:
-            order_rows = connection.execute(
-                """
-                SELECT id
-                FROM orders
-                WHERE user_phone = ? OR rider_phone = ?
-                """,
-                (phone, phone),
-            ).fetchall()
+            if hidden_before:
+                order_rows = connection.execute(
+                    """
+                    SELECT id
+                    FROM orders
+                    WHERE (user_phone = ? OR rider_phone = ?)
+                      AND created_at > ?
+                    """,
+                    (phone, phone, hidden_before),
+                ).fetchall()
+            else:
+                order_rows = connection.execute(
+                    """
+                    SELECT id
+                    FROM orders
+                    WHERE user_phone = ? OR rider_phone = ?
+                    """,
+                    (phone, phone),
+                ).fetchall()
             conversation_ids = [main_conversation_id]
             if main_conversation_id != "main":
                 conversation_ids.append("main")
@@ -3297,44 +3419,73 @@ def list_chat_messages(
                 conversation_ids.append(order_conversation_id.lower())
                 conversation_ids.append(order_conversation_id.upper())
 
-            message_rows = connection.execute(
-                """
-                SELECT DISTINCT conversation_id
-                FROM chat_messages
-                WHERE sender_phone = ?
-                """,
-                (phone,),
-            ).fetchall()
+            if hidden_before:
+                message_rows = connection.execute(
+                    """
+                    SELECT DISTINCT conversation_id
+                    FROM chat_messages
+                    WHERE sender_phone = ?
+                      AND created_at > ?
+                    """,
+                    (phone, hidden_before),
+                ).fetchall()
+            else:
+                message_rows = connection.execute(
+                    """
+                    SELECT DISTINCT conversation_id
+                    FROM chat_messages
+                    WHERE sender_phone = ?
+                    """,
+                    (phone,),
+                ).fetchall()
             for row in message_rows:
                 conversation_ids.append(row["conversation_id"])
 
             conversation_ids = list(dict.fromkeys(conversation_ids))
             placeholders = ",".join("?" for _ in conversation_ids)
+            hidden_filter = "AND created_at > ?" if hidden_before else ""
+            hidden_params = (hidden_before,) if hidden_before else ()
             rows = connection.execute(
                 f"""
                 SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
                 FROM chat_messages
                 WHERE conversation_id IN ({placeholders})
+                {hidden_filter}
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (*conversation_ids, limit),
+                (*conversation_ids, *hidden_params, limit),
             ).fetchall()
 
         return [chat_message_from_row(row) for row in reversed(rows)]
 
     conversation_id = account_conversation_id(conversation_id, authorization)
+    phone = require_account_phone(authorization)
+    hidden_before = account_data_hidden_before(phone)
     with connect_db() as connection:
-        rows = connection.execute(
-            """
-            SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
-            FROM chat_messages
-            WHERE conversation_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (conversation_id, limit),
-        ).fetchall()
+        if hidden_before:
+            rows = connection.execute(
+                """
+                SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
+                FROM chat_messages
+                WHERE conversation_id = ?
+                  AND created_at > ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (conversation_id, hidden_before, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
+                FROM chat_messages
+                WHERE conversation_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (conversation_id, limit),
+            ).fetchall()
 
     return [chat_message_from_row(row) for row in reversed(rows)]
 
@@ -3588,6 +3739,8 @@ def get_order(
         order, stored_user_phone, _ = record
         if stored_user_phone != user_phone:
             raise HTTPException(status_code=403, detail="不能查看其他账号的订单")
+        if not app_data_visible_to_account(user_phone, order.created_at):
+            raise HTTPException(status_code=404, detail="订单不存在")
         return order_for_response(order)
     raise HTTPException(status_code=404, detail="订单不存在")
 
@@ -3604,6 +3757,8 @@ def request_user_settlement(
         order, stored_user_phone, rider_phone = record
         if stored_user_phone != user_phone:
             raise HTTPException(status_code=403, detail="不能提交其他账号的收款信息")
+        if not app_data_visible_to_account(user_phone, order.created_at):
+            raise HTTPException(status_code=404, detail="订单不存在")
         if order.payment_mode != "cod":
             raise HTTPException(status_code=400, detail="只有货到付款订单需要提醒平台转货费")
         if order.status != "completed":
@@ -3648,6 +3803,8 @@ def accept_order(
     record = load_order_record(order_id)
     if record:
         order, user_phone, _ = record
+        if not app_data_visible_to_account(user_phone, order.created_at):
+            raise HTTPException(status_code=404, detail="订单不存在")
         if order.status != "matching":
             raise HTTPException(status_code=409, detail="订单已被接单或不可接单")
         if order.user_payment_status != "confirmed":
@@ -3679,6 +3836,8 @@ def mark_rider_deposit_transferred(
             if order.status == "matching":
                 raise HTTPException(status_code=409, detail="押金确认超时，订单已重新开放给其他骑手")
             raise HTTPException(status_code=403, detail="不能更新其他骑手的押金状态")
+        if not app_data_visible_to_account(rider_phone, order.created_at):
+            raise HTTPException(status_code=404, detail="订单不存在")
         if order.rider_deposit_status == "not_required":
             raise HTTPException(status_code=400, detail="这个订单不需要骑手押金")
         if order.rider_deposit_status == "confirmed":
@@ -3711,6 +3870,8 @@ def update_rider_order_status(
         order, user_phone, stored_rider_phone = record
         if stored_rider_phone != rider_phone:
             raise HTTPException(status_code=403, detail="不能更新其他骑手的订单")
+        if not app_data_visible_to_account(rider_phone, order.created_at):
+            raise HTTPException(status_code=404, detail="订单不存在")
         if (
             request.status in ["picking_up", "delivering"]
             and order.rider_deposit_status != "not_required"
@@ -3735,6 +3896,8 @@ def request_rider_settlement(
         order, user_phone, stored_rider_phone = record
         if stored_rider_phone != rider_phone:
             raise HTTPException(status_code=403, detail="不能提交其他骑手的收款信息")
+        if not app_data_visible_to_account(rider_phone, order.created_at):
+            raise HTTPException(status_code=404, detail="订单不存在")
         if order.status != "completed":
             raise HTTPException(status_code=400, detail="完成送货后才能提醒平台结算")
         if order.settlement_status in ("paid_to_rider", "completed"):
@@ -3772,6 +3935,8 @@ def update_rider_location(
         order, user_phone, stored_rider_phone = record
         if stored_rider_phone != rider_phone:
             raise HTTPException(status_code=403, detail="不能更新其他骑手的订单位置")
+        if not app_data_visible_to_account(rider_phone, order.created_at):
+            raise HTTPException(status_code=404, detail="订单不存在")
         if order.status not in ["accepted", "picking_up", "delivering"]:
             raise HTTPException(status_code=400, detail="订单不在配送中，不能更新骑手位置")
         updated = order.model_copy(
