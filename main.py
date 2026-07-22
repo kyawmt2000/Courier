@@ -1557,6 +1557,12 @@ ADMIN_HTML = r'''
       return label(value);
     }
     function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
+    function deliveryFeeCell(order) {
+      const gross = Number(order.delivery_fee || order.price || 0);
+      const platform = Number(order.platform_delivery_fee || Math.round(gross * (gross >= 10000 ? 0.08 : 0.10)));
+      const rider = Number(order.rider_delivery_fee || Math.max(gross - platform, 0));
+      return `配送费 ${money(rider)}<br><span class="muted">原送货费 ${money(gross)} / 平台扣费 ${money(platform)}</span><br><span class="muted">货值 ${money(order.goods_amount)}</span>`;
+    }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[s]));
     }
@@ -1724,7 +1730,7 @@ ADMIN_HTML = r'''
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
-          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${deliveryFeeCell(order)}</td>
           <td>${paymentProofCell(order)}</td>
           <td>${riderDepositLabel(order.rider_deposit_status)}</td>
           <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
@@ -1810,7 +1816,7 @@ ADMIN_HTML = r'''
         <tr>
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
-          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${deliveryFeeCell(order)}</td>
           <td>${settlementInfo(order)}</td>
           <td>${settlementQRCodes(order)}</td>
           <td><span class="pill">${label(order.settlement_status)}</span>${settlementPaidTimes(order)}</td>
@@ -1846,7 +1852,7 @@ ADMIN_HTML = r'''
           <td><strong>${orderShortCode(order)}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(roleText)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
-          <td>配送费 ${money(order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td>${deliveryFeeCell(order)}</td>
           <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
         </tr>`;
     }
