@@ -2833,6 +2833,21 @@ ACCOUNT_DELETION_HTML = """
         history, settlement records, and chat records related to completed or
         disputed orders.
       </p>
+      <p>
+        We keep retained records only as long as reasonably necessary for these
+        purposes, then delete or anonymize them when they are no longer needed.
+      </p>
+
+      <h2>Contact</h2>
+      <p>
+        For account deletion or privacy questions, contact Blink support on
+        WhatsApp at <a href="https://wa.me/959424594930">+95 942 459 4930</a>.
+      </p>
+    </article>
+  </main>
+</body>
+</html>
+"""
 
 TERMS_CONDITIONS_HTML = """
 <!doctype html>
