@@ -1267,17 +1267,21 @@ ADMIN_HTML = r'''
   <style>
     :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #f4f6f8; color: #111827; }
-    header { position: sticky; top: 0; z-index: 2; display: flex; gap: 12px; align-items: center; padding: 14px 18px; background: #fff; border-bottom: 1px solid #e5e7eb; }
+    header { position: sticky; top: 0; z-index: 2; display: flex; gap: 12px; align-items: center; padding: 14px 18px; background: rgba(255,255,255,.92); border-bottom: 1px solid #e5e7eb; backdrop-filter: blur(16px); }
     h1 { margin: 0; font-size: 20px; }
     .version { color: #6b7280; font-size: 12px; white-space: nowrap; }
     main { padding: 18px; display: grid; gap: 16px; }
     .toolbar { margin-left: auto; display: flex; gap: 8px; align-items: center; }
-    input, select, button { font: inherit; border: 1px solid #d1d5db; border-radius: 8px; padding: 9px 10px; background: #fff; }
+    input, select, button { font: inherit; border: 1px solid #d1d5db; border-radius: 8px; padding: 9px 10px; background: #fff; transition: border-color .16s ease, box-shadow .16s ease, background .16s ease, color .16s ease, transform .12s ease, opacity .16s ease; }
+    input:focus, select:focus { outline: none; border-color: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,.14); }
     button { cursor: pointer; background: #16a34a; color: white; border-color: #16a34a; font-weight: 700; }
+    button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(17, 24, 39, .10); }
+    button:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
+    button:disabled { cursor: wait; opacity: .64; }
     button.secondary { background: #fff; color: #111827; border-color: #d1d5db; }
     button.tab { background: #fff; color: #374151; border-color: #d1d5db; }
     button.tab.active { background: #111827; color: #fff; border-color: #111827; }
-    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; transition: opacity .18s ease, transform .18s ease; }
     .page { display: none; }
     .page.active { display: block; }
     .page.grid.active { display: grid; }
@@ -1293,6 +1297,7 @@ ADMIN_HTML = r'''
     table.orders-table .col-actions { width: 150px; }
     th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
     th { color: #6b7280; font-weight: 700; }
+    tr { transition: background .14s ease; }
     tr:hover { background: #f9fafb; }
     .address-cell { width: 100%; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }
     .address-cell .muted { display: block; margin-top: 4px; }
@@ -1333,6 +1338,13 @@ ADMIN_HTML = r'''
     .service-reply input[type="file"] { max-width: 190px; align-self: center; }
     .empty { padding: 28px; text-align: center; color: #6b7280; background: #f9fafb; border-radius: 8px; }
     .hidden { display: none !important; }
+    .refresh-state { display: inline-flex; align-items: center; gap: 6px; color: #6b7280; font-size: 12px; white-space: nowrap; }
+    .refresh-dot { width: 7px; height: 7px; border-radius: 999px; background: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,.14); }
+    body.loading .refresh-dot { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245,158,11,.16); animation: pulse .8s ease-in-out infinite alternate; }
+    .toast { position: fixed; right: 18px; bottom: 18px; z-index: 10; max-width: min(420px, calc(100vw - 36px)); padding: 12px 14px; border-radius: 10px; background: #111827; color: #fff; box-shadow: 0 18px 40px rgba(17,24,39,.22); opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { background: #b91c1c; }
+    @keyframes pulse { from { opacity: .55; } to { opacity: 1; } }
     @media (max-width: 1100px) { .accounts-layout { grid-template-columns: 1fr; } .account-detail { max-height: none; } }
     @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
   </style>
@@ -1340,11 +1352,12 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v15</span>
+    <span class="version">orders-ui-v17</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
-      <button onclick="loadData()">刷新</button>
+      <span class="refresh-state"><span class="refresh-dot"></span><span id="refreshStatus">就绪</span></span>
+      <button id="refreshButton" onclick="loadData()">刷新</button>
       <button id="tab-payments" class="tab active" onclick="showPage('payments')">货到付款订单</button>
       <button id="tab-orders" class="tab" onclick="showPage('orders')">货费已付款订单</button>
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
@@ -1408,18 +1421,22 @@ ADMIN_HTML = r'''
           <div class="service-reply">
             <textarea id="serviceReply" placeholder="回复用户/骑手"></textarea>
             <input id="serviceImage" type="file" accept="image/*" />
-            <button onclick="sendServiceReply()">发送</button>
+            <button onclick="sendServiceReply(this)">发送</button>
           </div>
         </section>
       </div>
     </section>
   </main>
+  <div id="toast" class="toast"></div>
   <script>
     let state = { orders: [], accounts: [], messages: [], payments: [] };
     let currentPage = "payments";
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
+    let activeDetailId = null;
+    let lastLoadStartedAt = 0;
+    let searchTimer = null;
     const pages = ["payments","orders","accounts","settlements","service"];
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
@@ -1463,18 +1480,77 @@ ADMIN_HTML = r'''
     function sortByDateAsc(items, fields = ["created_at"]) {
       return [...items].sort((a, b) => newestDateMs(a, fields) - newestDateMs(b, fields));
     }
-    function showPage(page) {
+    function showPage(page, keepDetail = false) {
       currentPage = page;
-      hideDetail();
+      if (!keepDetail) hideDetail();
       pages.forEach(name => {
         document.getElementById(`page-${name}`)?.classList.toggle("active", name === page);
         document.getElementById(`tab-${name}`)?.classList.toggle("active", name === page);
       });
     }
     function hideDetail() {
+      activeDetailId = null;
       document.getElementById("detailSection")?.classList.add("hidden");
       const detail = document.getElementById("detail");
       if (detail) detail.innerHTML = "";
+    }
+
+    function showToast(message, type = "success") {
+      const toast = document.getElementById("toast");
+      if (!toast) return;
+      toast.textContent = message;
+      toast.classList.toggle("error", type === "error");
+      toast.classList.add("show");
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => toast.classList.remove("show"), 2600);
+    }
+
+    function setLoading(isLoading, text = "") {
+      document.body.classList.toggle("loading", isLoading);
+      const status = document.getElementById("refreshStatus");
+      if (status) status.textContent = text || (isLoading ? "同步中..." : "已同步");
+      const button = document.getElementById("refreshButton");
+      if (button) button.disabled = isLoading;
+    }
+
+    async function errorText(response) {
+      const text = await response.text();
+      try {
+        const data = JSON.parse(text);
+        return data.detail || data.message || text;
+      } catch (_) {
+        return text || "请求失败";
+      }
+    }
+
+    function setButtonBusy(button, busy, text = "处理中...") {
+      if (!button) return;
+      if (busy) {
+        button.dataset.label = button.textContent;
+        button.textContent = text;
+        button.disabled = true;
+      } else {
+        button.textContent = button.dataset.label || button.textContent;
+        button.disabled = false;
+      }
+    }
+
+    function upsertOrder(updated) {
+      const index = state.orders.findIndex(order => order.id === updated.id);
+      if (index >= 0) {
+        state.orders[index] = updated;
+      } else {
+        state.orders.unshift(updated);
+      }
+    }
+
+    function upsertPayment(updated) {
+      const index = state.payments.findIndex(payment => payment.id === updated.id);
+      if (index >= 0) {
+        state.payments[index] = updated;
+      } else {
+        state.payments.unshift(updated);
+      }
     }
 
     function ensureOrderTables() {
@@ -1503,15 +1579,30 @@ ADMIN_HTML = r'''
       };
     }
 
-    async function loadData() {
-      const response = await fetch(`/admin/data?key=${keyParam()}`);
-      if (!response.ok) {
-        alert(await response.text());
-        return;
+    async function loadData(options = {}) {
+      const { silent = false } = options;
+      const startedAt = Date.now();
+      lastLoadStartedAt = startedAt;
+      if (!silent) setLoading(true, "同步中...");
+      try {
+        const response = await fetch(`/admin/data?key=${keyParam()}`);
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        const nextState = await response.json();
+        if (startedAt !== lastLoadStartedAt) return;
+        state = nextState;
+        render();
+        showPage(currentPage, true);
+        if (activeDetailId && state.orders.some(order => order.id === activeDetailId)) {
+          showDetail(activeDetailId);
+        }
+        if (!silent) showToast("后台数据已刷新");
+        setLoading(false, `已同步 ${new Date().toLocaleTimeString()}`);
+      } catch (error) {
+        setLoading(false, "同步失败");
+        showToast(error.message || "请求失败", "error");
       }
-      state = await response.json();
-      render();
-      showPage(currentPage);
     }
 
     function pendingPaymentRow(payment, prepaid) {
@@ -1524,7 +1615,7 @@ ADMIN_HTML = r'''
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
           <td>${prepaid && payment.goods_amount ? `骑手押金 ${money(payment.goods_amount)}` : `<span class="muted">订单创建后显示</span>`}</td>
           <td class="address-cell"><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
-          <td class="actions-cell">${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}')">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
+          <td class="actions-cell">${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}', null, this)">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
         </tr>`;
     }
 
@@ -1539,8 +1630,8 @@ ADMIN_HTML = r'''
           <td>${riderDepositLabel(order.rider_deposit_status)}</td>
           <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
           <td class="actions-cell">
-            ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}')">${prepaid ? "确认用户付款" : "确认送货费"}</button>` : ""}
-            ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}')">确认骑手押金</button>` : ""}
+            ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}', this)">${prepaid ? "确认用户付款" : "确认送货费"}</button>` : ""}
+            ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}', this)">确认骑手押金</button>` : ""}
           </td>
         </tr>`;
     }
@@ -1625,8 +1716,8 @@ ADMIN_HTML = r'''
           <td>${settlementQRCodes(order)}</td>
           <td><span class="pill">${label(order.settlement_status)}</span>${settlementPaidTimes(order)}</td>
           <td>
-            ${order.payment_mode === "cod" && order.user_settlement_qr_url && !["paid_to_user","completed"].includes(order.settlement_status) ? `<button onclick="confirmUserSettlement('${order.id}')">确认已转账货费</button>` : ""}
-            ${order.rider_settlement_qr_url && !["paid_to_rider","completed"].includes(order.settlement_status) ? `<button onclick="confirmRiderSettlement('${order.id}')">确认已转账送货费</button>` : ""}
+            ${order.payment_mode === "cod" && order.user_settlement_qr_url && !["paid_to_user","completed"].includes(order.settlement_status) ? `<button onclick="confirmUserSettlement('${order.id}', this)">确认已转账货费</button>` : ""}
+            ${order.rider_settlement_qr_url && !["paid_to_rider","completed"].includes(order.settlement_status) ? `<button onclick="confirmRiderSettlement('${order.id}', this)">确认已转账送货费</button>` : ""}
           </td>
         </tr>`).join("");
       if (!settlementRows.length) {
@@ -1833,48 +1924,57 @@ ADMIN_HTML = r'''
       chat.scrollTop = chat.scrollHeight;
     }
 
-    async function sendServiceReply() {
+    async function sendServiceReply(button = null) {
       const input = document.getElementById("serviceReply");
       const imageInput = document.getElementById("serviceImage");
       const text = input.value.trim();
       const imageFile = imageInput?.files?.[0] || null;
       if (!selectedServiceConversationId) {
-        alert("请先选择一个客服会话");
+        showToast("请先选择一个客服会话", "error");
         return;
       }
       if (!text && !imageFile) {
-        alert("请输入回复内容或选择图片");
+        showToast("请输入回复内容或选择图片", "error");
         return;
       }
 
-      let imageData = null;
-      let imageContentType = null;
-      let imageFileName = null;
-      if (imageFile) {
-        imageData = await readImageAsBase64(imageFile);
-        imageContentType = imageFile.type || "image/jpeg";
-        imageFileName = imageFile.name || `admin-chat-${Date.now()}.jpg`;
-      }
+      setButtonBusy(button, true, "发送中...");
+      try {
+        let imageData = null;
+        let imageContentType = null;
+        let imageFileName = null;
+        if (imageFile) {
+          imageData = await readImageAsBase64(imageFile);
+          imageContentType = imageFile.type || "image/jpeg";
+          imageFileName = imageFile.name || `admin-chat-${Date.now()}.jpg`;
+        }
 
-      const response = await fetch(`/admin/chat/messages?key=${keyParam()}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          conversation_id: selectedServiceConversationId,
-          text,
-          image_data: imageData,
-          image_content_type: imageContentType,
-          image_file_name: imageFileName
-        })
-      });
-      if (!response.ok) {
-        alert(await response.text());
-        return;
+        const response = await fetch(`/admin/chat/messages?key=${keyParam()}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversation_id: selectedServiceConversationId,
+            text,
+            image_data: imageData,
+            image_content_type: imageContentType,
+            image_file_name: imageFileName
+          })
+        });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        const message = await response.json();
+        state.messages.push(message);
+        input.value = "";
+        if (imageInput) imageInput.value = "";
+        renderServiceChat();
+        showToast("消息已发送");
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "发送失败", "error");
+      } finally {
+        setButtonBusy(button, false);
       }
-      input.value = "";
-      if (imageInput) imageInput.value = "";
-      await loadData();
-      selectServiceConversation(selectedServiceConversationId);
     }
 
     function readImageAsBase64(file) {
@@ -1892,6 +1992,7 @@ ADMIN_HTML = r'''
     function showDetail(id) {
       const order = state.orders.find(item => item.id === id);
       if (!order) return;
+      activeDetailId = id;
       document.getElementById("detailSection").classList.remove("hidden");
       document.getElementById("detail").innerHTML = `
         ${order.goods_image_url ? `<img src="${order.goods_image_url}" alt="商品图">` : `<div class="muted">暂无商品图</div>`}
@@ -1911,8 +2012,8 @@ ADMIN_HTML = r'''
           <select id="riderDeposit">${optionHtml(paymentOptions, order.rider_deposit_status)}</select>
           <select id="settlement">${optionHtml(settlementOptions, order.settlement_status)}</select>
         </div>
-        ${order.user_payment_status !== "confirmed" ? `<button onclick="confirmUserPayment('${order.id}')">确认收到送货费</button>` : ""}
-        <button onclick="saveOrder('${order.id}')">保存订单状态</button>
+        ${order.user_payment_status !== "confirmed" ? `<button onclick="confirmUserPayment('${order.id}', this)">确认收到送货费</button>` : ""}
+        <button onclick="saveOrder('${order.id}', this)">保存订单状态</button>
       `;
     }
 
@@ -1958,120 +2059,104 @@ ADMIN_HTML = r'''
       return images.length ? images.join("") : `<span class="muted">未提交</span>`;
     }
 
-    async function confirmUserPayment(id) {
+    async function patchOrder(id, body, button, successMessage) {
+      setButtonBusy(button, true);
+      try {
+        const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        const updated = await response.json();
+        upsertOrder(updated);
+        render();
+        if (activeDetailId === id) showDetail(id);
+        showToast(successMessage);
+        loadData({ silent: true });
+        return updated;
+      } catch (error) {
+        showToast(error.message || "请求失败", "error");
+        return null;
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function confirmUserPayment(id, button = null) {
       const order = state.orders.find(item => item.id === id);
       if (order?.kpay_transaction_id) {
-        await confirmPrepaidPayment(order.kpay_transaction_id, id);
+        await confirmPrepaidPayment(order.kpay_transaction_id, id, button);
         return;
       }
 
-      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_payment_status: "confirmed" })
-      });
-      if (!response.ok) {
-        alert(await response.text());
-        return;
-      }
-      await loadData();
-      showDetail(id);
+      await patchOrder(id, { user_payment_status: "confirmed" }, button, "已确认收到送货费");
     }
 
-    async function confirmPrepaidPayment(id, orderId = null) {
-      const response = await fetch(`/admin/payments/${id}?key=${keyParam()}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "confirmed" })
-      });
-      if (!response.ok) {
-        alert(await response.text());
-        return;
-      }
-      await loadData();
-      if (orderId) {
-        showDetail(orderId);
+    async function confirmPrepaidPayment(id, orderId = null, button = null) {
+      setButtonBusy(button, true);
+      try {
+        const response = await fetch(`/admin/payments/${id}?key=${keyParam()}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "confirmed" })
+        });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        const updated = await response.json();
+        upsertPayment(updated);
+        if (orderId) {
+          const order = state.orders.find(item => item.id === orderId);
+          if (order) order.user_payment_status = "confirmed";
+        }
+        render();
+        if (orderId && activeDetailId === orderId) showDetail(orderId);
+        showToast("已确认用户付款");
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "请求失败", "error");
+      } finally {
+        setButtonBusy(button, false);
       }
     }
 
-    async function confirmDeposit(id) {
-      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rider_deposit_status: "confirmed" })
-      });
-      if (!response.ok) {
-        alert(await response.text());
-        return;
-      }
-      await loadData();
-      showDetail(id);
+    async function confirmDeposit(id, button = null) {
+      await patchOrder(id, { rider_deposit_status: "confirmed" }, button, "已确认骑手押金");
     }
 
-    async function saveOrder(id) {
+    async function saveOrder(id, button = null) {
       const body = {
         status: document.getElementById("status").value,
         user_payment_status: document.getElementById("userPayment").value,
         rider_deposit_status: document.getElementById("riderDeposit").value,
         settlement_status: document.getElementById("settlement").value
       };
-      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      if (!response.ok) {
-        alert(await response.text());
-        return;
-      }
-      await loadData();
-      showDetail(id);
+      await patchOrder(id, body, button, "订单状态已保存");
     }
 
-    async function saveSettlement(id) {
-      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settlement_status: document.getElementById(`settlement-${id}`).value })
-      });
-      if (!response.ok) {
-        alert(await response.text());
-        return;
-      }
-      await loadData();
+    async function saveSettlement(id, button = null) {
+      await patchOrder(id, { settlement_status: document.getElementById(`settlement-${id}`).value }, button, "结算状态已保存");
     }
 
-    async function confirmRiderSettlement(id) {
+    async function confirmRiderSettlement(id, button = null) {
       const order = state.orders.find(item => item.id === id);
       const status = order?.payment_mode === "cod" && order?.settlement_status === "paid_to_user" ? "completed" : "paid_to_rider";
-      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settlement_status: status })
-      });
-      if (!response.ok) {
-        alert(await response.text());
-        return;
-      }
-      await loadData();
+      await patchOrder(id, { settlement_status: status }, button, "已确认转账给骑手");
     }
 
-    async function confirmUserSettlement(id) {
+    async function confirmUserSettlement(id, button = null) {
       const order = state.orders.find(item => item.id === id);
       const status = order?.settlement_status === "paid_to_rider" ? "completed" : "paid_to_user";
-      const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settlement_status: status })
-      });
-      if (!response.ok) {
-        alert(await response.text());
-        return;
-      }
-      await loadData();
+      await patchOrder(id, { settlement_status: status }, button, "已确认转账给用户");
     }
 
-    document.getElementById("q").addEventListener("input", render);
+    document.getElementById("q").addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(render, 120);
+    });
     showPage(currentPage);
   </script>
 </body>
