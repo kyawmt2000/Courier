@@ -1730,7 +1730,7 @@ ADMIN_HTML = r'''
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
-          <td>${deliveryFeeCell(order)}</td>
+          <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
           <td>${riderDepositLabel(order.rider_deposit_status)}</td>
           <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
@@ -1852,7 +1852,7 @@ ADMIN_HTML = r'''
           <td><strong>${orderShortCode(order)}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${escapeHtml(roleText)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
-          <td>${deliveryFeeCell(order)}</td>
+          <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
         </tr>`;
     }
