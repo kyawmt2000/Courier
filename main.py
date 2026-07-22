@@ -2740,6 +2740,99 @@ PRIVACY_POLICY_HTML = """
 </html>
 """
 
+ACCOUNT_DELETION_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blink Delivery Account Deletion</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --text: #172033;
+      --muted: #667085;
+      --line: #e5e7eb;
+      --brand: #0f6bff;
+      --bg: #f7f9fc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 48px 20px 72px;
+    }
+    .page {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 34px;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.1;
+    }
+    h2 {
+      margin-top: 30px;
+      font-size: 21px;
+    }
+    p, li { color: var(--muted); }
+    a { color: var(--brand); }
+    .updated {
+      margin-top: 0;
+      color: var(--muted);
+    }
+    ul { padding-left: 22px; }
+  </style>
+</head>
+<body>
+  <main>
+    <article class="page">
+      <h1>Blink Delivery Account Deletion</h1>
+      <p class="updated">Last updated: July 22, 2026</p>
+
+      <p>
+        Blink Delivery users and riders can request deletion of their account
+        and associated personal data by contacting Blink support.
+      </p>
+
+      <h2>How to Request Deletion</h2>
+      <ul>
+        <li>Send a WhatsApp message to <a href="https://wa.me/959424594930">+95 942 459 4930</a>.</li>
+        <li>Include the phone number used for your Blink account.</li>
+        <li>Write "Delete my Blink account" in your message.</li>
+      </ul>
+      <p>
+        We may ask you to confirm your phone number or account ownership before
+        processing the request. After verification, we aim to complete deletion
+        within 30 days.
+      </p>
+
+      <h2>Data Deleted</h2>
+      <p>When your account deletion request is completed, we delete or anonymize:</p>
+      <ul>
+        <li>Your profile information, such as nickname, profile photo, phone number, and payment QR image.</li>
+        <li>Uploaded profile or settlement images that are no longer required.</li>
+        <li>Customer support and account-related data that is no longer needed for legal, safety, or dispute purposes.</li>
+      </ul>
+
+      <h2>Data We May Keep</h2>
+      <p>
+        Some data may be kept where required for fraud prevention, legal
+        compliance, accounting, settlement, safety, or dispute resolution. This
+        may include order records, payment confirmation records, delivery
+        history, settlement records, and chat records related to completed or
+        disputed orders.
+      </p>
 
 TERMS_CONDITIONS_HTML = """
 <!doctype html>
@@ -2896,6 +2989,12 @@ def privacy_policy_page() -> HTMLResponse:
         headers={"Cache-Control": "public, max-age=300"},
     )
 
+@app.get("/account-deletion", response_class=HTMLResponse)
+def account_deletion_page() -> HTMLResponse:
+    return HTMLResponse(
+        ACCOUNT_DELETION_HTML,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 @app.get("/terms", response_class=HTMLResponse)
 def terms_conditions_page() -> HTMLResponse:
