@@ -1165,6 +1165,52 @@ def user_profile_from_account(
     )
 
 
+def address_with_updated_contact_name(address: str, old_name: str | None, new_name: str) -> str:
+    old = clean_optional_text(old_name)
+    new = clean_optional_text(new_name) or new_name
+    if old and address.startswith(f"{old},"):
+        return f"{new}{address[len(old):]}"
+    return address
+
+
+def sync_user_profile_name(connection: sqlite3.Connection, phone: str, old_name: str | None, new_name: str) -> None:
+    connection.execute(
+        """
+        UPDATE chat_messages
+        SET sender_name = ?
+        WHERE sender_phone = ?
+            AND sender_type != 'admin'
+        """,
+        (new_name, phone),
+    )
+
+    rows = connection.execute(
+        """
+        SELECT id, user_phone, rider_phone, payload
+        FROM orders
+        WHERE user_phone = ?
+        """,
+        (phone,),
+    ).fetchall()
+    for row in rows:
+        order = order_from_row(row)
+        pickup_address = address_with_updated_contact_name(order.pickup_address, old_name, new_name)
+        if pickup_address == order.pickup_address:
+            continue
+        updated = order.model_copy(update={"pickup_address": pickup_address})
+        connection.execute(
+            """
+            UPDATE orders
+            SET payload = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(updated.model_dump(mode="json"), ensure_ascii=False),
+                row["id"],
+            ),
+        )
+
+
 def load_account_profile(phone: str) -> UserProfile | None:
     with connect_db() as connection:
         row = connection.execute(
@@ -1212,6 +1258,15 @@ def save_account(
     clear_app_deleted_at: bool = False,
 ) -> UserProfile:
     with connect_db() as connection:
+        existing_account = connection.execute(
+            """
+            SELECT nickname
+            FROM accounts
+            WHERE phone = ?
+            """,
+            (phone,),
+        ).fetchone()
+        previous_nickname = clean_optional_text(existing_account["nickname"]) if existing_account else None
         connection.execute(
             """
             INSERT INTO accounts (phone, nickname, avatar_url, payment_qr_url, terms_accepted_at, terms_version, last_login_at)
@@ -1236,6 +1291,8 @@ def save_account(
         )
         if clear_app_deleted_at:
             connection.execute("UPDATE accounts SET app_deleted_at = NULL WHERE phone = ?", (phone,))
+        if nickname is not None:
+            sync_user_profile_name(connection, phone, previous_nickname, nickname)
     return load_account_profile(phone) or user_profile_from_account(
         phone,
         nickname,
@@ -1262,6 +1319,21 @@ def account_data_hidden_before(phone: str) -> str | None:
 def app_data_visible_to_account(phone: str, created_at: datetime) -> bool:
     hidden_before = account_data_hidden_before(phone)
     return not hidden_before or created_at.isoformat() > hidden_before
+
+
+def account_nickname(phone: str | None) -> str | None:
+    if not phone:
+        return None
+    with connect_db() as connection:
+        row = connection.execute(
+            """
+            SELECT nickname
+            FROM accounts
+            WHERE phone = ?
+            """,
+            (phone,),
+        ).fetchone()
+    return clean_optional_text(row["nickname"]) if row else None
 
 
 def mark_account_deleted_for_app(phone: str) -> None:
@@ -1304,8 +1376,17 @@ def load_admin_orders() -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
             """
-            SELECT user_phone, rider_phone, payload
+            SELECT
+                orders.user_phone,
+                orders.rider_phone,
+                user_account.nickname AS user_nickname,
+                rider_account.nickname AS rider_nickname,
+                orders.payload
             FROM orders
+            LEFT JOIN accounts AS user_account
+                ON user_account.phone = orders.user_phone
+            LEFT JOIN accounts AS rider_account
+                ON rider_account.phone = orders.rider_phone
             ORDER BY created_at DESC
             """
         ).fetchall()
@@ -1315,6 +1396,8 @@ def load_admin_orders() -> list[dict]:
         order = order_for_response(order_from_row(row)).model_dump(mode="json")
         order["user_phone"] = row["user_phone"]
         order["rider_phone"] = row["rider_phone"]
+        order["user_nickname"] = row["user_nickname"]
+        order["rider_nickname"] = row["rider_nickname"]
         result.append(order)
     return result
 
@@ -1557,6 +1640,15 @@ ADMIN_HTML = r'''
       return label(value);
     }
     function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
+    function accountName(phone, fallbackName = "") {
+      const account = (state.accounts || []).find(item => item.phone === phone);
+      return account?.nickname || fallbackName || "";
+    }
+    function displayAccount(phone, fallbackName = "") {
+      const name = accountName(phone, fallbackName);
+      if (!phone) return escapeHtml(name || "未接单");
+      return `${escapeHtml(name || phone)}<br><span class="muted">${escapeHtml(phone)}</span>`;
+    }
     function deliveryFeeCell(order) {
       const gross = Number(order.delivery_fee || order.price || 0);
       const platform = Number(order.platform_delivery_fee || Math.round(gross * (gross >= 10000 ? 0.08 : 0.10)));
@@ -1714,7 +1806,7 @@ ADMIN_HTML = r'''
       return `
         <tr>
           <td><strong>订单 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
+          <td>${displayAccount(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
           <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
           <td>${prepaid ? "送货费" : "配送费"} ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
@@ -1728,7 +1820,7 @@ ADMIN_HTML = r'''
       return `
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
+          <td>${displayAccount(order.user_phone, order.user_nickname)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
           <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
@@ -1815,7 +1907,7 @@ ADMIN_HTML = r'''
       document.getElementById("settlements").innerHTML = settlementRows.map(order => `
         <tr>
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${escapeHtml(order.user_phone)}<br><span class="muted">${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></td>
+          <td>${displayAccount(order.user_phone, order.user_nickname)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name)}</td>
           <td>${deliveryFeeCell(order)}</td>
           <td>${settlementInfo(order)}</td>
           <td>${settlementQRCodes(order)}</td>
@@ -1878,8 +1970,8 @@ ADMIN_HTML = r'''
         const order = state.orders.find(item => item.id.toLowerCase() === orderId.toLowerCase());
         if (order) {
           const otherSide = order.user_phone === phone
-            ? (order.rider_phone || "未接单骑手")
-            : order.user_phone;
+            ? (accountName(order.rider_phone, order.rider_nickname || order.rider_name) || "未接单骑手")
+            : (accountName(order.user_phone, order.user_nickname) || order.user_phone);
           return `订单 ${order.id.slice(0, 6).toUpperCase()} / 对方：${otherSide}`;
         }
       }
@@ -1918,7 +2010,7 @@ ADMIN_HTML = r'''
           </div>
           ${thread.messages.map(message => `
             <p class="chat-line">
-              <strong>${escapeHtml(message.sender_name)}</strong>
+              <strong>${escapeHtml(accountName(message.sender_phone, message.sender_name) || message.sender_name)}</strong>
               <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
               ${escapeHtml(message.text || "")}
               ${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}
@@ -2002,7 +2094,7 @@ ADMIN_HTML = r'''
       list.innerHTML = conversations.map(message => `
         <button class="conversation-row ${message.conversation_id === selectedServiceConversationId ? "active" : ""}" onclick="selectServiceConversation('${escapeHtml(message.conversation_id)}')">
           <strong>${escapeHtml(message.conversation_id)}</strong><br>
-          <span class="muted">${escapeHtml(message.sender_name)}：${escapeHtml(message.text || "[图片]")}</span><br>
+          <span class="muted">${escapeHtml(accountName(message.sender_phone, message.sender_name) || message.sender_name)}：${escapeHtml(message.text || "[图片]")}</span><br>
           <span class="muted">${escapeHtml(new Date(message.created_at).toLocaleString())}</span>
         </button>
       `).join("");
@@ -2020,7 +2112,7 @@ ADMIN_HTML = r'''
       title.textContent = selectedServiceConversationId || "聊天记录";
       chat.innerHTML = messages.map(message => `
         <p>
-          <strong>${escapeHtml(message.sender_name)}</strong>
+          <strong>${escapeHtml(accountName(message.sender_phone, message.sender_name) || message.sender_name)}</strong>
           <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
           ${escapeHtml(message.text)}
           ${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}
@@ -2102,8 +2194,8 @@ ADMIN_HTML = r'''
       document.getElementById("detail").innerHTML = `
         ${order.goods_image_url ? `<img src="${order.goods_image_url}" alt="商品图">` : `<div class="muted">暂无商品图</div>`}
         <div class="row"><b>订单号</b><span>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</span></div>
-        <div class="row"><b>用户</b><span>${escapeHtml(order.user_phone)}</span></div>
-        <div class="row"><b>骑手</b><span>${escapeHtml(order.rider_phone || "未接单")} ${escapeHtml(order.rider_name || "")}</span></div>
+        <div class="row"><b>用户</b><span>${displayAccount(order.user_phone, order.user_nickname)}</span></div>
+        <div class="row"><b>骑手</b><span>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name)}</span></div>
         <div class="row"><b>付款方式</b><span>${escapeHtml(label(order.payment_mode))}</span></div>
         <div class="row"><b>用户付款</b><span>${escapeHtml(label(order.user_payment_status))}</span></div>
         <div class="row"><b>骑手押金</b><span>${escapeHtml(riderDepositLabel(order.rider_deposit_status))}</span></div>
@@ -2663,13 +2755,17 @@ async def route_distance_fallback_km(origin: tuple[float, float], destination: t
 
 
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
+    sender_phone = row["sender_phone"]
+    sender_name = row["sender_name"]
+    if row["sender_type"] != "admin":
+        sender_name = account_nickname(sender_phone) or sender_name
     return ChatMessageResponse(
         id=row["id"],
         conversation_id=row["conversation_id"],
         text=row["text"],
         sender_type=row["sender_type"],
-        sender_name=row["sender_name"],
-        sender_phone=row["sender_phone"],
+        sender_name=sender_name,
+        sender_phone=sender_phone,
         image_url=signed_gcs_read_url(row["image_url"]),
         created_at=datetime.fromisoformat(row["created_at"]),
     )
@@ -3506,7 +3602,7 @@ def create_chat_message(
     sender_phone = normalize_myanmar_phone(request.sender_phone) if request.sender_phone else None
     text = request.text.strip()
     image_url = request.image_url.strip() if request.image_url else None
-    sender_name = request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
+    sender_name = account_nickname(sender_phone) or request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
     conversation_id = account_conversation_id(request.conversation_id, authorization, sender_phone)
 
     if not text and not image_url:
