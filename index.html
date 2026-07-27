@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta
+      name="description"
+      content="Download the official Blink Delivery Android app APK for fast local delivery orders, rider updates, and payment proof uploads."
+    >
+    <title>Blink Delivery Android App Download</title>
+    <style>
+      :root {
+        color: #162033;
+        background: #f7f8f4;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-synthesis: none;
+        text-rendering: optimizeLegibility;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page {
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 78% 14%, rgb(48 118 255 / 12%), transparent 34%),
+          linear-gradient(145deg, #f7f8f4 0%, #eef4ff 46%, #f7fbf6 100%);
+      }
+
+      .wrap {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 18px 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+        text-decoration: none;
+      }
+
+      .brand img {
+        width: 64px;
+        height: 42px;
+        object-fit: contain;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 8px 20px rgb(24 44 72 / 10%);
+      }
+
+      .brand strong {
+        display: block;
+        color: #0f172a;
+        font-size: 18px;
+        line-height: 1.1;
+      }
+
+      .brand span {
+        display: block;
+        color: #657086;
+        font-size: 13px;
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: #344052;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .nav a {
+        text-decoration: none;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.02fr) minmax(320px, 0.72fr);
+        gap: 44px;
+        align-items: center;
+        padding: 58px 0 42px;
+      }
+
+      .kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 18px;
+        color: #23624f;
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #26b56e;
+        box-shadow: 0 0 0 6px rgb(38 181 110 / 14%);
+      }
+
+      h1 {
+        max-width: 720px;
+        margin: 0;
+        color: #0d1728;
+        font-size: clamp(42px, 8vw, 76px);
+        line-height: 0.96;
+        letter-spacing: 0;
+      }
+
+      .lead {
+        max-width: 650px;
+        margin: 22px 0 0;
+        color: #42516a;
+        font-size: 19px;
+        line-height: 1.65;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 14px;
+        margin-top: 30px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 52px;
+        padding: 0 22px;
+        border-radius: 8px;
+        font-weight: 850;
+        text-decoration: none;
+      }
+
+      .button.primary {
+        color: #fff;
+        background: #1663f4;
+        box-shadow: 0 16px 30px rgb(22 99 244 / 24%);
+      }
+
+      .button.secondary {
+        color: #172033;
+        background: rgb(255 255 255 / 72%);
+        border: 1px solid rgb(98 116 148 / 22%);
+      }
+
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+        color: #5d687c;
+        font-size: 14px;
+      }
+
+      .meta span {
+        padding: 7px 10px;
+        border: 1px solid rgb(98 116 148 / 18%);
+        border-radius: 999px;
+        background: rgb(255 255 255 / 56%);
+      }
+
+      .phone {
+        position: relative;
+        padding: 18px;
+        border: 1px solid rgb(98 116 148 / 22%);
+        border-radius: 28px;
+        background: #111827;
+        box-shadow: 0 30px 70px rgb(20 33 58 / 24%);
+      }
+
+      .screen {
+        overflow: hidden;
+        min-height: 560px;
+        border-radius: 18px;
+        background: #f8fafc;
+      }
+
+      .screen-head {
+        padding: 22px;
+        color: white;
+        background: linear-gradient(135deg, #1663f4, #1f9b7a);
+      }
+
+      .screen-head p {
+        margin: 0 0 6px;
+        font-size: 13px;
+        font-weight: 800;
+        opacity: 0.86;
+      }
+
+      .screen-head h2 {
+        margin: 0;
+        font-size: 28px;
+        line-height: 1.1;
+      }
+
+      .status-list {
+        display: grid;
+        gap: 12px;
+        padding: 18px;
+      }
+
+      .status {
+        padding: 16px;
+        border: 1px solid #e4e9f2;
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .status small {
+        display: block;
+        margin-bottom: 7px;
+        color: #667085;
+        font-weight: 800;
+      }
+
+      .status strong {
+        display: block;
+        color: #111827;
+        font-size: 18px;
+      }
+
+      .progress {
+        height: 8px;
+        margin-top: 13px;
+        overflow: hidden;
+        border-radius: 99px;
+        background: #e7edf5;
+      }
+
+      .progress span {
+        display: block;
+        width: 68%;
+        height: 100%;
+        background: #26b56e;
+      }
+
+      .band {
+        background: #ffffff;
+        border-top: 1px solid #e1e7ef;
+        border-bottom: 1px solid #e1e7ef;
+      }
+
+      .sections {
+        display: grid;
+        grid-template-columns: 0.85fr 1.15fr;
+        gap: 38px;
+        padding: 54px 0;
+      }
+
+      .section-title h2 {
+        margin: 0;
+        color: #111827;
+        font-size: clamp(30px, 4vw, 44px);
+        line-height: 1.08;
+      }
+
+      .section-title p {
+        margin: 16px 0 0;
+        color: #526177;
+        line-height: 1.7;
+      }
+
+      .steps {
+        display: grid;
+        gap: 14px;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr);
+        gap: 14px;
+        padding: 18px;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #fbfcff;
+      }
+
+      .step-number {
+        display: grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        color: #fff;
+        border-radius: 8px;
+        background: #172033;
+        font-weight: 900;
+      }
+
+      .step h3 {
+        margin: 0 0 6px;
+        color: #172033;
+        font-size: 18px;
+      }
+
+      .step p {
+        margin: 0;
+        color: #526177;
+        line-height: 1.58;
+      }
+
+      .features {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+        padding: 46px 0 56px;
+      }
+
+      .feature {
+        padding: 22px;
+        border: 1px solid rgb(98 116 148 / 18%);
+        border-radius: 8px;
+        background: rgb(255 255 255 / 66%);
+      }
+
+      .feature h3 {
+        margin: 0 0 8px;
+        color: #111827;
+        font-size: 19px;
+      }
+
+      .feature p {
+        margin: 0;
+        color: #526177;
+        line-height: 1.6;
+      }
+
+      .footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 26px 0 34px;
+        color: #647084;
+        font-size: 14px;
+      }
+
+      .footer a {
+        color: #244a98;
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      @media (max-width: 860px) {
+        .hero,
+        .sections {
+          grid-template-columns: 1fr;
+        }
+
+        .hero {
+          padding-top: 34px;
+        }
+
+        .phone {
+          max-width: 430px;
+        }
+
+        .screen {
+          min-height: 480px;
+        }
+
+        .features {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .wrap {
+          width: min(100% - 24px, 1120px);
+        }
+
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .nav {
+          width: 100%;
+          justify-content: space-between;
+        }
+
+        .actions {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .button {
+          width: 100%;
+        }
+
+        .step {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="wrap topbar">
+        <a class="brand" href="/">
+          <img src="/assets/logo.jpg" alt="Blink Delivery logo">
+          <span>
+            <strong>Blink Delivery</strong>
+            <span>Official Android APK</span>
+          </span>
+        </a>
+        <nav class="nav" aria-label="Site navigation">
+          <a href="#install">Install guide</a>
+          <a href="/privacy/">Privacy</a>
+          <a href="https://wa.me/959424594930">Support</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="wrap hero">
+          <div>
+            <p class="kicker"><span class="dot"></span> Direct download for Android</p>
+            <h1>Get Blink Delivery on your phone.</h1>
+            <p class="lead">
+              Download the official Blink Android app to create delivery orders, track rider
+              updates, upload payment proof, and chat with support.
+            </p>
+            <div class="actions">
+              <a class="button primary" href="/downloads/blink.apk" download>Download APK</a>
+              <a class="button secondary" href="https://wa.me/959424594930">Ask for help</a>
+            </div>
+            <div class="meta" aria-label="APK details">
+              <span>Version: update before launch</span>
+              <span>Android 8.0+</span>
+              <span>Official website only</span>
+            </div>
+          </div>
+
+          <aside class="phone" aria-label="Blink app preview">
+            <div class="screen">
+              <div class="screen-head">
+                <p>BLINK DELIVERY</p>
+                <h2>Your delivery is moving</h2>
+              </div>
+              <div class="status-list">
+                <div class="status">
+                  <small>ORDER</small>
+                  <strong>Pickup confirmed</strong>
+                  <div class="progress"><span></span></div>
+                </div>
+                <div class="status">
+                  <small>RIDER</small>
+                  <strong>On the way to customer</strong>
+                </div>
+                <div class="status">
+                  <small>PAYMENT</small>
+                  <strong>KPay proof uploaded</strong>
+                </div>
+                <div class="status">
+                  <small>SUPPORT</small>
+                  <strong>WhatsApp help available</strong>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </section>
+
+        <section class="band" id="install">
+          <div class="wrap sections">
+            <div class="section-title">
+              <h2>Install Blink safely</h2>
+              <p>
+                Android may ask for permission because this app is downloaded from the official
+                Blink website instead of Play Store.
+              </p>
+            </div>
+            <div class="steps">
+              <article class="step">
+                <span class="step-number">1</span>
+                <div>
+                  <h3>Download the APK</h3>
+                  <p>Tap the download button and wait until the file is fully saved.</p>
+                </div>
+              </article>
+              <article class="step">
+                <span class="step-number">2</span>
+                <div>
+                  <h3>Allow this install</h3>
+                  <p>If Android asks, allow your browser to install apps from this source.</p>
+                </div>
+              </article>
+              <article class="step">
+                <span class="step-number">3</span>
+                <div>
+                  <h3>Open Blink</h3>
+                  <p>After installation, open Blink and sign in with your phone number.</p>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="wrap features" aria-label="Blink features">
+          <article class="feature">
+            <h3>Delivery orders</h3>
+            <p>Create pickup and drop-off requests with address details and delivery notes.</p>
+          </article>
+          <article class="feature">
+            <h3>Live status</h3>
+            <p>Follow rider status, payment status, and order progress from one app.</p>
+          </article>
+          <article class="feature">
+            <h3>Local support</h3>
+            <p>Contact Blink support on WhatsApp when you need help with an order.</p>
+          </article>
+        </section>
+      </main>
+
+      <footer class="wrap footer">
+        <span>Copyright 2026 Blink Delivery. Download only from the official website.</span>
+        <span><a href="/privacy/">Privacy Policy</a> · <a href="https://wa.me/959424594930">WhatsApp</a></span>
+      </footer>
+    </div>
+  </body>
+</html>
