@@ -3,11 +3,15 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Blink Delivery Privacy Policy</title>
+    <meta
+      name="description"
+      content="Download the official Blink Delivery Android app APK for fast local delivery orders, rider updates, and payment proof uploads."
+    >
+    <title>Blink Delivery Android App Download</title>
     <style>
       :root {
-        color: #172033;
-        background: #f6f8fb;
+        color: #162033;
+        background: #f7f8f4;
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         font-synthesis: none;
         text-rendering: optimizeLegibility;
@@ -19,360 +23,550 @@
 
       body {
         margin: 0;
+        min-width: 320px;
       }
 
       a {
-        color: #0a67d8;
+        color: inherit;
       }
 
-      main {
-        max-width: 980px;
+      .page {
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 78% 14%, rgb(48 118 255 / 12%), transparent 34%),
+          linear-gradient(145deg, #f7f8f4 0%, #eef4ff 46%, #f7fbf6 100%);
+      }
+
+      .wrap {
+        width: min(1120px, calc(100% - 32px));
         margin: 0 auto;
-        padding: 32px 20px 56px;
       }
 
-      .hero {
+      .topbar {
         display: flex;
-        align-items: flex-end;
+        align-items: center;
         justify-content: space-between;
-        gap: 24px;
-        padding: 28px 0 22px;
-        border-bottom: 1px solid #dde5ef;
+        gap: 16px;
+        padding: 18px 0;
       }
 
       .brand {
         display: flex;
         align-items: center;
-        gap: 16px;
+        gap: 12px;
+        min-width: 0;
+        text-decoration: none;
       }
 
-      .mark {
-        display: block;
-        width: 120px;
-        height: 70px;
+      .brand img {
+        width: 64px;
+        height: 42px;
         object-fit: contain;
-        object-position: center;
-        background: white;
         border-radius: 8px;
-        box-shadow: 0 10px 22px rgb(15 23 42 / 8%);
+        background: #fff;
+        box-shadow: 0 8px 20px rgb(24 44 72 / 10%);
       }
 
-      .eyebrow {
-        margin: 0 0 4px;
-        color: #5a6779;
+      .brand strong {
+        display: block;
+        color: #0f172a;
+        font-size: 18px;
+        line-height: 1.1;
+      }
+
+      .brand span {
+        display: block;
+        color: #657086;
+        font-size: 13px;
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: #344052;
         font-size: 14px;
         font-weight: 700;
       }
 
-      h1 {
-        margin: 0;
-        color: #0f172a;
-        font-size: clamp(34px, 7vw, 56px);
-        line-height: 1;
+      .nav a {
+        text-decoration: none;
       }
 
-      .updated {
-        margin: 0;
-        color: #637083;
-        font-size: 14px;
-        white-space: nowrap;
-      }
-
-      .support {
-        display: flex;
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.02fr) minmax(320px, 0.72fr);
+        gap: 44px;
         align-items: center;
-        justify-content: space-between;
-        gap: 20px;
-        margin: 24px 0;
-        padding: 20px;
-        background: white;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
+        padding: 58px 0 42px;
       }
 
-      .support h2,
-      .support p {
-        margin: 0;
-      }
-
-      .support h2 {
-        margin-bottom: 6px;
-        font-size: 20px;
-      }
-
-      .contact {
+      .kicker {
         display: inline-flex;
         align-items: center;
         gap: 8px;
-        min-height: 44px;
-        padding: 0 14px;
-        color: white;
-        background: #0b66d8;
-        border-radius: 8px;
-        font-weight: 700;
-        text-decoration: none;
-        white-space: nowrap;
+        margin: 0 0 18px;
+        color: #23624f;
+        font-size: 14px;
+        font-weight: 800;
       }
 
-      .policy {
-        padding: 30px;
-        background: white;
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #26b56e;
+        box-shadow: 0 0 0 6px rgb(38 181 110 / 14%);
+      }
+
+      h1 {
+        max-width: 720px;
+        margin: 0;
+        color: #0d1728;
+        font-size: clamp(42px, 8vw, 76px);
+        line-height: 0.96;
+        letter-spacing: 0;
+      }
+
+      .lead {
+        max-width: 650px;
+        margin: 22px 0 0;
+        color: #42516a;
+        font-size: 19px;
+        line-height: 1.65;
+      }
+
+      .download-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 30px;
+        max-width: 720px;
+      }
+
+      .download-card {
+        padding: 18px;
+        border: 1px solid rgb(98 116 148 / 20%);
+        border-radius: 8px;
+        background: rgb(255 255 255 / 72%);
+      }
+
+      .download-card h2 {
+        margin: 0 0 8px;
+        color: #111827;
+        font-size: 21px;
+      }
+
+      .download-card p {
+        margin: 0 0 16px;
+        min-height: 48px;
+        color: #526177;
+        line-height: 1.55;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 52px;
+        padding: 0 22px;
+        border-radius: 8px;
+        font-weight: 850;
+        text-decoration: none;
+      }
+
+      .button.primary {
+        color: #fff;
+        background: #1663f4;
+        box-shadow: 0 16px 30px rgb(22 99 244 / 24%);
+      }
+
+      .button.secondary {
+        color: #172033;
+        background: rgb(255 255 255 / 72%);
+        border: 1px solid rgb(98 116 148 / 22%);
+      }
+
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+        color: #5d687c;
+        font-size: 14px;
+      }
+
+      .meta span {
+        padding: 7px 10px;
+        border: 1px solid rgb(98 116 148 / 18%);
+        border-radius: 999px;
+        background: rgb(255 255 255 / 56%);
+      }
+
+      .phone {
+        position: relative;
+        padding: 18px;
+        border: 1px solid rgb(98 116 148 / 22%);
+        border-radius: 28px;
+        background: #111827;
+        box-shadow: 0 30px 70px rgb(20 33 58 / 24%);
+      }
+
+      .screen {
+        overflow: hidden;
+        min-height: 560px;
+        border-radius: 18px;
+        background: #f8fafc;
+      }
+
+      .screen-head {
+        padding: 22px;
+        color: white;
+        background: linear-gradient(135deg, #1663f4, #1f9b7a);
+      }
+
+      .screen-head p {
+        margin: 0 0 6px;
+        font-size: 13px;
+        font-weight: 800;
+        opacity: 0.86;
+      }
+
+      .screen-head h2 {
+        margin: 0;
+        font-size: 28px;
+        line-height: 1.1;
+      }
+
+      .status-list {
+        display: grid;
+        gap: 12px;
+        padding: 18px;
+      }
+
+      .status {
+        padding: 16px;
+        border: 1px solid #e4e9f2;
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .status small {
+        display: block;
+        margin-bottom: 7px;
+        color: #667085;
+        font-weight: 800;
+      }
+
+      .status strong {
+        display: block;
+        color: #111827;
+        font-size: 18px;
+      }
+
+      .progress {
+        height: 8px;
+        margin-top: 13px;
+        overflow: hidden;
+        border-radius: 99px;
+        background: #e7edf5;
+      }
+
+      .progress span {
+        display: block;
+        width: 68%;
+        height: 100%;
+        background: #26b56e;
+      }
+
+      .band {
+        background: #ffffff;
+        border-top: 1px solid #e1e7ef;
+        border-bottom: 1px solid #e1e7ef;
+      }
+
+      .sections {
+        display: grid;
+        grid-template-columns: 0.85fr 1.15fr;
+        gap: 38px;
+        padding: 54px 0;
+      }
+
+      .section-title h2 {
+        margin: 0;
+        color: #111827;
+        font-size: clamp(30px, 4vw, 44px);
+        line-height: 1.08;
+      }
+
+      .section-title p {
+        margin: 16px 0 0;
+        color: #526177;
+        line-height: 1.7;
+      }
+
+      .steps {
+        display: grid;
+        gap: 14px;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr);
+        gap: 14px;
+        padding: 18px;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
+        background: #fbfcff;
       }
 
-      .policy section {
-        padding: 22px 0;
-        border-bottom: 1px solid #edf2f7;
+      .step-number {
+        display: grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        color: #fff;
+        border-radius: 8px;
+        background: #172033;
+        font-weight: 900;
       }
 
-      .policy section:first-child {
-        padding-top: 0;
+      .step h3 {
+        margin: 0 0 6px;
+        color: #172033;
+        font-size: 18px;
       }
 
-      .policy section:last-child {
-        border-bottom: 0;
-      }
-
-      .policy h2 {
-        margin: 0 0 10px;
-        color: #111827;
-        font-size: 22px;
-        line-height: 1.25;
-      }
-
-      .policy p {
-        margin: 0 0 12px;
-        color: #38465a;
-        line-height: 1.68;
-      }
-
-      .policy p:last-child {
-        margin-bottom: 0;
-      }
-
-      ul {
+      .step p {
         margin: 0;
-        padding-left: 20px;
-      }
-
-      li {
-        margin: 8px 0;
-        color: #38465a;
+        color: #526177;
         line-height: 1.58;
       }
 
-      .closing {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        color: #0a67d8;
+      .features {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+        padding: 46px 0 56px;
       }
 
-      .closing p {
+      .feature {
+        padding: 22px;
+        border: 1px solid rgb(98 116 148 / 18%);
+        border-radius: 8px;
+        background: rgb(255 255 255 / 66%);
+      }
+
+      .feature h3 {
+        margin: 0 0 8px;
+        color: #111827;
+        font-size: 19px;
+      }
+
+      .feature p {
         margin: 0;
+        color: #526177;
+        line-height: 1.6;
       }
 
-      @media (max-width: 720px) {
-        main {
-          padding: 22px 14px 42px;
+      .footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 26px 0 34px;
+        color: #647084;
+        font-size: 14px;
+      }
+
+      .footer a {
+        color: #244a98;
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      @media (max-width: 860px) {
+        .hero,
+        .sections {
+          grid-template-columns: 1fr;
         }
 
-        .hero,
-        .support {
+        .hero {
+          padding-top: 34px;
+        }
+
+        .phone {
+          max-width: 430px;
+        }
+
+        .screen {
+          min-height: 480px;
+        }
+
+        .features {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .wrap {
+          width: min(100% - 24px, 1120px);
+        }
+
+        .topbar {
           align-items: flex-start;
           flex-direction: column;
         }
 
-        .updated,
-        .contact {
-          white-space: normal;
+        .nav {
+          width: 100%;
+          justify-content: space-between;
         }
 
-        .policy {
-          padding: 22px;
+        .download-grid {
+          grid-template-columns: 1fr;
         }
 
-        .mark {
-          width: 104px;
-          height: 62px;
+        .button {
+          width: 100%;
+        }
+
+        .step {
+          grid-template-columns: 1fr;
         }
       }
     </style>
   </head>
   <body>
-    <main>
-      <section class="hero">
-        <div class="brand">
-          <img class="mark" src="/assets/logo.jpg" alt="Blink Delivery logo">
+    <div class="page">
+      <header class="wrap topbar">
+        <a class="brand" href="/">
+          <img src="/assets/logo.jpg" alt="Blink Delivery logo">
+          <span>
+            <strong>Blink Delivery</strong>
+            <span>Official Android APK</span>
+          </span>
+        </a>
+        <nav class="nav" aria-label="Site navigation">
+          <a href="#install">Install guide</a>
+          <a href="/privacy/">Privacy</a>
+          <a href="https://wa.me/959424594930">Support</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="wrap hero">
           <div>
-            <p class="eyebrow"><a href="/" style="color: inherit; text-decoration: none;">Blink Delivery</a></p>
-            <h1>Privacy Policy</h1>
+            <p class="kicker"><span class="dot"></span> Direct download for Android</p>
+            <h1>Get Blink on your phone.</h1>
+            <p class="lead">
+              Download the official Android APK for Blink Express or Blink Rider. Use Express for
+              delivery orders and Rider for accepting and completing assigned trips.
+            </p>
+            <div class="download-grid" aria-label="Blink app downloads">
+              <article class="download-card">
+                <h2>Blink Express</h2>
+                <p>Create delivery orders, track status, upload payment proof, and contact support.</p>
+                <a class="button primary" href="/downloads/blink-express.apk" download>Download Express</a>
+              </article>
+              <article class="download-card">
+                <h2>Blink Rider</h2>
+                <p>Accept assigned deliveries, update order progress, and manage rider work.</p>
+                <a class="button primary" href="/downloads/blink-rider.apk" download>Download Rider</a>
+              </article>
+            </div>
+            <div class="meta" aria-label="APK details">
+              <span>Versions: update before launch</span>
+              <span>Android 8.0+</span>
+              <span>Official website only</span>
+            </div>
           </div>
-        </div>
-        <p class="updated">Last updated: July 12, 2026</p>
-      </section>
 
-      <section class="support">
-        <div>
-          <h2>Support</h2>
-          <p>
-            For questions about Blink Delivery, orders, payments, account help, or this Privacy
-            Policy, contact our support team.
-          </p>
-        </div>
-        <a class="contact" href="/">Download Blink</a>
-        <a class="contact" href="https://wa.me/959424594930">WhatsApp +95 942 459 4930</a>
-      </section>
-
-      <article class="policy">
-        <section>
-          <h2>1. Information We Collect</h2>
-          <p>We may collect the following information when you use Blink:</p>
-          <ul>
-            <li>Account information, such as your phone number, username, and profile details.</li>
-            <li>
-              Delivery information, such as sender name, receiver name, phone numbers, pickup
-              address, drop-off address, township, city, delivery notes, and Google Map location
-              links.
-            </li>
-            <li>
-              Order information, such as parcel type, item value, delivery fee, order status, rider
-              status, and order history.
-            </li>
-            <li>
-              Photos and uploaded files, such as item photos, payment proof screenshots, profile
-              images, and payment QR codes.
-            </li>
-            <li>Chat messages, including customer service messages and order-related communication.</li>
-            <li>Payment-related information, such as payment status and uploaded KPay transfer proof.</li>
-            <li>
-              Device and technical information needed to operate the app, improve reliability, and
-              provide notifications.
-            </li>
-          </ul>
+          <aside class="phone" aria-label="Blink app preview">
+            <div class="screen">
+              <div class="screen-head">
+                <p>BLINK DELIVERY</p>
+                <h2>Your delivery is moving</h2>
+              </div>
+              <div class="status-list">
+                <div class="status">
+                  <small>ORDER</small>
+                  <strong>Pickup confirmed</strong>
+                  <div class="progress"><span></span></div>
+                </div>
+                <div class="status">
+                  <small>RIDER</small>
+                  <strong>On the way to customer</strong>
+                </div>
+                <div class="status">
+                  <small>PAYMENT</small>
+                  <strong>KPay proof uploaded</strong>
+                </div>
+                <div class="status">
+                  <small>SUPPORT</small>
+                  <strong>WhatsApp help available</strong>
+                </div>
+              </div>
+            </div>
+          </aside>
         </section>
 
-        <section>
-          <h2>2. How We Use Information</h2>
-          <ul>
-            <li>Create and manage delivery orders.</li>
-            <li>Match orders with riders and update delivery status.</li>
-            <li>Calculate delivery distance and delivery fees.</li>
-            <li>Allow users, riders, and customer service to communicate about orders.</li>
-            <li>Confirm payment proof and settlement information.</li>
-            <li>Send important notifications about orders, payments, and account activity.</li>
-            <li>Improve app performance, safety, and customer support.</li>
-            <li>Prevent fraud, abuse, or misuse of the service.</li>
-          </ul>
+        <section class="band" id="install">
+          <div class="wrap sections">
+            <div class="section-title">
+              <h2>Install Blink safely</h2>
+              <p>
+                Android may ask for permission because these apps are downloaded from the official
+                Blink website instead of Play Store.
+              </p>
+            </div>
+            <div class="steps">
+              <article class="step">
+                <span class="step-number">1</span>
+                <div>
+                  <h3>Download the APK</h3>
+                  <p>Tap the download button and wait until the file is fully saved.</p>
+                </div>
+              </article>
+              <article class="step">
+                <span class="step-number">2</span>
+                <div>
+                  <h3>Allow this install</h3>
+                  <p>If Android asks, allow your browser to install apps from this source.</p>
+                </div>
+              </article>
+              <article class="step">
+                <span class="step-number">3</span>
+                <div>
+                  <h3>Open Blink</h3>
+                  <p>After installation, open Blink and sign in with your phone number.</p>
+                </div>
+              </article>
+            </div>
+          </div>
         </section>
 
-        <section>
-          <h2>3. Location and Address Information</h2>
-          <p>
-            Blink may use pickup and drop-off address information, township, city, and Google Map
-            location links to calculate delivery distance, estimate fees, and help riders complete
-            deliveries. We do not sell your location or address information.
-          </p>
+        <section class="wrap features" aria-label="Blink features">
+          <article class="feature">
+            <h3>Express orders</h3>
+            <p>Create pickup and drop-off requests with address details and delivery notes.</p>
+          </article>
+          <article class="feature">
+            <h3>Rider workflow</h3>
+            <p>Let riders accept deliveries and update each order as it moves.</p>
+          </article>
+          <article class="feature">
+            <h3>Local support</h3>
+            <p>Contact Blink support on WhatsApp when you need help with an order.</p>
+          </article>
         </section>
+      </main>
 
-        <section>
-          <h2>4. Photos and Uploaded Content</h2>
-          <p>
-            Users may upload item photos, payment proof screenshots, profile images, and payment QR
-            codes. These files are used only for order processing, payment confirmation, profile
-            display, settlement, and customer support.
-          </p>
-        </section>
-
-        <section>
-          <h2>5. Sharing of Information</h2>
-          <p>We may share necessary information with:</p>
-          <ul>
-            <li>Riders, so they can accept and complete delivery orders.</li>
-            <li>Customer support staff, so they can help resolve order or payment issues.</li>
-            <li>
-              Service providers that help us operate the app, store uploaded files, send
-              notifications, process server requests, or maintain our systems.
-            </li>
-            <li>
-              Authorities or legal parties if required by law or necessary to protect our rights,
-              users, or service.
-            </li>
-          </ul>
-          <p>We do not sell personal information.</p>
-        </section>
-
-        <section>
-          <h2>6. Payments</h2>
-          <p>
-            Blink may collect payment proof screenshots and payment status information to confirm
-            delivery fee payments and order settlement. Blink does not collect or store full bank
-            account passwords, mobile wallet passwords, or card numbers.
-          </p>
-        </section>
-
-        <section>
-          <h2>7. Notifications</h2>
-          <p>
-            Blink may send notifications about order updates, payment status, rider updates, chat
-            messages, and customer service messages. You can control notification permissions in your
-            device settings.
-          </p>
-        </section>
-
-        <section>
-          <h2>8. Data Storage and Security</h2>
-          <p>
-            We use reasonable technical and organizational measures to protect user information.
-            However, no system is completely secure, and we cannot guarantee absolute security of
-            data transmitted or stored through the app.
-          </p>
-        </section>
-
-        <section>
-          <h2>9. Data Retention</h2>
-          <p>
-            We keep information for as long as needed to provide our services, maintain order
-            records, resolve disputes, comply with legal obligations, and improve safety. Some
-            information may be deleted or anonymized when it is no longer needed.
-          </p>
-        </section>
-
-        <section>
-          <h2>10. Children’s Privacy</h2>
-          <p>
-            Blink is not intended for children under 13. We do not knowingly collect personal
-            information from children under 13. If you believe a child has provided personal
-            information, please contact us so we can review and delete it if necessary.
-          </p>
-        </section>
-
-        <section>
-          <h2>11. Your Choices</h2>
-          <p>
-            You may contact us to request help with updating, correcting, or deleting certain account
-            information. Some order records may need to be retained for business, safety, legal, or
-            dispute-resolution purposes.
-          </p>
-        </section>
-
-        <section>
-          <h2>12. Changes to This Policy</h2>
-          <p>
-            We may update this Privacy Policy from time to time. If we make important changes, we may
-            notify users through the app or another appropriate method. Continued use of Blink after
-            changes means you accept the updated policy.
-          </p>
-        </section>
-
-        <section class="closing">
-          <p>
-            Questions about privacy or support? Send a WhatsApp message to
-            <a href="https://wa.me/959424594930">+95 942 459 4930</a>.
-          </p>
-        </section>
-      </article>
-    </main>
+      <footer class="wrap footer">
+        <span>Copyright 2026 Blink Delivery. Download only from the official website.</span>
+        <span><a href="/privacy/">Privacy Policy</a> · <a href="https://wa.me/959424594930">WhatsApp</a></span>
+      </footer>
+    </div>
   </body>
 </html>
