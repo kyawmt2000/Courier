@@ -77,6 +77,7 @@ class EmptyResponse(BaseModel):
 class UserProfile(BaseModel):
     id: str
     phone: str
+    email: str | None = None
     nickname: str | None = None
     avatar_url: str | None = None
     payment_qr_url: str | None = None
@@ -430,6 +431,7 @@ def init_storage() -> None:
             """
             CREATE TABLE IF NOT EXISTS accounts (
                 phone TEXT PRIMARY KEY,
+                email TEXT,
                 nickname TEXT,
                 avatar_url TEXT,
                 payment_qr_url TEXT,
@@ -469,6 +471,7 @@ def init_storage() -> None:
         add_column_if_missing(connection, "orders", "created_at", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "orders", "payload", "TEXT NOT NULL DEFAULT '{}'")
         add_column_if_missing(connection, "accounts", "nickname", "TEXT")
+        add_column_if_missing(connection, "accounts", "email", "TEXT")
         add_column_if_missing(connection, "accounts", "avatar_url", "TEXT")
         add_column_if_missing(connection, "accounts", "payment_qr_url", "TEXT")
         add_column_if_missing(connection, "accounts", "terms_accepted_at", "TEXT")
@@ -1257,6 +1260,7 @@ def sync_orders_for_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
 
 def user_profile_from_account(
     phone: str,
+    email: str | None,
     nickname: str | None,
     avatar_url: str | None,
     payment_qr_url: str | None,
@@ -1268,6 +1272,7 @@ def user_profile_from_account(
     return UserProfile(
         id=user_id,
         phone=phone,
+        email=email,
         nickname=nickname,
         avatar_url=signed_gcs_read_url(avatar_url),
         payment_qr_url=signed_gcs_read_url(payment_qr_url),
@@ -1326,7 +1331,7 @@ def load_account_profile(phone: str) -> UserProfile | None:
     with connect_db() as connection:
         row = connection.execute(
             """
-            SELECT phone, nickname, avatar_url, payment_qr_url, terms_accepted_at, terms_version, app_deleted_at
+            SELECT phone, email, nickname, avatar_url, payment_qr_url, terms_accepted_at, terms_version, app_deleted_at
             FROM accounts
             WHERE phone = ?
             """,
@@ -1346,11 +1351,13 @@ def load_account_profile(phone: str) -> UserProfile | None:
             None,
             None,
             None,
+            None,
             terms_accepted_at,
             terms_version,
         )
     return user_profile_from_account(
         row["phone"],
+        row["email"],
         row["nickname"],
         row["avatar_url"],
         row["payment_qr_url"],
@@ -1361,6 +1368,7 @@ def load_account_profile(phone: str) -> UserProfile | None:
 
 def save_account(
     phone: str,
+    email: str | None = None,
     nickname: str | None = None,
     avatar_url: str | None = None,
     payment_qr_url: str | None = None,
@@ -1380,9 +1388,10 @@ def save_account(
         previous_nickname = clean_optional_text(existing_account["nickname"]) if existing_account else None
         connection.execute(
             """
-            INSERT INTO accounts (phone, nickname, avatar_url, payment_qr_url, terms_accepted_at, terms_version, last_login_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO accounts (phone, email, nickname, avatar_url, payment_qr_url, terms_accepted_at, terms_version, last_login_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(phone) DO UPDATE SET
+                email = COALESCE(excluded.email, accounts.email),
                 nickname = COALESCE(excluded.nickname, accounts.nickname),
                 avatar_url = COALESCE(excluded.avatar_url, accounts.avatar_url),
                 payment_qr_url = COALESCE(excluded.payment_qr_url, accounts.payment_qr_url),
@@ -1392,6 +1401,7 @@ def save_account(
             """,
             (
                 phone,
+                email,
                 nickname,
                 avatar_url,
                 payment_qr_url,
@@ -1406,6 +1416,7 @@ def save_account(
             sync_user_profile_name(connection, phone, previous_nickname, nickname)
     return load_account_profile(phone) or user_profile_from_account(
         phone,
+        email,
         nickname,
         avatar_url,
         payment_qr_url,
@@ -3533,7 +3544,7 @@ def oauth_login(request: OAuthLoginRequest) -> LoginResponse:
     fallback_name = "Apple 用户" if request.provider == "apple" else "Gmail 用户"
     existing = load_account_profile(account_id)
     nickname = existing.nickname if existing else clean_optional_text(name) or clean_optional_text(email) or fallback_name
-    profile = save_account(account_id, nickname=nickname)
+    profile = save_account(account_id, email=email, nickname=nickname)
 
     return LoginResponse(
         token=f"dev-token-{account_id}",
