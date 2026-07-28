@@ -1,7 +1,0 @@
-{
-  "scripts": {
-    "build": "node scripts/build.mjs"
-  },
-  "dependencies": {},
-  "devDependencies": {}
-}
