@@ -25,10 +25,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 try:
     from google.cloud import storage
+    from google.oauth2 import id_token as google_id_token
     from google.oauth2 import service_account
+    from google.auth.transport import requests as google_auth_requests
 except ImportError:
     storage = None
+    google_id_token = None
     service_account = None
+    google_auth_requests = None
 
 
 app = FastAPI(title="Courier API", version="1.0.0")
@@ -330,7 +334,15 @@ def is_test_login(phone: str, code: str | None = None) -> bool:
 
 
 def allow_unverified_oauth_login() -> bool:
-    return os.getenv("ALLOW_UNVERIFIED_OAUTH_LOGIN", "true").strip().lower() in {"1", "true", "yes"}
+    return os.getenv("ALLOW_UNVERIFIED_OAUTH_LOGIN", "false").strip().lower() in {"1", "true", "yes"}
+
+
+def oauth_audiences(env_name: str) -> list[str]:
+    return [
+        item.strip()
+        for item in os.getenv(env_name, "").split(",")
+        if item.strip()
+    ]
 
 
 def resolve_db_path() -> Path:
@@ -512,9 +524,34 @@ def decode_jwt_payload(token: str) -> dict:
         raise HTTPException(status_code=401, detail="第三方登录凭证无效")
 
 
+def verified_google_payload(token: str) -> dict:
+    audiences = oauth_audiences("GOOGLE_CLIENT_IDS") or oauth_audiences("GOOGLE_CLIENT_ID")
+    if google_id_token is None or google_auth_requests is None:
+        if audiences:
+            raise HTTPException(status_code=500, detail="服务器未安装 Google 登录验证依赖")
+        return decode_jwt_payload(token)
+
+    if not audiences:
+        return decode_jwt_payload(token)
+
+    last_error: Exception | None = None
+    for audience in audiences:
+        try:
+            return google_id_token.verify_oauth2_token(
+                token,
+                google_auth_requests.Request(),
+                audience,
+            )
+        except ValueError as error:
+            last_error = error
+
+    logger.warning("Google ID token verification failed: %s", last_error)
+    raise HTTPException(status_code=401, detail="Gmail 登录凭证无效")
+
+
 def require_oauth_identity(request: OAuthLoginRequest) -> tuple[str, str | None, str | None]:
     if request.id_token:
-        payload = decode_jwt_payload(request.id_token)
+        payload = verified_google_payload(request.id_token) if request.provider == "google" else decode_jwt_payload(request.id_token)
         subject = clean_optional_text(str(payload.get("sub") or ""))
         if not subject:
             raise HTTPException(status_code=401, detail="第三方登录凭证缺少账号 ID")
@@ -525,12 +562,12 @@ def require_oauth_identity(request: OAuthLoginRequest) -> tuple[str, str | None,
         if request.provider == "google" and issuer not in {"https://accounts.google.com", "accounts.google.com"}:
             raise HTTPException(status_code=401, detail="Gmail 登录凭证无效")
 
-        expected_audience = clean_optional_text(
-            os.getenv("APPLE_BUNDLE_ID" if request.provider == "apple" else "GOOGLE_CLIENT_ID")
-        )
-        audience = payload.get("aud")
-        audiences = audience if isinstance(audience, list) else [audience]
-        if expected_audience and expected_audience not in audiences:
+        expected_audiences = oauth_audiences("APPLE_BUNDLE_IDS") or oauth_audiences("APPLE_BUNDLE_ID")
+        if request.provider == "google":
+            expected_audiences = oauth_audiences("GOOGLE_CLIENT_IDS") or oauth_audiences("GOOGLE_CLIENT_ID")
+        token_audience = payload.get("aud")
+        token_audiences = token_audience if isinstance(token_audience, list) else [token_audience]
+        if expected_audiences and not any(audience in token_audiences for audience in expected_audiences):
             raise HTTPException(status_code=401, detail="第三方登录凭证不属于 Blink")
 
         exp = payload.get("exp")
