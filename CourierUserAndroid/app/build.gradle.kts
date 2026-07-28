@@ -42,6 +42,7 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("com.google.android.gms:play-services-auth:21.3.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.2.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

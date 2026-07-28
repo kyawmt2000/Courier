@@ -52,7 +52,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -196,7 +195,17 @@ private fun RemoteImage(
 @Composable
 private fun LoginScreen(model: RiderViewModel) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        runCatching {
+            LegacyGoogleAccountSignIn.resultFromIntent(result.data)
+        }.onSuccess { googleResult ->
+            model.loginWithGoogleAccount(googleResult)
+        }.onFailure { error ->
+            model.showLoginError(error.localizedMessage ?: "Google 登录失败")
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -214,14 +223,12 @@ private fun LoginScreen(model: RiderViewModel) {
 
         Button(
             onClick = {
-                scope.launch {
-                    runCatching {
-                        GoogleAccountSignIn.signIn(context as Activity)
-                    }.onSuccess { googleResult ->
-                        model.loginWithGoogleAccount(googleResult)
-                    }.onFailure { error ->
-                        model.showLoginError(error.localizedMessage ?: "Google 登录失败")
-                    }
+                runCatching {
+                    LegacyGoogleAccountSignIn.signInIntent(context as Activity)
+                }.onSuccess { intent ->
+                    googleSignInLauncher.launch(intent)
+                }.onFailure { error ->
+                    model.showLoginError(error.localizedMessage ?: "Google 登录失败")
                 }
             },
             enabled = !model.isLoading,
