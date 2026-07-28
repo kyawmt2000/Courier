@@ -85,6 +85,14 @@ class LoginRequest(BaseModel):
     code: str = Field(min_length=4)
 
 
+class OAuthLoginRequest(BaseModel):
+    provider: Literal["apple", "google"]
+    id_token: str | None = None
+    email: str | None = None
+    name: str | None = None
+    subject: str | None = None
+
+
 class LoginResponse(BaseModel):
     token: str
     user: UserProfile
@@ -321,6 +329,10 @@ def is_test_login(phone: str, code: str | None = None) -> bool:
     return code is None or code == test_login_code()
 
 
+def allow_unverified_oauth_login() -> bool:
+    return os.getenv("ALLOW_UNVERIFIED_OAUTH_LOGIN", "true").strip().lower() in {"1", "true", "yes"}
+
+
 def resolve_db_path() -> Path:
     configured = (os.getenv("COURIER_DB_PATH") or os.getenv("CHAT_DB_PATH") or "").strip()
     if configured:
@@ -480,6 +492,62 @@ def normalize_myanmar_phone(phone: str) -> str:
     return f"+95{local}"
 
 
+def oauth_account_id(provider: str, subject: str) -> str:
+    normalized_provider = provider.strip().lower()
+    normalized_subject = subject.strip().lower()
+    if normalized_provider not in {"apple", "google"} or not normalized_subject:
+        raise HTTPException(status_code=400, detail="第三方登录资料不完整")
+    digest = hashlib.sha256(f"{normalized_provider}:{normalized_subject}".encode("utf-8")).hexdigest()[:24]
+    return f"oauth:{normalized_provider}:{digest}"
+
+
+def decode_jwt_payload(token: str) -> dict:
+    parts = token.split(".")
+    if len(parts) < 2:
+        raise HTTPException(status_code=401, detail="第三方登录凭证无效")
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        return json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
+    except (ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=401, detail="第三方登录凭证无效")
+
+
+def require_oauth_identity(request: OAuthLoginRequest) -> tuple[str, str | None, str | None]:
+    if request.id_token:
+        payload = decode_jwt_payload(request.id_token)
+        subject = clean_optional_text(str(payload.get("sub") or ""))
+        if not subject:
+            raise HTTPException(status_code=401, detail="第三方登录凭证缺少账号 ID")
+
+        issuer = clean_optional_text(str(payload.get("iss") or ""))
+        if request.provider == "apple" and issuer != "https://appleid.apple.com":
+            raise HTTPException(status_code=401, detail="Apple 登录凭证无效")
+        if request.provider == "google" and issuer not in {"https://accounts.google.com", "accounts.google.com"}:
+            raise HTTPException(status_code=401, detail="Gmail 登录凭证无效")
+
+        expected_audience = clean_optional_text(
+            os.getenv("APPLE_BUNDLE_ID" if request.provider == "apple" else "GOOGLE_CLIENT_ID")
+        )
+        audience = payload.get("aud")
+        audiences = audience if isinstance(audience, list) else [audience]
+        if expected_audience and expected_audience not in audiences:
+            raise HTTPException(status_code=401, detail="第三方登录凭证不属于 Blink")
+
+        exp = payload.get("exp")
+        if isinstance(exp, (int, float)) and datetime.fromtimestamp(exp, timezone.utc) < datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="第三方登录凭证已过期")
+
+        email = clean_optional_text(str(payload.get("email") or "")) or clean_optional_text(request.email)
+        return subject, email, clean_optional_text(request.name)
+
+    if allow_unverified_oauth_login():
+        subject = clean_optional_text(request.subject) or clean_optional_text(request.email)
+        if subject:
+            return subject, clean_optional_text(request.email), clean_optional_text(request.name)
+
+    raise HTTPException(status_code=400, detail="请提供 Apple 或 Gmail 登录凭证")
+
+
 def create_sms_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
@@ -569,8 +637,12 @@ def phone_from_authorization(authorization: str | None) -> str | None:
     if scheme.lower() != "bearer" or not token.startswith("dev-token-"):
         return None
 
+    account = token.removeprefix("dev-token-")
+    if account.startswith("oauth:"):
+        return account
+
     try:
-        return normalize_myanmar_phone(token.removeprefix("dev-token-"))
+        return normalize_myanmar_phone(account)
     except HTTPException:
         return None
 
@@ -591,10 +663,11 @@ def account_conversation_id(conversation_id: str, authorization: str | None, fal
     if not phone:
         return conversation_id
 
-    try:
-        phone = normalize_myanmar_phone(phone)
-    except HTTPException:
-        pass
+    if not phone.startswith("oauth:"):
+        try:
+            phone = normalize_myanmar_phone(phone)
+        except HTTPException:
+            pass
     return f"account:{phone}"
 
 
@@ -1154,8 +1227,9 @@ def user_profile_from_account(
     terms_version: str | None = None,
 ) -> UserProfile:
     user_id_digits = re.sub(r"\D", "", phone)
+    user_id = f"user_{user_id_digits}" if user_id_digits else f"user_{hashlib.sha256(phone.encode('utf-8')).hexdigest()[:16]}"
     return UserProfile(
-        id=f"user_{user_id_digits}",
+        id=user_id,
         phone=phone,
         nickname=nickname,
         avatar_url=signed_gcs_read_url(avatar_url),
@@ -3411,6 +3485,21 @@ def login(request: LoginRequest) -> LoginResponse:
 
     return LoginResponse(
         token=f"dev-token-{phone}",
+        user=profile,
+    )
+
+
+@app.post("/auth/oauth-login", response_model=LoginResponse)
+def oauth_login(request: OAuthLoginRequest) -> LoginResponse:
+    subject, email, name = require_oauth_identity(request)
+    account_id = oauth_account_id(request.provider, subject)
+    fallback_name = "Apple 用户" if request.provider == "apple" else "Gmail 用户"
+    existing = load_account_profile(account_id)
+    nickname = existing.nickname if existing else clean_optional_text(name) or clean_optional_text(email) or fallback_name
+    profile = save_account(account_id, nickname=nickname)
+
+    return LoginResponse(
+        token=f"dev-token-{account_id}",
         user=profile,
     )
 
