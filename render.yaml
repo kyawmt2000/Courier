@@ -1,7 +1,16 @@
 services:
   - type: web
-    name: blink-delivery
-    runtime: static
-    buildCommand: npm run build
-    staticPublishPath: dist
-    pullRequestPreviewsEnabled: false
+    name: courier-api
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: GOOGLE_CLIENT_IDS
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
