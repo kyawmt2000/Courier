@@ -1502,7 +1502,9 @@ def load_admin_orders() -> list[dict]:
                 orders.user_phone,
                 orders.rider_phone,
                 user_account.nickname AS user_nickname,
+                user_account.email AS user_email,
                 rider_account.nickname AS rider_nickname,
+                rider_account.email AS rider_email,
                 orders.payload
             FROM orders
             LEFT JOIN accounts AS user_account
@@ -1519,7 +1521,9 @@ def load_admin_orders() -> list[dict]:
         order["user_phone"] = row["user_phone"]
         order["rider_phone"] = row["rider_phone"]
         order["user_nickname"] = row["user_nickname"]
+        order["user_email"] = row["user_email"]
         order["rider_nickname"] = row["rider_nickname"]
+        order["rider_email"] = row["rider_email"]
         result.append(order)
     return result
 
@@ -1528,7 +1532,7 @@ def load_admin_accounts() -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
             """
-            SELECT phone, nickname, payment_qr_url, avatar_url, last_login_at
+            SELECT phone, email, nickname, payment_qr_url, avatar_url, last_login_at
             FROM accounts
             ORDER BY last_login_at DESC
             """
@@ -1762,14 +1766,26 @@ ADMIN_HTML = r'''
       return label(value);
     }
     function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
+    function accountFor(phone) {
+      return (state.accounts || []).find(item => item.phone === phone);
+    }
     function accountName(phone, fallbackName = "") {
-      const account = (state.accounts || []).find(item => item.phone === phone);
+      const account = accountFor(phone);
       return account?.nickname || fallbackName || "";
     }
-    function displayAccount(phone, fallbackName = "") {
+    function accountContact(phone, fallbackEmail = "") {
+      const account = accountFor(phone);
+      const email = fallbackEmail || account?.email || "";
+      if (email) return email;
+      if (!phone || String(phone).toLowerCase().startsWith("oauth:")) return "";
+      return phone;
+    }
+    function displayAccount(phone, fallbackName = "", fallbackEmail = "") {
       const name = accountName(phone, fallbackName);
       if (!phone) return escapeHtml(name || "未接单");
-      return `${escapeHtml(name || phone)}<br><span class="muted">${escapeHtml(phone)}</span>`;
+      const contact = accountContact(phone, fallbackEmail);
+      const primary = name || contact || "账号";
+      return contact ? `${escapeHtml(primary)}<br><span class="muted">${escapeHtml(contact)}</span>` : escapeHtml(primary);
     }
     function deliveryFeeCell(order) {
       const gross = Number(order.delivery_fee || order.price || 0);
@@ -1942,7 +1958,7 @@ ADMIN_HTML = r'''
       return `
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${displayAccount(order.user_phone, order.user_nickname)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name)}</td>
+          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
           <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
@@ -2012,7 +2028,7 @@ ADMIN_HTML = r'''
           <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
           <td>${escapeHtml(account.nickname || "")}</td>
           <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
-          <td>${escapeHtml(account.phone)}</td>
+          <td>${escapeHtml(accountContact(account.phone, account.email))}</td>
           <td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td>
         </tr>`).join("");
       if (!accounts.length) {
@@ -2029,7 +2045,7 @@ ADMIN_HTML = r'''
       document.getElementById("settlements").innerHTML = settlementRows.map(order => `
         <tr>
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${displayAccount(order.user_phone, order.user_nickname)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name)}</td>
+          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td>${deliveryFeeCell(order)}</td>
           <td>${settlementInfo(order)}</td>
           <td>${settlementQRCodes(order)}</td>
@@ -2171,7 +2187,7 @@ ADMIN_HTML = r'''
       container.innerHTML = `
         <section>
           <h3>账号详情</h3>
-          <div class="row"><b>手机号</b><span>${escapeHtml(selectedAccountPhone)}</span></div>
+          <div class="row"><b>手机号</b><span>${escapeHtml(accountContact(selectedAccountPhone, account?.email || ""))}</span></div>
           <div class="row"><b>昵称</b><span>${escapeHtml(account?.nickname || "")}</span></div>
           <div class="row"><b>最近登录</b><span>${account?.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</span></div>
         </section>
@@ -2316,8 +2332,8 @@ ADMIN_HTML = r'''
       document.getElementById("detail").innerHTML = `
         ${order.goods_image_url ? `<img src="${order.goods_image_url}" alt="商品图">` : `<div class="muted">暂无商品图</div>`}
         <div class="row"><b>订单号</b><span>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</span></div>
-        <div class="row"><b>用户</b><span>${displayAccount(order.user_phone, order.user_nickname)}</span></div>
-        <div class="row"><b>骑手</b><span>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name)}</span></div>
+        <div class="row"><b>用户</b><span>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}</span></div>
+        <div class="row"><b>骑手</b><span>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</span></div>
         <div class="row"><b>付款方式</b><span>${escapeHtml(label(order.payment_mode))}</span></div>
         <div class="row"><b>用户付款</b><span>${escapeHtml(label(order.user_payment_status))}</span></div>
         <div class="row"><b>骑手押金</b><span>${escapeHtml(riderDepositLabel(order.rider_deposit_status))}</span></div>
