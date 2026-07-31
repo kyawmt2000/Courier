@@ -2505,6 +2505,10 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
     if reliable_coordinate:
         return reliable_coordinate
 
+    lite_coordinate = parse_google_lite_coordinate(text)
+    if lite_coordinate:
+        return lite_coordinate
+
     bare_match = re.fullmatch(r"\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*", text)
     if bare_match:
         lat = float(bare_match.group(1))
@@ -2512,6 +2516,17 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
         if is_valid_coordinate(lat, lng):
             return lat, lng
 
+    return None
+
+
+def parse_google_lite_coordinate(text: str) -> tuple[float, float] | None:
+    text = decoded_google_maps_text(text)
+    values = [float(value) for value in re.findall(r"-?\d{1,6}\.\d{4,}", text)]
+    for first, second in zip(values, values[1:]):
+        if is_likely_service_coordinate(first, second):
+            return first, second
+        if is_likely_service_coordinate(second, first):
+            return second, first
     return None
 
 
@@ -2611,7 +2626,7 @@ async def expand_location_text(text: str) -> str:
         )
         expanded_url = str(response.url)
         decoded_html = decoded_google_maps_text(response.text)
-        if parse_reliable_google_maps_coordinate(decoded_html):
+        if parse_coordinate(decoded_html):
             return decoded_html
 
         html_url = google_maps_url_text(decoded_html)
