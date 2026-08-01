@@ -2537,6 +2537,7 @@ def parse_reliable_google_maps_coordinate(text: str) -> tuple[float, float] | No
         (r"!2d(-?\d{1,3}(?:\.\d+)?)!3d(-?\d{1,2}(?:\.\d+)?)", 2, 1),
         (r"q=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"ll=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"center=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"query=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"destination=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"daddr=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
@@ -2611,30 +2612,43 @@ async def expand_location_text(text: str) -> str:
     if "://" not in url_text:
         url_text = f"https://{url_text}"
 
+    user_agents = [
+        (
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
+        ),
+        (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+            "Mobile/15E148 Safari/604.1"
+        ),
+        (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        ),
+    ]
+
     async with httpx.AsyncClient(follow_redirects=True, timeout=12) as client:
-        response = await client.get(
-            url_text,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
-                    "Mobile/15E148 Safari/604.1"
-                ),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-        )
-        expanded_url = str(response.url)
-        decoded_html = decoded_google_maps_text(response.text)
-        if parse_coordinate(decoded_html):
-            return decoded_html
+        for user_agent in user_agents:
+            response = await client.get(
+                url_text,
+                headers={
+                    "User-Agent": user_agent,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            expanded_url = str(response.url)
+            decoded_html = decoded_google_maps_text(response.text)
+            if parse_coordinate(decoded_html):
+                return decoded_html
 
-        html_url = google_maps_url_text(decoded_html)
-        if html_url and not is_google_maps_short_link(html_url):
-            return html_url
+            html_url = google_maps_url_text(decoded_html)
+            if html_url and not is_google_maps_short_link(html_url):
+                return html_url
 
-        if not is_google_maps_short_link(expanded_url):
-            return expanded_url
+            if not is_google_maps_short_link(expanded_url):
+                return expanded_url
 
         return text
 
@@ -2651,6 +2665,10 @@ def google_maps_query_text(text: str) -> str:
         if value:
             return value
 
+    center = params.get("center", [""])[0].strip()
+    if center:
+        return center
+
     place_match = re.search(r"/(?:maps/)?place/([^?#]+?)(?:/data=|/[@?]|$)", parsed.path, re.IGNORECASE)
     if place_match:
         place_text = unquote(place_match.group(1)).replace("+", " ").strip()
@@ -2663,12 +2681,6 @@ def google_maps_query_text(text: str) -> str:
 async def geocode_location(text: str) -> tuple[float, float]:
     expanded = await expand_location_text(text.strip())
 
-    if is_google_maps_short_link(expanded):
-        raise HTTPException(
-            status_code=400,
-            detail="Google Map 短链接无法解析，请检查链接或重新复制分享链接",
-        )
-
     coordinate = parse_coordinate(expanded)
     if coordinate:
         return coordinate
@@ -2677,6 +2689,10 @@ async def geocode_location(text: str) -> tuple[float, float]:
     coordinate = parse_coordinate(query_text)
     if coordinate:
         return coordinate
+
+    if is_google_maps_short_link(query_text):
+        short_url = google_maps_url_text(query_text) or query_text
+        query_text = short_url.rsplit("/", 1)[-1].strip()
 
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
