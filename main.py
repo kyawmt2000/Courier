@@ -2789,29 +2789,21 @@ def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) 
 
 async def route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
-    direct_km = haversine_km(origin, destination)
     if not api_key:
-        return normalized_route_distance_km(await route_distance_fallback_km(origin, destination), direct_km)
+        raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY is not configured")
 
     directions_distance = await google_directions_distance_km(origin, destination, api_key)
     if directions_distance is not None:
-        return normalized_route_distance_km(directions_distance, direct_km)
+        return normalized_google_route_distance_km(directions_distance)
 
     matrix_distance = await google_distance_matrix_km(origin, destination, api_key)
     if matrix_distance is not None:
-        return normalized_route_distance_km(matrix_distance, direct_km)
+        return normalized_google_route_distance_km(matrix_distance)
 
-    return normalized_route_distance_km(await route_distance_fallback_km(origin, destination), direct_km)
+    raise HTTPException(status_code=502, detail="Google 路线距离计算失败，请检查 Google Map Location 或 Google Directions API 设置")
 
 
-def normalized_route_distance_km(route_km: float, direct_km: float) -> float:
-    if direct_km >= 0.2 and route_km < direct_km * 0.5:
-        logger.warning(
-            "Route distance looks too small; using direct fallback. route_km=%.3f direct_km=%.3f",
-            route_km,
-            direct_km,
-        )
-        return direct_km
+def normalized_google_route_distance_km(route_km: float) -> float:
     if 0 < route_km < 0.1:
         return 0.1
     return route_km
@@ -2891,49 +2883,6 @@ async def google_distance_matrix_km(
 
     meters = element["distance"]["value"]
     return float(meters) / 1000
-
-
-async def osrm_route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
-    origin_value = f"{origin[1]},{origin[0]}"
-    destination_value = f"{destination[1]},{destination[0]}"
-    url = f"https://router.project-osrm.org/route/v1/driving/{origin_value};{destination_value}"
-
-    try:
-        async with httpx.AsyncClient(timeout=12) as client:
-            response = await client.get(
-                url,
-                params={
-                    "overview": "false",
-                    "alternatives": "false",
-                    "steps": "false",
-                },
-            )
-            payload = response.json()
-
-        if payload.get("code") == "Ok" and payload.get("routes"):
-            return float(payload["routes"][0]["distance"]) / 1000
-        logger.warning("OSRM route failed: %s", payload)
-    except Exception as error:
-        logger.warning("OSRM route request failed: %s", error)
-
-    raise HTTPException(status_code=502, detail="路线距离计算失败，请检查 Google Map Location 后再试")
-
-
-async def route_distance_fallback_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
-    try:
-        return await osrm_route_distance_km(origin, destination)
-    except HTTPException:
-        direct_km = haversine_km(origin, destination)
-        if direct_km <= 0:
-            raise
-        logger.warning(
-            "Route APIs failed; using direct fallback. origin=%s destination=%s direct_km=%.3f",
-            origin,
-            destination,
-            direct_km,
-        )
-        return direct_km
-
 
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
     sender_phone = row["sender_phone"]
