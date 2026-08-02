@@ -3744,7 +3744,9 @@ def create_chat_message(
 ) -> ChatMessageResponse:
     message_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
-    sender_phone = normalize_myanmar_phone(request.sender_phone) if request.sender_phone else None
+    sender_phone = phone_from_authorization(authorization)
+    if not sender_phone and request.sender_phone:
+        sender_phone = normalize_myanmar_phone(request.sender_phone)
     text = request.text.strip()
     image_url = request.image_url.strip() if request.image_url else None
     sender_name = account_nickname(sender_phone) or request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
