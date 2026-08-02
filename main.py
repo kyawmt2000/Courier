@@ -2789,18 +2789,32 @@ def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) 
 
 async def route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    direct_km = haversine_km(origin, destination)
     if not api_key:
-        return await route_distance_fallback_km(origin, destination)
+        return normalized_route_distance_km(await route_distance_fallback_km(origin, destination), direct_km)
 
     directions_distance = await google_directions_distance_km(origin, destination, api_key)
     if directions_distance is not None:
-        return directions_distance
+        return normalized_route_distance_km(directions_distance, direct_km)
 
     matrix_distance = await google_distance_matrix_km(origin, destination, api_key)
     if matrix_distance is not None:
-        return matrix_distance
+        return normalized_route_distance_km(matrix_distance, direct_km)
 
-    return await route_distance_fallback_km(origin, destination)
+    return normalized_route_distance_km(await route_distance_fallback_km(origin, destination), direct_km)
+
+
+def normalized_route_distance_km(route_km: float, direct_km: float) -> float:
+    if direct_km >= 0.2 and route_km < direct_km * 0.5:
+        logger.warning(
+            "Route distance looks too small; using direct fallback. route_km=%.3f direct_km=%.3f",
+            route_km,
+            direct_km,
+        )
+        return direct_km * 1.3
+    if 0 < route_km < 0.1:
+        return 0.1
+    return route_km
 
 
 async def google_directions_distance_km(
