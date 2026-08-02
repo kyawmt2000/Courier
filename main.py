@@ -2811,7 +2811,7 @@ def normalized_route_distance_km(route_km: float, direct_km: float) -> float:
             route_km,
             direct_km,
         )
-        return direct_km * 1.3
+        return direct_km
     if 0 < route_km < 0.1:
         return 0.1
     return route_km
@@ -2926,15 +2926,13 @@ async def route_distance_fallback_km(origin: tuple[float, float], destination: t
         direct_km = haversine_km(origin, destination)
         if direct_km <= 0:
             raise
-        estimated_road_km = direct_km * 1.3
         logger.warning(
-            "Route APIs failed; using haversine fallback. origin=%s destination=%s direct_km=%.3f estimated_km=%.3f",
+            "Route APIs failed; using direct fallback. origin=%s destination=%s direct_km=%.3f",
             origin,
             destination,
             direct_km,
-            estimated_road_km,
         )
-        return estimated_road_km
+        return direct_km
 
 
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
