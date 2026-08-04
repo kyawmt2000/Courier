@@ -499,10 +499,10 @@ def normalize_myanmar_phone(phone: str) -> str:
     elif cleaned.startswith("9"):
         local = cleaned
     else:
-        raise HTTPException(status_code=400, detail="请输入缅甸手机号，格式如 09xxxxxxx 或 +959xxxxxxx")
+        raise HTTPException(status_code=400, detail="Connecting to Server...Thank you for your patient~")
 
     if not re.fullmatch(r"9\d{7,10}", local):
-        raise HTTPException(status_code=400, detail="缅甸手机号格式不正确，请检查号码")
+        raise HTTPException(status_code=400, detail="Bad Connection")
 
     return f"+95{local}"
 
