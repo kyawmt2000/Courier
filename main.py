@@ -687,6 +687,17 @@ def phone_from_authorization(authorization: str | None) -> str | None:
         return None
 
 
+def normalize_chat_sender_account(value: str | None) -> str | None:
+    account = clean_optional_text(value)
+    if not account:
+        return None
+    if account.startswith("oauth:"):
+        return account
+    if "@" in account:
+        return account
+    return normalize_myanmar_phone(account)
+
+
 def require_account_phone(authorization: str | None) -> str:
     phone = phone_from_authorization(authorization)
     if not phone:
@@ -3801,7 +3812,7 @@ def create_chat_message(
     created_at = datetime.now(timezone.utc)
     sender_phone = phone_from_authorization(authorization)
     if not sender_phone and request.sender_phone:
-        sender_phone = normalize_myanmar_phone(request.sender_phone)
+        sender_phone = normalize_chat_sender_account(request.sender_phone)
     text = request.text.strip()
     image_url = request.image_url.strip() if request.image_url else None
     sender_name = account_nickname(sender_phone) or request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
