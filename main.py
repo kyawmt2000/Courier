@@ -695,7 +695,10 @@ def normalize_chat_sender_account(value: str | None) -> str | None:
         return account
     if "@" in account:
         return account
-    return normalize_myanmar_phone(account)
+    try:
+        return normalize_myanmar_phone(account)
+    except HTTPException:
+        return None
 
 
 def require_account_phone(authorization: str | None) -> str:
