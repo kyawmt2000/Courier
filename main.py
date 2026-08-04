@@ -1626,7 +1626,7 @@ ADMIN_HTML = r'''
     .conversation-row.active { border-color: #111827; background: #111827; color: #fff; }
     .account-row { cursor: pointer; }
     .account-row.active { background: #eef2ff; }
-    .accounts-layout { display: grid; grid-template-columns: minmax(460px, .9fr) minmax(560px, 1.1fr); gap: 16px; align-items: start; }
+    .accounts-layout { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
     .accounts-list { min-width: 0; overflow-x: auto; }
     .account-detail { min-width: 0; max-height: calc(100vh - 180px); overflow: auto; display: grid; gap: 14px; }
     .account-detail h3 { margin: 0 0 8px; font-size: 15px; }
@@ -1652,15 +1652,22 @@ ADMIN_HTML = r'''
     .toast { position: fixed; right: 18px; bottom: 18px; z-index: 10; max-width: min(420px, calc(100vw - 36px)); padding: 12px 14px; border-radius: 10px; background: #111827; color: #fff; box-shadow: 0 18px 40px rgba(17,24,39,.22); opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
     .toast.show { opacity: 1; transform: translateY(0); }
     .toast.error { background: #b91c1c; }
+    .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(17, 24, 39, .42); }
+    .modal-backdrop.show { display: flex; }
+    .modal-card { width: min(1040px, 100%); max-height: min(86vh, 920px); overflow: auto; border-radius: 12px; background: #fff; box-shadow: 0 24px 70px rgba(17,24,39,.28); }
+    .modal-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid #eef2f7; background: #fff; }
+    .modal-head h3 { margin: 0; font-size: 16px; }
+    .modal-close { width: auto; min-width: 44px; padding: 8px 12px; background: #fff; color: #111827; border-color: #d1d5db; }
+    .modal-body { padding: 18px; display: grid; gap: 14px; }
     @keyframes pulse { from { opacity: .55; } to { opacity: 1; } }
-    @media (max-width: 1100px) { .accounts-layout { grid-template-columns: 1fr; } .account-detail { max-height: none; } }
+    @media (max-width: 1100px) { .account-detail { max-height: none; } }
     @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
   </style>
 </head>
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v17</span>
+    <span class="version">orders-ui-v18</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1704,9 +1711,8 @@ ADMIN_HTML = r'''
       <h2>账号资料</h2>
       <div class="accounts-layout">
         <div class="accounts-list">
-          <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>手机号</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
+          <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>登录账号</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
         </div>
-        <div id="accountDetail" class="account-detail"></div>
       </div>
     </section>
     <section id="page-settlements" class="page">
@@ -1735,6 +1741,15 @@ ADMIN_HTML = r'''
       </div>
     </section>
   </main>
+  <div id="accountModal" class="modal-backdrop" onclick="closeAccountModal()">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <h3>账号详情</h3>
+        <button class="modal-close" onclick="closeAccountModal()">关闭</button>
+      </div>
+      <div id="accountDetail" class="modal-body account-detail"></div>
+    </div>
+  </div>
   <div id="toast" class="toast"></div>
   <script>
     let state = { orders: [], accounts: [], messages: [], payments: [] };
@@ -1777,7 +1792,11 @@ ADMIN_HTML = r'''
       const account = accountFor(phone);
       const email = fallbackEmail || account?.email || "";
       if (email) return email;
-      if (!phone || String(phone).toLowerCase().startsWith("oauth:")) return "";
+      const rawPhone = String(phone || "");
+      const normalized = rawPhone.toLowerCase();
+      if (normalized.startsWith("oauth:google:")) return "Gmail 登录";
+      if (normalized.startsWith("oauth:apple:")) return "Apple 登录";
+      if (!phone || normalized.startsWith("oauth:")) return "第三方登录";
       return phone;
     }
     function displayAccount(phone, fallbackName = "", fallbackEmail = "") {
@@ -1971,13 +1990,36 @@ ADMIN_HTML = r'''
         </tr>`;
     }
 
-    function render() {
+    function filteredAccounts() {
       const q = document.getElementById("q").value.toLowerCase();
-      const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q)));
-      const accounts = sortByDateDesc(
+      return sortByDateDesc(
         (state.accounts || []).filter(account => JSON.stringify(account).toLowerCase().includes(q)),
         ["last_login_at"]
       );
+    }
+
+    function renderAccountRows(accounts = filteredAccounts()) {
+      if (selectedAccountPhone && !accounts.some(account => account.phone === selectedAccountPhone)) {
+        selectedAccountPhone = null;
+      }
+      const accountsTable = document.getElementById("accounts");
+      accountsTable.innerHTML = accounts.map(account => `
+        <tr class="account-row ${account.phone === selectedAccountPhone ? "active" : ""}" onclick="selectAccount(${jsValue(account.phone)})">
+          <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
+          <td>${escapeHtml(account.nickname || "")}</td>
+          <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
+          <td>${escapeHtml(accountContact(account.phone, account.email))}</td>
+          <td>${account.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</td>
+        </tr>`).join("");
+      if (!accounts.length) {
+        accountsTable.innerHTML = `<tr><td colspan="5" class="muted">暂无账号资料</td></tr>`;
+      }
+    }
+
+    function render() {
+      const q = document.getElementById("q").value.toLowerCase();
+      const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q)));
+      const accounts = filteredAccounts();
       const codOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "cod"));
       const prepaidOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "prepaid"));
       const usedPaymentIds = new Set(orders.map(order => order.kpay_transaction_id).filter(Boolean));
@@ -2020,20 +2062,7 @@ ADMIN_HTML = r'''
       if (!prepaidRows.length) {
         prepaidOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货费已付款订单</td></tr>`;
       }
-      if (selectedAccountPhone && !accounts.some(account => account.phone === selectedAccountPhone)) {
-        selectedAccountPhone = null;
-      }
-      document.getElementById("accounts").innerHTML = accounts.map(account => `
-        <tr class="account-row ${account.phone === selectedAccountPhone ? "active" : ""}" onclick="selectAccount(${jsValue(account.phone)})">
-          <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
-          <td>${escapeHtml(account.nickname || "")}</td>
-          <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
-          <td>${escapeHtml(accountContact(account.phone, account.email))}</td>
-          <td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td>
-        </tr>`).join("");
-      if (!accounts.length) {
-        document.getElementById("accounts").innerHTML = `<tr><td colspan="5" class="muted">暂无账号资料</td></tr>`;
-      }
+      renderAccountRows(accounts);
       renderAccountDetail();
       const settlementRows = sortByDateDesc(orders, [
         "user_settlement_requested_at",
@@ -2064,7 +2093,14 @@ ADMIN_HTML = r'''
     function selectAccount(phone) {
       selectedAccountPhone = phone;
       selectedAccountPanel = "placed";
-      render();
+      renderAccountRows();
+      renderAccountDetail();
+    }
+
+    function closeAccountModal() {
+      selectedAccountPhone = null;
+      renderAccountRows();
+      renderAccountDetail();
     }
 
     function selectAccountPanel(panel) {
@@ -2109,11 +2145,25 @@ ADMIN_HTML = r'''
         if (order) {
           const otherSide = order.user_phone === phone
             ? (accountName(order.rider_phone, order.rider_nickname || order.rider_name) || "未接单骑手")
-            : (accountName(order.user_phone, order.user_nickname) || order.user_phone);
+            : (accountName(order.user_phone, order.user_nickname) || accountContact(order.user_phone, order.user_email));
           return `订单 ${order.id.slice(0, 6).toUpperCase()} / 对方：${otherSide}`;
         }
       }
       return conversationId;
+    }
+
+    function serviceConversationTitle(conversationId) {
+      const raw = String(conversationId || "");
+      if (raw.toLowerCase().startsWith("account:")) {
+        const phone = raw.slice("account:".length);
+        const name = accountName(phone);
+        const contact = accountContact(phone);
+        return name && contact ? `${name} / ${contact}` : (name || contact || "账号会话");
+      }
+      if (raw.toLowerCase().startsWith("order:")) {
+        return `订单 ${raw.slice("order:".length, "order:".length + 6).toUpperCase()}`;
+      }
+      return raw;
     }
 
     function accountChatThreads(phone, relatedOrders) {
@@ -2149,7 +2199,7 @@ ADMIN_HTML = r'''
           ${thread.messages.map(message => `
             <p class="chat-line">
               <strong>${escapeHtml(accountName(message.sender_phone, message.sender_name) || message.sender_name)}</strong>
-              <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
+              <span class="muted">${escapeHtml(accountContact(message.sender_phone))} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
               ${escapeHtml(message.text || "")}
               ${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}
             </p>
@@ -2169,12 +2219,15 @@ ADMIN_HTML = r'''
 
     function renderAccountDetail() {
       const container = document.getElementById("accountDetail");
+      const modal = document.getElementById("accountModal");
       if (!container) return;
       if (!selectedAccountPhone) {
-        container.innerHTML = `<div class="empty">点击上方账号，可查看他下的单、接的单和相关聊天记录</div>`;
+        if (modal) modal.classList.remove("show");
+        container.innerHTML = "";
         return;
       }
       const account = (state.accounts || []).find(item => item.phone === selectedAccountPhone);
+      if (modal) modal.classList.add("show");
       const placedOrders = (state.orders || []).filter(order => order.user_phone === selectedAccountPhone);
       const acceptedOrders = (state.orders || []).filter(order => order.rider_phone === selectedAccountPhone);
       const relatedOrders = Array.from(new Map([...placedOrders, ...acceptedOrders].map(order => [order.id, order])).values());
@@ -2186,8 +2239,7 @@ ADMIN_HTML = r'''
           : accountOrdersPanel("他下的单", placedOrders, "发货人/用户");
       container.innerHTML = `
         <section>
-          <h3>账号详情</h3>
-          <div class="row"><b>手机号</b><span>${escapeHtml(accountContact(selectedAccountPhone, account?.email || ""))}</span></div>
+          <div class="row"><b>登录账号</b><span>${escapeHtml(accountContact(selectedAccountPhone, account?.email || ""))}</span></div>
           <div class="row"><b>昵称</b><span>${escapeHtml(account?.nickname || "")}</span></div>
           <div class="row"><b>最近登录</b><span>${account?.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</span></div>
         </section>
@@ -2231,7 +2283,7 @@ ADMIN_HTML = r'''
 
       list.innerHTML = conversations.map(message => `
         <button class="conversation-row ${message.conversation_id === selectedServiceConversationId ? "active" : ""}" onclick="selectServiceConversation('${escapeHtml(message.conversation_id)}')">
-          <strong>${escapeHtml(message.conversation_id)}</strong><br>
+          <strong>${escapeHtml(serviceConversationTitle(message.conversation_id))}</strong><br>
           <span class="muted">${escapeHtml(accountName(message.sender_phone, message.sender_name) || message.sender_name)}：${escapeHtml(message.text || "[图片]")}</span><br>
           <span class="muted">${escapeHtml(new Date(message.created_at).toLocaleString())}</span>
         </button>
@@ -2247,11 +2299,11 @@ ADMIN_HTML = r'''
       const messages = state.messages
         .filter(message => message.conversation_id === selectedServiceConversationId)
         .sort((a, b) => dateMs(a.created_at) - dateMs(b.created_at));
-      title.textContent = selectedServiceConversationId || "聊天记录";
+      title.textContent = selectedServiceConversationId ? serviceConversationTitle(selectedServiceConversationId) : "聊天记录";
       chat.innerHTML = messages.map(message => `
         <p>
           <strong>${escapeHtml(accountName(message.sender_phone, message.sender_name) || message.sender_name)}</strong>
-          <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
+          <span class="muted">${escapeHtml(accountContact(message.sender_phone))} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
           ${escapeHtml(message.text)}
           ${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}
         </p>
@@ -2491,6 +2543,9 @@ ADMIN_HTML = r'''
     document.getElementById("q").addEventListener("input", () => {
       clearTimeout(searchTimer);
       searchTimer = setTimeout(render, 120);
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && selectedAccountPhone) closeAccountModal();
     });
     showPage(currentPage);
   </script>
