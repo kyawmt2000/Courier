@@ -1691,7 +1691,7 @@ ADMIN_HTML = r'''
       <button id="tab-orders" class="tab" onclick="showPage('orders')">货费已付款订单</button>
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
       <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
-      <button id="tab-service" class="tab" onclick="showPage('service')">客服</button>
+      <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
     </div>
   </header>
   <main>
@@ -1737,7 +1737,7 @@ ADMIN_HTML = r'''
       </table>
     </section>
     <section id="page-service" class="page">
-      <h2>客服</h2>
+      <h2>Customer Service</h2>
       <div class="grid">
         <section>
           <h3>会话</h3>
@@ -2151,7 +2151,7 @@ ADMIN_HTML = r'''
 
     function accountConversationTitle(conversationId, phone) {
       if (conversationId === `account:${phone}`.toLowerCase()) {
-        return "客服主会话";
+        return "Customer Service主会话";
       }
       if (conversationId.startsWith("order:")) {
         const orderId = conversationId.slice("order:".length);
@@ -2304,8 +2304,8 @@ ADMIN_HTML = r'''
       `).join("");
 
       if (!conversations.length) {
-        list.innerHTML = `<div class="empty">暂无客服会话</div>`;
-        chat.innerHTML = `<div class="empty">暂无客服消息</div>`;
+        list.innerHTML = `<div class="empty">暂无Customer Service会话</div>`;
+        chat.innerHTML = `<div class="empty">暂无Customer Service消息</div>`;
         title.textContent = "聊天记录";
         return;
       }
@@ -2331,7 +2331,7 @@ ADMIN_HTML = r'''
       const text = input.value.trim();
       const imageFile = imageInput?.files?.[0] || null;
       if (!selectedServiceConversationId) {
-        showToast("请先选择一个客服会话", "error");
+        showToast("请先选择一个Customer Service会话", "error");
         return;
       }
       if (!text && !imageFile) {
@@ -3482,7 +3482,7 @@ def create_admin_chat_message(
                 conversation_id,
                 text,
                 "admin",
-                "客服",
+                "Customer Service",
                 None,
                 image_url,
                 created_at.isoformat(),
@@ -3494,7 +3494,7 @@ def create_admin_chat_message(
         conversation_id=conversation_id,
         text=text,
         sender_type="admin",
-        sender_name="客服",
+        sender_name="Customer Service",
         sender_phone=None,
         image_url=signed_gcs_read_url(image_url),
         created_at=created_at,
