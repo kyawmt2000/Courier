@@ -499,10 +499,10 @@ def normalize_myanmar_phone(phone: str) -> str:
     elif cleaned.startswith("9"):
         local = cleaned
     else:
-        raise HTTPException(status_code=400, detail="Connecting to Server...Thank you for your patient~")
+        raise HTTPException(status_code=400, detail="请输入缅甸手机号，格式如 09xxxxxxx 或 +959xxxxxxx")
 
     if not re.fullmatch(r"9\d{7,10}", local):
-        raise HTTPException(status_code=400, detail="Bad Connection")
+        raise HTTPException(status_code=400, detail="缅甸手机号格式不正确，请检查号码")
 
     return f"+95{local}"
 
@@ -1640,6 +1640,8 @@ ADMIN_HTML = r'''
     .conversation-row.active { border-color: #111827; background: #111827; color: #fff; }
     .account-row { cursor: pointer; }
     .account-row.active { background: #eef2ff; }
+    .account-link { display: inline-block; padding: 0; border: 0; border-radius: 0; background: transparent; color: #111827; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+    .account-link:hover { color: #16a34a; text-decoration: underline; transform: none; box-shadow: none; }
     .accounts-layout { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
     .accounts-list { min-width: 0; overflow-x: auto; }
     .account-detail { min-width: 0; max-height: calc(100vh - 180px); overflow: auto; display: grid; gap: 14px; }
@@ -1681,7 +1683,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v18</span>
+    <span class="version">orders-ui-v19</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1691,7 +1693,7 @@ ADMIN_HTML = r'''
       <button id="tab-orders" class="tab" onclick="showPage('orders')">货费已付款订单</button>
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
       <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
-      <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
+      <button id="tab-service" class="tab" onclick="showPage('service')">客服</button>
     </div>
   </header>
   <main>
@@ -1725,7 +1727,7 @@ ADMIN_HTML = r'''
       <h2>账号资料</h2>
       <div class="accounts-layout">
         <div class="accounts-list">
-          <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>登录账号</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
+          <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>登录邮箱</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
         </div>
       </div>
     </section>
@@ -1737,7 +1739,7 @@ ADMIN_HTML = r'''
       </table>
     </section>
     <section id="page-service" class="page">
-      <h2>Customer Service</h2>
+      <h2>客服</h2>
       <div class="grid">
         <section>
           <h3>会话</h3>
@@ -1802,23 +1804,38 @@ ADMIN_HTML = r'''
       const account = accountFor(phone);
       return account?.nickname || fallbackName || "";
     }
-    function accountContact(phone, fallbackEmail = "") {
+    function accountEmail(phone, fallbackEmail = "") {
       const account = accountFor(phone);
-      const email = fallbackEmail || account?.email || "";
+      return fallbackEmail || account?.email || "";
+    }
+    function accountLoginLabel(phone, fallbackEmail = "") {
+      const email = accountEmail(phone, fallbackEmail);
       if (email) return email;
       const rawPhone = String(phone || "");
       const normalized = rawPhone.toLowerCase();
       if (normalized.startsWith("oauth:google:")) return "Gmail 登录";
       if (normalized.startsWith("oauth:apple:")) return "Apple 登录";
       if (!phone || normalized.startsWith("oauth:")) return "第三方登录";
-      return phone;
+      return rawPhone;
+    }
+    function accountContact(phone, fallbackEmail = "") {
+      return accountLoginLabel(phone, fallbackEmail);
+    }
+    function accountEmailHtml(phone, fallbackEmail = "") {
+      const email = accountEmail(phone, fallbackEmail);
+      return email ? `邮箱：${escapeHtml(email)}` : `邮箱：未绑定`;
+    }
+    function accountLoginHtml(phone, fallbackEmail = "") {
+      return `${escapeHtml(accountLoginLabel(phone, fallbackEmail))}<br><span class="muted">${accountEmailHtml(phone, fallbackEmail)}</span>`;
     }
     function displayAccount(phone, fallbackName = "", fallbackEmail = "") {
       const name = accountName(phone, fallbackName);
       if (!phone) return escapeHtml(name || "未接单");
       const contact = accountContact(phone, fallbackEmail);
       const primary = name || contact || "账号";
-      return contact ? `${escapeHtml(primary)}<br><span class="muted">${escapeHtml(contact)}</span>` : escapeHtml(primary);
+      return `
+        <button class="account-link" onclick="event.stopPropagation(); selectAccount(${jsValue(phone)})">${escapeHtml(primary)}</button>
+        <br><span class="muted">${accountEmailHtml(phone, fallbackEmail)}</span>`;
     }
     function deliveryFeeCell(order) {
       const gross = Number(order.delivery_fee || order.price || 0);
@@ -2022,7 +2039,7 @@ ADMIN_HTML = r'''
           <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
           <td>${escapeHtml(account.nickname || "")}</td>
           <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
-          <td>${escapeHtml(accountContact(account.phone, account.email))}</td>
+          <td>${accountLoginHtml(account.phone, account.email)}</td>
           <td>${account.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</td>
         </tr>`).join("");
       if (!accounts.length) {
@@ -2151,7 +2168,7 @@ ADMIN_HTML = r'''
 
     function accountConversationTitle(conversationId, phone) {
       if (conversationId === `account:${phone}`.toLowerCase()) {
-        return "Customer Service主会话";
+        return "客服主会话";
       }
       if (conversationId.startsWith("order:")) {
         const orderId = conversationId.slice("order:".length);
@@ -2253,7 +2270,8 @@ ADMIN_HTML = r'''
           : accountOrdersPanel("他下的单", placedOrders, "发货人/用户");
       container.innerHTML = `
         <section>
-          <div class="row"><b>登录账号</b><span>${escapeHtml(accountContact(selectedAccountPhone, account?.email || ""))}</span></div>
+          <div class="row"><b>登录邮箱</b><span>${escapeHtml(accountLoginLabel(selectedAccountPhone, account?.email || ""))}</span></div>
+          <div class="row"><b>邮箱</b><span>${accountEmail(selectedAccountPhone, account?.email || "") ? escapeHtml(accountEmail(selectedAccountPhone, account?.email || "")) : "未绑定"}</span></div>
           <div class="row"><b>昵称</b><span>${escapeHtml(account?.nickname || "")}</span></div>
           <div class="row"><b>最近登录</b><span>${account?.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</span></div>
         </section>
@@ -2304,8 +2322,8 @@ ADMIN_HTML = r'''
       `).join("");
 
       if (!conversations.length) {
-        list.innerHTML = `<div class="empty">暂无Customer Service会话</div>`;
-        chat.innerHTML = `<div class="empty">暂无Customer Service消息</div>`;
+        list.innerHTML = `<div class="empty">暂无客服会话</div>`;
+        chat.innerHTML = `<div class="empty">暂无客服消息</div>`;
         title.textContent = "聊天记录";
         return;
       }
@@ -2331,7 +2349,7 @@ ADMIN_HTML = r'''
       const text = input.value.trim();
       const imageFile = imageInput?.files?.[0] || null;
       if (!selectedServiceConversationId) {
-        showToast("请先选择一个Customer Service会话", "error");
+        showToast("请先选择一个客服会话", "error");
         return;
       }
       if (!text && !imageFile) {
@@ -3482,7 +3500,7 @@ def create_admin_chat_message(
                 conversation_id,
                 text,
                 "admin",
-                "Customer Service",
+                "客服",
                 None,
                 image_url,
                 created_at.isoformat(),
@@ -3494,7 +3512,7 @@ def create_admin_chat_message(
         conversation_id=conversation_id,
         text=text,
         sender_type="admin",
-        sender_name="Customer Service",
+        sender_name="客服",
         sender_phone=None,
         image_url=signed_gcs_read_url(image_url),
         created_at=created_at,
