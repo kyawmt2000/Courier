@@ -687,6 +687,20 @@ def phone_from_authorization(authorization: str | None) -> str | None:
         return None
 
 
+def normalize_chat_sender_account(value: str | None) -> str | None:
+    account = clean_optional_text(value)
+    if not account:
+        return None
+    if account.startswith("oauth:"):
+        return account
+    if "@" in account:
+        return account
+    try:
+        return normalize_myanmar_phone(account)
+    except HTTPException:
+        return None
+
+
 def require_account_phone(authorization: str | None) -> str:
     phone = phone_from_authorization(authorization)
     if not phone:
@@ -1502,7 +1516,9 @@ def load_admin_orders() -> list[dict]:
                 orders.user_phone,
                 orders.rider_phone,
                 user_account.nickname AS user_nickname,
+                user_account.email AS user_email,
                 rider_account.nickname AS rider_nickname,
+                rider_account.email AS rider_email,
                 orders.payload
             FROM orders
             LEFT JOIN accounts AS user_account
@@ -1519,7 +1535,9 @@ def load_admin_orders() -> list[dict]:
         order["user_phone"] = row["user_phone"]
         order["rider_phone"] = row["rider_phone"]
         order["user_nickname"] = row["user_nickname"]
+        order["user_email"] = row["user_email"]
         order["rider_nickname"] = row["rider_nickname"]
+        order["rider_email"] = row["rider_email"]
         result.append(order)
     return result
 
@@ -1528,7 +1546,7 @@ def load_admin_accounts() -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
             """
-            SELECT phone, nickname, payment_qr_url, avatar_url, last_login_at
+            SELECT phone, email, nickname, payment_qr_url, avatar_url, last_login_at
             FROM accounts
             ORDER BY last_login_at DESC
             """
@@ -1622,7 +1640,9 @@ ADMIN_HTML = r'''
     .conversation-row.active { border-color: #111827; background: #111827; color: #fff; }
     .account-row { cursor: pointer; }
     .account-row.active { background: #eef2ff; }
-    .accounts-layout { display: grid; grid-template-columns: minmax(460px, .9fr) minmax(560px, 1.1fr); gap: 16px; align-items: start; }
+    .account-link { display: inline-block; padding: 0; border: 0; border-radius: 0; background: transparent; color: #111827; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+    .account-link:hover { color: #16a34a; text-decoration: underline; transform: none; box-shadow: none; }
+    .accounts-layout { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
     .accounts-list { min-width: 0; overflow-x: auto; }
     .account-detail { min-width: 0; max-height: calc(100vh - 180px); overflow: auto; display: grid; gap: 14px; }
     .account-detail h3 { margin: 0 0 8px; font-size: 15px; }
@@ -1648,15 +1668,22 @@ ADMIN_HTML = r'''
     .toast { position: fixed; right: 18px; bottom: 18px; z-index: 10; max-width: min(420px, calc(100vw - 36px)); padding: 12px 14px; border-radius: 10px; background: #111827; color: #fff; box-shadow: 0 18px 40px rgba(17,24,39,.22); opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
     .toast.show { opacity: 1; transform: translateY(0); }
     .toast.error { background: #b91c1c; }
+    .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(17, 24, 39, .42); }
+    .modal-backdrop.show { display: flex; }
+    .modal-card { width: min(1040px, 100%); max-height: min(86vh, 920px); overflow: auto; border-radius: 12px; background: #fff; box-shadow: 0 24px 70px rgba(17,24,39,.28); }
+    .modal-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid #eef2f7; background: #fff; }
+    .modal-head h3 { margin: 0; font-size: 16px; }
+    .modal-close { width: auto; min-width: 44px; padding: 8px 12px; background: #fff; color: #111827; border-color: #d1d5db; }
+    .modal-body { padding: 18px; display: grid; gap: 14px; }
     @keyframes pulse { from { opacity: .55; } to { opacity: 1; } }
-    @media (max-width: 1100px) { .accounts-layout { grid-template-columns: 1fr; } .account-detail { max-height: none; } }
+    @media (max-width: 1100px) { .account-detail { max-height: none; } }
     @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
   </style>
 </head>
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v17</span>
+    <span class="version">orders-ui-v19</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -1700,9 +1727,8 @@ ADMIN_HTML = r'''
       <h2>账号资料</h2>
       <div class="accounts-layout">
         <div class="accounts-list">
-          <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>手机号</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
+          <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>登录邮箱</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
         </div>
-        <div id="accountDetail" class="account-detail"></div>
       </div>
     </section>
     <section id="page-settlements" class="page">
@@ -1731,6 +1757,15 @@ ADMIN_HTML = r'''
       </div>
     </section>
   </main>
+  <div id="accountModal" class="modal-backdrop" onclick="closeAccountModal()">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <h3>账号详情</h3>
+        <button class="modal-close" onclick="closeAccountModal()">关闭</button>
+      </div>
+      <div id="accountDetail" class="modal-body account-detail"></div>
+    </div>
+  </div>
   <div id="toast" class="toast"></div>
   <script>
     let state = { orders: [], accounts: [], messages: [], payments: [] };
@@ -1762,14 +1797,45 @@ ADMIN_HTML = r'''
       return label(value);
     }
     function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
+    function accountFor(phone) {
+      return (state.accounts || []).find(item => item.phone === phone);
+    }
     function accountName(phone, fallbackName = "") {
-      const account = (state.accounts || []).find(item => item.phone === phone);
+      const account = accountFor(phone);
       return account?.nickname || fallbackName || "";
     }
-    function displayAccount(phone, fallbackName = "") {
+    function accountEmail(phone, fallbackEmail = "") {
+      const account = accountFor(phone);
+      return fallbackEmail || account?.email || "";
+    }
+    function accountLoginLabel(phone, fallbackEmail = "") {
+      const email = accountEmail(phone, fallbackEmail);
+      if (email) return email;
+      const rawPhone = String(phone || "");
+      const normalized = rawPhone.toLowerCase();
+      if (normalized.startsWith("oauth:google:")) return "Gmail 登录";
+      if (normalized.startsWith("oauth:apple:")) return "Apple 登录";
+      if (!phone || normalized.startsWith("oauth:")) return "第三方登录";
+      return rawPhone;
+    }
+    function accountContact(phone, fallbackEmail = "") {
+      return accountLoginLabel(phone, fallbackEmail);
+    }
+    function accountEmailHtml(phone, fallbackEmail = "") {
+      const email = accountEmail(phone, fallbackEmail);
+      return email ? `邮箱：${escapeHtml(email)}` : `邮箱：未绑定`;
+    }
+    function accountLoginHtml(phone, fallbackEmail = "") {
+      return `${escapeHtml(accountLoginLabel(phone, fallbackEmail))}<br><span class="muted">${accountEmailHtml(phone, fallbackEmail)}</span>`;
+    }
+    function displayAccount(phone, fallbackName = "", fallbackEmail = "") {
       const name = accountName(phone, fallbackName);
       if (!phone) return escapeHtml(name || "未接单");
-      return `${escapeHtml(name || phone)}<br><span class="muted">${escapeHtml(phone)}</span>`;
+      const contact = accountContact(phone, fallbackEmail);
+      const primary = name || contact || "账号";
+      return `
+        <button class="account-link" onclick="event.stopPropagation(); selectAccount(${jsValue(phone)})">${escapeHtml(primary)}</button>
+        <br><span class="muted">${accountEmailHtml(phone, fallbackEmail)}</span>`;
     }
     function deliveryFeeCell(order) {
       const gross = Number(order.delivery_fee || order.price || 0);
@@ -1942,7 +2008,7 @@ ADMIN_HTML = r'''
       return `
         <tr onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${displayAccount(order.user_phone, order.user_nickname)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name)}</td>
+          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
           <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
@@ -1955,13 +2021,36 @@ ADMIN_HTML = r'''
         </tr>`;
     }
 
-    function render() {
+    function filteredAccounts() {
       const q = document.getElementById("q").value.toLowerCase();
-      const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q)));
-      const accounts = sortByDateDesc(
+      return sortByDateDesc(
         (state.accounts || []).filter(account => JSON.stringify(account).toLowerCase().includes(q)),
         ["last_login_at"]
       );
+    }
+
+    function renderAccountRows(accounts = filteredAccounts()) {
+      if (selectedAccountPhone && !accounts.some(account => account.phone === selectedAccountPhone)) {
+        selectedAccountPhone = null;
+      }
+      const accountsTable = document.getElementById("accounts");
+      accountsTable.innerHTML = accounts.map(account => `
+        <tr class="account-row ${account.phone === selectedAccountPhone ? "active" : ""}" onclick="selectAccount(${jsValue(account.phone)})">
+          <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
+          <td>${escapeHtml(account.nickname || "")}</td>
+          <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
+          <td>${accountLoginHtml(account.phone, account.email)}</td>
+          <td>${account.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</td>
+        </tr>`).join("");
+      if (!accounts.length) {
+        accountsTable.innerHTML = `<tr><td colspan="5" class="muted">暂无账号资料</td></tr>`;
+      }
+    }
+
+    function render() {
+      const q = document.getElementById("q").value.toLowerCase();
+      const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q)));
+      const accounts = filteredAccounts();
       const codOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "cod"));
       const prepaidOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "prepaid"));
       const usedPaymentIds = new Set(orders.map(order => order.kpay_transaction_id).filter(Boolean));
@@ -2004,20 +2093,7 @@ ADMIN_HTML = r'''
       if (!prepaidRows.length) {
         prepaidOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货费已付款订单</td></tr>`;
       }
-      if (selectedAccountPhone && !accounts.some(account => account.phone === selectedAccountPhone)) {
-        selectedAccountPhone = null;
-      }
-      document.getElementById("accounts").innerHTML = accounts.map(account => `
-        <tr class="account-row ${account.phone === selectedAccountPhone ? "active" : ""}" onclick="selectAccount(${jsValue(account.phone)})">
-          <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
-          <td>${escapeHtml(account.nickname || "")}</td>
-          <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
-          <td>${escapeHtml(account.phone)}</td>
-          <td>${escapeHtml(new Date(account.last_login_at).toLocaleString())}</td>
-        </tr>`).join("");
-      if (!accounts.length) {
-        document.getElementById("accounts").innerHTML = `<tr><td colspan="5" class="muted">暂无账号资料</td></tr>`;
-      }
+      renderAccountRows(accounts);
       renderAccountDetail();
       const settlementRows = sortByDateDesc(orders, [
         "user_settlement_requested_at",
@@ -2029,7 +2105,7 @@ ADMIN_HTML = r'''
       document.getElementById("settlements").innerHTML = settlementRows.map(order => `
         <tr>
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${displayAccount(order.user_phone, order.user_nickname)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name)}</td>
+          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td>${deliveryFeeCell(order)}</td>
           <td>${settlementInfo(order)}</td>
           <td>${settlementQRCodes(order)}</td>
@@ -2048,7 +2124,14 @@ ADMIN_HTML = r'''
     function selectAccount(phone) {
       selectedAccountPhone = phone;
       selectedAccountPanel = "placed";
-      render();
+      renderAccountRows();
+      renderAccountDetail();
+    }
+
+    function closeAccountModal() {
+      selectedAccountPhone = null;
+      renderAccountRows();
+      renderAccountDetail();
     }
 
     function selectAccountPanel(panel) {
@@ -2093,11 +2176,25 @@ ADMIN_HTML = r'''
         if (order) {
           const otherSide = order.user_phone === phone
             ? (accountName(order.rider_phone, order.rider_nickname || order.rider_name) || "未接单骑手")
-            : (accountName(order.user_phone, order.user_nickname) || order.user_phone);
+            : (accountName(order.user_phone, order.user_nickname) || accountContact(order.user_phone, order.user_email));
           return `订单 ${order.id.slice(0, 6).toUpperCase()} / 对方：${otherSide}`;
         }
       }
       return conversationId;
+    }
+
+    function serviceConversationTitle(conversationId) {
+      const raw = String(conversationId || "");
+      if (raw.toLowerCase().startsWith("account:")) {
+        const phone = raw.slice("account:".length);
+        const name = accountName(phone);
+        const contact = accountContact(phone);
+        return name && contact ? `${name} / ${contact}` : (name || contact || "账号会话");
+      }
+      if (raw.toLowerCase().startsWith("order:")) {
+        return `订单 ${raw.slice("order:".length, "order:".length + 6).toUpperCase()}`;
+      }
+      return raw;
     }
 
     function accountChatThreads(phone, relatedOrders) {
@@ -2133,7 +2230,7 @@ ADMIN_HTML = r'''
           ${thread.messages.map(message => `
             <p class="chat-line">
               <strong>${escapeHtml(accountName(message.sender_phone, message.sender_name) || message.sender_name)}</strong>
-              <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
+              <span class="muted">${escapeHtml(accountContact(message.sender_phone))} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
               ${escapeHtml(message.text || "")}
               ${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}
             </p>
@@ -2153,12 +2250,15 @@ ADMIN_HTML = r'''
 
     function renderAccountDetail() {
       const container = document.getElementById("accountDetail");
+      const modal = document.getElementById("accountModal");
       if (!container) return;
       if (!selectedAccountPhone) {
-        container.innerHTML = `<div class="empty">点击上方账号，可查看他下的单、接的单和相关聊天记录</div>`;
+        if (modal) modal.classList.remove("show");
+        container.innerHTML = "";
         return;
       }
       const account = (state.accounts || []).find(item => item.phone === selectedAccountPhone);
+      if (modal) modal.classList.add("show");
       const placedOrders = (state.orders || []).filter(order => order.user_phone === selectedAccountPhone);
       const acceptedOrders = (state.orders || []).filter(order => order.rider_phone === selectedAccountPhone);
       const relatedOrders = Array.from(new Map([...placedOrders, ...acceptedOrders].map(order => [order.id, order])).values());
@@ -2170,8 +2270,8 @@ ADMIN_HTML = r'''
           : accountOrdersPanel("他下的单", placedOrders, "发货人/用户");
       container.innerHTML = `
         <section>
-          <h3>账号详情</h3>
-          <div class="row"><b>手机号</b><span>${escapeHtml(selectedAccountPhone)}</span></div>
+          <div class="row"><b>登录邮箱</b><span>${escapeHtml(accountLoginLabel(selectedAccountPhone, account?.email || ""))}</span></div>
+          <div class="row"><b>邮箱</b><span>${accountEmail(selectedAccountPhone, account?.email || "") ? escapeHtml(accountEmail(selectedAccountPhone, account?.email || "")) : "未绑定"}</span></div>
           <div class="row"><b>昵称</b><span>${escapeHtml(account?.nickname || "")}</span></div>
           <div class="row"><b>最近登录</b><span>${account?.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</span></div>
         </section>
@@ -2215,7 +2315,7 @@ ADMIN_HTML = r'''
 
       list.innerHTML = conversations.map(message => `
         <button class="conversation-row ${message.conversation_id === selectedServiceConversationId ? "active" : ""}" onclick="selectServiceConversation('${escapeHtml(message.conversation_id)}')">
-          <strong>${escapeHtml(message.conversation_id)}</strong><br>
+          <strong>${escapeHtml(serviceConversationTitle(message.conversation_id))}</strong><br>
           <span class="muted">${escapeHtml(accountName(message.sender_phone, message.sender_name) || message.sender_name)}：${escapeHtml(message.text || "[图片]")}</span><br>
           <span class="muted">${escapeHtml(new Date(message.created_at).toLocaleString())}</span>
         </button>
@@ -2231,11 +2331,11 @@ ADMIN_HTML = r'''
       const messages = state.messages
         .filter(message => message.conversation_id === selectedServiceConversationId)
         .sort((a, b) => dateMs(a.created_at) - dateMs(b.created_at));
-      title.textContent = selectedServiceConversationId || "聊天记录";
+      title.textContent = selectedServiceConversationId ? serviceConversationTitle(selectedServiceConversationId) : "聊天记录";
       chat.innerHTML = messages.map(message => `
         <p>
           <strong>${escapeHtml(accountName(message.sender_phone, message.sender_name) || message.sender_name)}</strong>
-          <span class="muted">${escapeHtml(message.sender_phone || "")} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
+          <span class="muted">${escapeHtml(accountContact(message.sender_phone))} ${escapeHtml(new Date(message.created_at).toLocaleString())}</span><br>
           ${escapeHtml(message.text)}
           ${message.image_url ? `<br><img src="${escapeHtml(message.image_url)}" alt="聊天图片">` : ""}
         </p>
@@ -2316,8 +2416,8 @@ ADMIN_HTML = r'''
       document.getElementById("detail").innerHTML = `
         ${order.goods_image_url ? `<img src="${order.goods_image_url}" alt="商品图">` : `<div class="muted">暂无商品图</div>`}
         <div class="row"><b>订单号</b><span>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</span></div>
-        <div class="row"><b>用户</b><span>${displayAccount(order.user_phone, order.user_nickname)}</span></div>
-        <div class="row"><b>骑手</b><span>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name)}</span></div>
+        <div class="row"><b>用户</b><span>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}</span></div>
+        <div class="row"><b>骑手</b><span>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</span></div>
         <div class="row"><b>付款方式</b><span>${escapeHtml(label(order.payment_mode))}</span></div>
         <div class="row"><b>用户付款</b><span>${escapeHtml(label(order.user_payment_status))}</span></div>
         <div class="row"><b>骑手押金</b><span>${escapeHtml(riderDepositLabel(order.rider_deposit_status))}</span></div>
@@ -2476,6 +2576,9 @@ ADMIN_HTML = r'''
       clearTimeout(searchTimer);
       searchTimer = setTimeout(render, 120);
     });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && selectedAccountPhone) closeAccountModal();
+    });
     showPage(currentPage);
   </script>
 </body>
@@ -2489,6 +2592,10 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
     if reliable_coordinate:
         return reliable_coordinate
 
+    lite_coordinate = parse_google_lite_coordinate(text)
+    if lite_coordinate:
+        return lite_coordinate
+
     bare_match = re.fullmatch(r"\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*", text)
     if bare_match:
         lat = float(bare_match.group(1))
@@ -2499,6 +2606,17 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
     return None
 
 
+def parse_google_lite_coordinate(text: str) -> tuple[float, float] | None:
+    text = decoded_google_maps_text(text)
+    values = [float(value) for value in re.findall(r"-?\d{1,6}\.\d{4,}", text)]
+    for first, second in zip(values, values[1:]):
+        if is_likely_service_coordinate(first, second):
+            return first, second
+        if is_likely_service_coordinate(second, first):
+            return second, first
+    return None
+
+
 def parse_reliable_google_maps_coordinate(text: str) -> tuple[float, float] | None:
     text = decoded_google_maps_text(text)
     patterns = [
@@ -2506,6 +2624,7 @@ def parse_reliable_google_maps_coordinate(text: str) -> tuple[float, float] | No
         (r"!2d(-?\d{1,3}(?:\.\d+)?)!3d(-?\d{1,2}(?:\.\d+)?)", 2, 1),
         (r"q=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"ll=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
+        (r"center=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"query=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"destination=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
         (r"daddr=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)", 1, 2),
@@ -2580,30 +2699,43 @@ async def expand_location_text(text: str) -> str:
     if "://" not in url_text:
         url_text = f"https://{url_text}"
 
+    user_agents = [
+        (
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
+        ),
+        (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+            "Mobile/15E148 Safari/604.1"
+        ),
+        (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        ),
+    ]
+
     async with httpx.AsyncClient(follow_redirects=True, timeout=12) as client:
-        response = await client.get(
-            url_text,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
-                    "Mobile/15E148 Safari/604.1"
-                ),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-        )
-        expanded_url = str(response.url)
-        decoded_html = decoded_google_maps_text(response.text)
-        if parse_reliable_google_maps_coordinate(decoded_html):
-            return decoded_html
+        for user_agent in user_agents:
+            response = await client.get(
+                url_text,
+                headers={
+                    "User-Agent": user_agent,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            expanded_url = str(response.url)
+            decoded_html = decoded_google_maps_text(response.text)
+            if parse_coordinate(decoded_html):
+                return decoded_html
 
-        html_url = google_maps_url_text(decoded_html)
-        if html_url and not is_google_maps_short_link(html_url):
-            return html_url
+            html_url = google_maps_url_text(decoded_html)
+            if html_url and not is_google_maps_short_link(html_url):
+                return html_url
 
-        if not is_google_maps_short_link(expanded_url):
-            return expanded_url
+            if not is_google_maps_short_link(expanded_url):
+                return expanded_url
 
         return text
 
@@ -2620,6 +2752,10 @@ def google_maps_query_text(text: str) -> str:
         if value:
             return value
 
+    center = params.get("center", [""])[0].strip()
+    if center:
+        return center
+
     place_match = re.search(r"/(?:maps/)?place/([^?#]+?)(?:/data=|/[@?]|$)", parsed.path, re.IGNORECASE)
     if place_match:
         place_text = unquote(place_match.group(1)).replace("+", " ").strip()
@@ -2632,12 +2768,6 @@ def google_maps_query_text(text: str) -> str:
 async def geocode_location(text: str) -> tuple[float, float]:
     expanded = await expand_location_text(text.strip())
 
-    if is_google_maps_short_link(expanded):
-        raise HTTPException(
-            status_code=400,
-            detail="Google Map 短链接无法解析，请检查链接或重新复制分享链接",
-        )
-
     coordinate = parse_coordinate(expanded)
     if coordinate:
         return coordinate
@@ -2646,6 +2776,10 @@ async def geocode_location(text: str) -> tuple[float, float]:
     coordinate = parse_coordinate(query_text)
     if coordinate:
         return coordinate
+
+    if is_google_maps_short_link(query_text):
+        short_url = google_maps_url_text(query_text) or query_text
+        query_text = short_url.rsplit("/", 1)[-1].strip()
 
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
@@ -2743,17 +2877,23 @@ def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) 
 async def route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
-        return await route_distance_fallback_km(origin, destination)
+        raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY is not configured")
 
     directions_distance = await google_directions_distance_km(origin, destination, api_key)
     if directions_distance is not None:
-        return directions_distance
+        return normalized_google_route_distance_km(directions_distance)
 
     matrix_distance = await google_distance_matrix_km(origin, destination, api_key)
     if matrix_distance is not None:
-        return matrix_distance
+        return normalized_google_route_distance_km(matrix_distance)
 
-    return await route_distance_fallback_km(origin, destination)
+    raise HTTPException(status_code=502, detail="Google 路线距离计算失败，请检查 Google Map Location 或 Google Directions API 设置")
+
+
+def normalized_google_route_distance_km(route_km: float) -> float:
+    if 0 < route_km < 0.1:
+        return 0.1
+    return route_km
 
 
 async def google_directions_distance_km(
@@ -2830,51 +2970,6 @@ async def google_distance_matrix_km(
 
     meters = element["distance"]["value"]
     return float(meters) / 1000
-
-
-async def osrm_route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
-    origin_value = f"{origin[1]},{origin[0]}"
-    destination_value = f"{destination[1]},{destination[0]}"
-    url = f"https://router.project-osrm.org/route/v1/driving/{origin_value};{destination_value}"
-
-    try:
-        async with httpx.AsyncClient(timeout=12) as client:
-            response = await client.get(
-                url,
-                params={
-                    "overview": "false",
-                    "alternatives": "false",
-                    "steps": "false",
-                },
-            )
-            payload = response.json()
-
-        if payload.get("code") == "Ok" and payload.get("routes"):
-            return float(payload["routes"][0]["distance"]) / 1000
-        logger.warning("OSRM route failed: %s", payload)
-    except Exception as error:
-        logger.warning("OSRM route request failed: %s", error)
-
-    raise HTTPException(status_code=502, detail="路线距离计算失败，请检查 Google Map Location 后再试")
-
-
-async def route_distance_fallback_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
-    try:
-        return await osrm_route_distance_km(origin, destination)
-    except HTTPException:
-        direct_km = haversine_km(origin, destination)
-        if direct_km <= 0:
-            raise
-        estimated_road_km = direct_km * 1.3
-        logger.warning(
-            "Route APIs failed; using haversine fallback. origin=%s destination=%s direct_km=%.3f estimated_km=%.3f",
-            origin,
-            destination,
-            direct_km,
-            estimated_road_km,
-        )
-        return estimated_road_km
-
 
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
     sender_phone = row["sender_phone"]
@@ -3736,7 +3831,9 @@ def create_chat_message(
 ) -> ChatMessageResponse:
     message_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
-    sender_phone = normalize_myanmar_phone(request.sender_phone) if request.sender_phone else None
+    sender_phone = phone_from_authorization(authorization)
+    if not sender_phone and request.sender_phone:
+        sender_phone = normalize_chat_sender_account(request.sender_phone)
     text = request.text.strip()
     image_url = request.image_url.strip() if request.image_url else None
     sender_name = account_nickname(sender_phone) or request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
@@ -4211,13 +4308,7 @@ def cancel_order(
 async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimateResponse:
     pickup = await geocode_location(request.pickup_location)
     dropoff = await geocode_location(request.dropoff_location)
-    direct_km = haversine_km(pickup, dropoff)
-    if direct_km < 0.05:
-        raise HTTPException(status_code=400, detail="取件和收货位置太近，请检查是否选择了同一个 Google Map Location")
-
     distance_km = round(await route_distance_km(pickup, dropoff), 1)
-    if distance_km < 0.1:
-        raise HTTPException(status_code=400, detail="路线距离太近，请检查 Google Map Location 是否正确")
     return DistanceEstimateResponse(
         distance_km=distance_km,
         price=estimate_price(distance_km, 1),
