@@ -41,7 +41,10 @@ RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
 DELIVERY_PROMOTION_ENABLED = os.getenv("DELIVERY_PROMOTION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 DELIVERY_PROMOTION_FEE_MMK = float(os.getenv("DELIVERY_PROMOTION_FEE_MMK", "1000") or 1000)
 DELIVERY_PROMOTION_START_AT = os.getenv("DELIVERY_PROMOTION_START_AT", "").strip()
-DELIVERY_PROMOTION_END_AT = os.getenv("DELIVERY_PROMOTION_END_AT", "2026-08-18T23:59:59+06:30").strip()
+DELIVERY_PROMOTION_END_AT = os.getenv("DELIVERY_PROMOTION_END_AT", "2026-08-31T23:59:59+06:30").strip()
+PLATFORM_KPAY_QR_IMAGE_URL = os.getenv("PLATFORM_KPAY_QR_IMAGE_URL", "").strip()
+PLATFORM_KPAY_ACCOUNT_NAME = os.getenv("PLATFORM_KPAY_ACCOUNT_NAME", "Blink").strip()
+PLATFORM_KPAY_ACCOUNT_NOTE = os.getenv("PLATFORM_KPAY_ACCOUNT_NOTE", "KPay Payment QR").strip()
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
 
@@ -77,6 +80,12 @@ class HealthResponse(BaseModel):
 
 class EmptyResponse(BaseModel):
     ok: bool = True
+
+
+class PlatformPaymentConfigResponse(BaseModel):
+    kpay_qr_image_url: str | None = None
+    kpay_account_name: str | None = None
+    kpay_account_note: str | None = None
 
 
 class UserProfile(BaseModel):
@@ -3660,6 +3669,15 @@ def health_check() -> HealthResponse:
         status="ok",
         service="courier-api",
         timestamp=datetime.now(timezone.utc),
+    )
+
+
+@app.get("/config/payment", response_model=PlatformPaymentConfigResponse)
+def get_platform_payment_config() -> PlatformPaymentConfigResponse:
+    return PlatformPaymentConfigResponse(
+        kpay_qr_image_url=clean_optional_text(PLATFORM_KPAY_QR_IMAGE_URL),
+        kpay_account_name=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NAME),
+        kpay_account_note=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NOTE),
     )
 
 
