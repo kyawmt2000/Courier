@@ -41,7 +41,7 @@ RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
 DELIVERY_PROMOTION_ENABLED = os.getenv("DELIVERY_PROMOTION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 DELIVERY_PROMOTION_FEE_MMK = float(os.getenv("DELIVERY_PROMOTION_FEE_MMK", "1000") or 1000)
 DELIVERY_PROMOTION_START_AT = os.getenv("DELIVERY_PROMOTION_START_AT", "").strip()
-DELIVERY_PROMOTION_END_AT = os.getenv("DELIVERY_PROMOTION_END_AT", "2026-08-31T23:59:59+06:30").strip()
+DELIVERY_PROMOTION_END_AT = os.getenv("DELIVERY_PROMOTION_END_AT", "2026-08-18T23:59:59+06:30").strip()
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
 
