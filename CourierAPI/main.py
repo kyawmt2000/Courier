@@ -774,7 +774,9 @@ def delivery_promotion_invitee_email_used(email: str) -> bool:
     return row is not None
 
 
-def delivery_promotion_invitee_completed(email: str) -> bool:
+def delivery_promotion_invitee_has_completed_settled_order(email: str) -> bool:
+    # Friend email is valid only after that account has one completed order
+    # whose backend settlement is fully completed.
     with connect_db() as connection:
         rows = connection.execute(
             """
@@ -806,7 +808,7 @@ def validate_delivery_promotion_invite_email(user_phone: str, invite_email: str 
         raise HTTPException(status_code=400, detail="不能填写自己的邮箱")
     if delivery_promotion_invitee_email_used(email):
         raise HTTPException(status_code=400, detail="这个好友邮箱已经使用过，不能重复使用")
-    if not delivery_promotion_invitee_completed(email):
+    if not delivery_promotion_invitee_has_completed_settled_order(email):
         raise HTTPException(status_code=400, detail="这个邮箱还没有完成并结算成功的订单")
     return email
 
