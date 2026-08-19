@@ -38,6 +38,7 @@ except ImportError:
 app = FastAPI(title="Courier API", version="1.0.0")
 CURRENT_TERMS_VERSION = "2026-07-20"
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
+PROMOTIONAL_DELIVERY_FEE_MMK = float(os.getenv("PROMOTIONAL_DELIVERY_FEE_MMK", "1000") or 0)
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
 
@@ -660,6 +661,8 @@ async def send_sms_code(phone: str, code: str) -> None:
 
 
 def estimate_price(distance_km: float, weight_kg: float) -> float:
+    if PROMOTIONAL_DELIVERY_FEE_MMK > 0:
+        return round(PROMOTIONAL_DELIVERY_FEE_MMK, 2)
     return round(distance_km * 1000, 2)
 
 
@@ -869,6 +872,8 @@ def upload_base64_image(image_data: str, content_type: str | None, file_name: st
 
 
 def delivery_platform_fee(delivery_fee: float) -> float:
+    if PROMOTIONAL_DELIVERY_FEE_MMK > 0 and abs(delivery_fee - PROMOTIONAL_DELIVERY_FEE_MMK) <= 1:
+        return 0
     rate = 0.08 if delivery_fee >= 10_000 else 0.10
     return round(delivery_fee * rate)
 
@@ -3898,7 +3903,7 @@ def create_prepaid_payment(
     payment = PrepaidPaymentResponse(
         id=str(uuid4()),
         user_phone=user_phone,
-        amount=round(request.amount, 2),
+        amount=estimate_price(request.distance_km, 1),
         distance_km=request.distance_km,
         goods_amount=round(request.goods_amount, 2),
         payment_mode=request.payment_mode,
