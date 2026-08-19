@@ -38,7 +38,10 @@ except ImportError:
 app = FastAPI(title="Courier API", version="1.0.0")
 CURRENT_TERMS_VERSION = "2026-07-20"
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
-PROMOTIONAL_DELIVERY_FEE_MMK = float(os.getenv("PROMOTIONAL_DELIVERY_FEE_MMK", "1000") or 0)
+DELIVERY_PROMOTION_ENABLED = os.getenv("DELIVERY_PROMOTION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+DELIVERY_PROMOTION_FEE_MMK = float(os.getenv("DELIVERY_PROMOTION_FEE_MMK", "1000") or 1000)
+DELIVERY_PROMOTION_START_AT = os.getenv("DELIVERY_PROMOTION_START_AT", "").strip()
+DELIVERY_PROMOTION_END_AT = os.getenv("DELIVERY_PROMOTION_END_AT", "").strip()
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
 
@@ -138,12 +141,25 @@ class CreateOrderRequest(BaseModel):
     dropoff_lng: float | None = None
 
 
+class DeliveryPromotionResponse(BaseModel):
+    active: bool
+    text: str | None = None
+    discount_fee: float | None = None
+    original_fee: float | None = None
+    payable_fee: float | None = None
+    requires_invite_email: bool = False
+    eligible: bool = False
+    invite_email: str | None = None
+    message: str | None = None
+
+
 class CreatePrepaidPaymentRequest(BaseModel):
     amount: float = Field(gt=0)
     distance_km: float = Field(gt=0)
     goods_amount: float = Field(default=0, ge=0)
     payment_proof_url: str
     payment_mode: PaymentMode = "cod"
+    promo_invite_email: str | None = None
 
 
 class CreateDingerPaymentRequest(BaseModel):
@@ -178,6 +194,9 @@ class PrepaidPaymentResponse(BaseModel):
     dinger_qr_code: str | None = None
     dinger_provider_name: str | None = None
     dinger_method_name: str | None = None
+    original_delivery_fee: float | None = None
+    promotion_applied: bool = False
+    promo_invite_email: str | None = None
 
 
 class OrderResponse(BaseModel):
@@ -229,6 +248,9 @@ class OrderResponse(BaseModel):
     user_settlement_bill_message: str | None = None
     user_settlement_bill_amount: float | None = None
     user_settlement_bill_created_at: datetime | None = None
+    original_delivery_fee: float | None = None
+    promotion_applied: bool = False
+    promo_invite_email: str | None = None
 
 
 class SignedUploadRequest(BaseModel):
@@ -464,6 +486,28 @@ def init_storage() -> None:
             "CREATE INDEX IF NOT EXISTS idx_prepaid_payments_status_created "
             "ON prepaid_payments (status, created_at)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS delivery_promotion_redemptions (
+                id TEXT PRIMARY KEY,
+                user_phone TEXT NOT NULL,
+                invitee_email TEXT,
+                payment_id TEXT,
+                order_id TEXT,
+                original_delivery_fee REAL NOT NULL,
+                discounted_delivery_fee REAL NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_delivery_promo_user_created "
+            "ON delivery_promotion_redemptions (user_phone, created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_delivery_promo_invitee "
+            "ON delivery_promotion_redemptions (invitee_email)"
+        )
         add_column_if_missing(connection, "chat_messages", "conversation_id", "TEXT NOT NULL DEFAULT 'main'")
         add_column_if_missing(connection, "chat_messages", "sender_phone", "TEXT")
         add_column_if_missing(connection, "chat_messages", "image_url", "TEXT")
@@ -485,6 +529,13 @@ def init_storage() -> None:
         add_column_if_missing(connection, "prepaid_payments", "status", "TEXT NOT NULL DEFAULT 'pending'")
         add_column_if_missing(connection, "prepaid_payments", "created_at", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "prepaid_payments", "payload", "TEXT NOT NULL DEFAULT '{}'")
+        add_column_if_missing(connection, "delivery_promotion_redemptions", "user_phone", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "delivery_promotion_redemptions", "invitee_email", "TEXT")
+        add_column_if_missing(connection, "delivery_promotion_redemptions", "payment_id", "TEXT")
+        add_column_if_missing(connection, "delivery_promotion_redemptions", "order_id", "TEXT")
+        add_column_if_missing(connection, "delivery_promotion_redemptions", "original_delivery_fee", "REAL NOT NULL DEFAULT 0")
+        add_column_if_missing(connection, "delivery_promotion_redemptions", "discounted_delivery_fee", "REAL NOT NULL DEFAULT 0")
+        add_column_if_missing(connection, "delivery_promotion_redemptions", "created_at", "TEXT NOT NULL DEFAULT ''")
 
 
 init_storage()
@@ -661,9 +712,181 @@ async def send_sms_code(phone: str, code: str) -> None:
 
 
 def estimate_price(distance_km: float, weight_kg: float) -> float:
-    if PROMOTIONAL_DELIVERY_FEE_MMK > 0:
-        return round(PROMOTIONAL_DELIVERY_FEE_MMK, 2)
     return round(distance_km * 1000, 2)
+
+
+def parse_config_datetime(value: str) -> datetime | None:
+    cleaned = clean_optional_text(value)
+    if not cleaned:
+        return None
+    try:
+        parsed = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("Invalid delivery promotion datetime: %s", cleaned)
+        return None
+    return utc_datetime(parsed)
+
+
+def delivery_promotion_is_active(now: datetime | None = None) -> bool:
+    if not DELIVERY_PROMOTION_ENABLED or DELIVERY_PROMOTION_FEE_MMK <= 0:
+        return False
+    current = utc_datetime(now or datetime.now(timezone.utc)) or datetime.now(timezone.utc)
+    start_at = parse_config_datetime(DELIVERY_PROMOTION_START_AT)
+    end_at = parse_config_datetime(DELIVERY_PROMOTION_END_AT)
+    if start_at and current < start_at:
+        return False
+    if end_at and current > end_at:
+        return False
+    return True
+
+
+def normalize_email(value: str | None) -> str | None:
+    email = clean_optional_text(value)
+    if not email:
+        return None
+    return email.lower()
+
+
+def delivery_promotion_text() -> str:
+    return f"优惠期间送货费 = {DELIVERY_PROMOTION_FEE_MMK:,.0f} MMK"
+
+
+def delivery_promotion_redemption_count(user_phone: str) -> int:
+    with connect_db() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM delivery_promotion_redemptions WHERE user_phone = ?",
+            (user_phone,),
+        ).fetchone()
+    return int(row["count"] if row else 0)
+
+
+def delivery_promotion_invitee_email_used(email: str) -> bool:
+    with connect_db() as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM delivery_promotion_redemptions
+            WHERE lower(invitee_email) = ?
+            LIMIT 1
+            """,
+            (email,),
+        ).fetchone()
+    return row is not None
+
+
+def delivery_promotion_invitee_completed(email: str) -> bool:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT orders.payload
+            FROM accounts
+            JOIN orders ON orders.user_phone = accounts.phone
+            WHERE lower(accounts.email) = ?
+            """,
+            (email,),
+        ).fetchall()
+    for row in rows:
+        try:
+            order = order_from_row(row)
+        except Exception:
+            continue
+        if order.status == "completed" and order.settlement_status == "completed":
+            return True
+    return False
+
+
+def validate_delivery_promotion_invite_email(user_phone: str, invite_email: str | None) -> str | None:
+    if delivery_promotion_redemption_count(user_phone) == 0:
+        return None
+    email = normalize_email(invite_email)
+    if not email:
+        raise HTTPException(status_code=400, detail="请填写已完成订单好友的邮箱，才能继续享受优惠")
+    own_profile = load_account_profile(user_phone)
+    if normalize_email(own_profile.email if own_profile else None) == email:
+        raise HTTPException(status_code=400, detail="不能填写自己的邮箱")
+    if delivery_promotion_invitee_email_used(email):
+        raise HTTPException(status_code=400, detail="这个好友邮箱已经使用过，不能重复使用")
+    if not delivery_promotion_invitee_completed(email):
+        raise HTTPException(status_code=400, detail="这个邮箱还没有完成并结算成功的订单")
+    return email
+
+
+def delivery_promotion_quote(user_phone: str, distance_km: float, invite_email: str | None = None) -> DeliveryPromotionResponse:
+    original_fee = estimate_price(distance_km, 1)
+    if not delivery_promotion_is_active():
+        return DeliveryPromotionResponse(
+            active=False,
+            original_fee=original_fee,
+            payable_fee=original_fee,
+            message="优惠未开启",
+        )
+
+    requires_invite = delivery_promotion_redemption_count(user_phone) > 0
+    normalized_invite_email = None
+    eligible = not requires_invite
+    message = None
+    if requires_invite:
+        try:
+            normalized_invite_email = validate_delivery_promotion_invite_email(user_phone, invite_email)
+            eligible = True
+        except HTTPException as exc:
+            message = str(exc.detail)
+
+    return DeliveryPromotionResponse(
+        active=True,
+        text=delivery_promotion_text(),
+        discount_fee=round(DELIVERY_PROMOTION_FEE_MMK, 2),
+        original_fee=original_fee,
+        payable_fee=round(DELIVERY_PROMOTION_FEE_MMK if eligible else original_fee, 2),
+        requires_invite_email=requires_invite,
+        eligible=eligible,
+        invite_email=normalized_invite_email,
+        message=message,
+    )
+
+
+def save_delivery_promotion_redemption(
+    user_phone: str,
+    payment_id: str,
+    order_id: str,
+    original_delivery_fee: float,
+    discounted_delivery_fee: float,
+    invite_email: str | None,
+) -> None:
+    normalized_invite_email = validate_delivery_promotion_invite_email(user_phone, invite_email)
+    with connect_db() as connection:
+        existing = connection.execute(
+            """
+            SELECT 1
+            FROM delivery_promotion_redemptions
+            WHERE payment_id = ? OR order_id = ?
+            LIMIT 1
+            """,
+            (payment_id, order_id),
+        ).fetchone()
+        if existing:
+            return
+        if normalized_invite_email and delivery_promotion_invitee_email_used(normalized_invite_email):
+            raise HTTPException(status_code=400, detail="这个好友邮箱已经使用过，不能重复使用")
+        connection.execute(
+            """
+            INSERT INTO delivery_promotion_redemptions (
+                id, user_phone, invitee_email, payment_id, order_id,
+                original_delivery_fee, discounted_delivery_fee, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid4()),
+                user_phone,
+                normalized_invite_email,
+                payment_id,
+                order_id,
+                round(original_delivery_fee, 2),
+                round(discounted_delivery_fee, 2),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
 
 
 def clean_optional_text(value: str | None) -> str | None:
@@ -872,8 +1095,6 @@ def upload_base64_image(image_data: str, content_type: str | None, file_name: st
 
 
 def delivery_platform_fee(delivery_fee: float) -> float:
-    if PROMOTIONAL_DELIVERY_FEE_MMK > 0 and abs(delivery_fee - PROMOTIONAL_DELIVERY_FEE_MMK) <= 1:
-        return 0
     rate = 0.08 if delivery_fee >= 10_000 else 0.10
     return round(delivery_fee * rate)
 
@@ -884,8 +1105,8 @@ def delivery_payout_fee(delivery_fee: float) -> float:
 
 def order_for_response(order: OrderResponse) -> OrderResponse:
     delivery_fee = order.delivery_fee or order.price
-    platform_fee = order.platform_delivery_fee or delivery_platform_fee(delivery_fee)
-    rider_fee = order.rider_delivery_fee or delivery_payout_fee(delivery_fee)
+    platform_fee = order.platform_delivery_fee if order.promotion_applied else order.platform_delivery_fee or delivery_platform_fee(delivery_fee)
+    rider_fee = order.rider_delivery_fee or delivery_payout_fee(order.original_delivery_fee or delivery_fee)
     return order.model_copy(
         update={
             "platform_delivery_fee": platform_fee,
@@ -3596,11 +3817,12 @@ def admin_update_order(
         updates["rider_settlement_paid_at"] = now
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_bill_created_at:
         delivery_fee = order.delivery_fee or order.price
-        platform_fee = order.platform_delivery_fee or delivery_platform_fee(delivery_fee)
-        rider_amount = order.rider_delivery_fee or delivery_payout_fee(delivery_fee)
+        original_delivery_fee = order.original_delivery_fee or delivery_fee
+        platform_fee = order.platform_delivery_fee if order.promotion_applied else order.platform_delivery_fee or delivery_platform_fee(delivery_fee)
+        rider_amount = order.rider_delivery_fee or delivery_payout_fee(original_delivery_fee)
         updates["rider_settlement_bill_title"] = "送货费已结算"
         updates["rider_settlement_bill_message"] = (
-            f"订单 #{order.id[:6].upper()} 原送货费 {delivery_fee:,.0f} MMK，"
+            f"订单 #{order.id[:6].upper()} 原送货费 {original_delivery_fee:,.0f} MMK，"
             f"平台扣费 {platform_fee:,.0f} MMK，最终送货费 {rider_amount:,.0f} MMK 已结算给骑手，请查收。"
         )
         updates["rider_settlement_bill_amount"] = rider_amount
@@ -3897,6 +4119,16 @@ def list_orders(authorization: str | None = Header(default=None)) -> list[OrderR
     return [order_for_response(order) for order in load_user_orders(user_phone)]
 
 
+@app.get("/promotion/delivery", response_model=DeliveryPromotionResponse)
+def get_delivery_promotion(
+    distance_km: float = Query(gt=0),
+    invite_email: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+) -> DeliveryPromotionResponse:
+    user_phone = require_account_phone(authorization)
+    return delivery_promotion_quote(user_phone, distance_km, invite_email)
+
+
 @app.post("/payments/prepaid", response_model=PrepaidPaymentResponse)
 def create_prepaid_payment(
     request: CreatePrepaidPaymentRequest,
@@ -3906,17 +4138,28 @@ def create_prepaid_payment(
     payment_proof_url = clean_optional_text(request.payment_proof_url)
     if not payment_proof_url:
         raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
+    original_delivery_fee = estimate_price(request.distance_km, 1)
+    promotion = delivery_promotion_quote(user_phone, request.distance_km, request.promo_invite_email)
+    promotion_applied = promotion.active and promotion.eligible
+    if promotion.active and promotion.requires_invite_email and not promotion.eligible:
+        discount_fee = promotion.discount_fee or DELIVERY_PROMOTION_FEE_MMK
+        if abs(request.amount - discount_fee) <= 1:
+            raise HTTPException(status_code=400, detail=promotion.message or "请填写有效好友邮箱")
+    payment_amount = promotion.payable_fee if promotion_applied and promotion.payable_fee is not None else round(request.amount, 2)
 
     payment = PrepaidPaymentResponse(
         id=str(uuid4()),
         user_phone=user_phone,
-        amount=estimate_price(request.distance_km, 1),
+        amount=round(payment_amount, 2),
         distance_km=request.distance_km,
         goods_amount=round(request.goods_amount, 2),
         payment_mode=request.payment_mode,
         status="pending",
         created_at=datetime.now(timezone.utc),
         payment_proof_url=payment_proof_url,
+        original_delivery_fee=original_delivery_fee,
+        promotion_applied=promotion_applied,
+        promo_invite_email=promotion.invite_email,
     )
     save_prepaid_payment(payment)
     return payment
@@ -4014,9 +4257,7 @@ def create_order(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     user_phone = require_account_phone(authorization)
-    delivery_fee = estimate_price(request.distance_km, request.weight_kg)
-    platform_delivery_fee = delivery_platform_fee(delivery_fee)
-    rider_delivery_fee = delivery_payout_fee(delivery_fee)
+    original_delivery_fee = estimate_price(request.distance_km, request.weight_kg)
     kpay_transaction_id = clean_optional_text(request.kpay_transaction_id)
     goods_image_url = clean_optional_text(request.goods_image_url)
     payment_proof_url = clean_optional_text(request.payment_proof_url)
@@ -4038,6 +4279,11 @@ def create_order(
         raise HTTPException(status_code=400, detail="送货费付款未通过，请重新付款")
     if prepaid_payment.status != "confirmed":
         raise HTTPException(status_code=400, detail="请等待后台确认收到送货费后再下单")
+    promotion_applied = prepaid_payment.promotion_applied
+    promo_invite_email = normalize_email(prepaid_payment.promo_invite_email)
+    delivery_fee = round(prepaid_payment.amount, 2) if promotion_applied else original_delivery_fee
+    platform_delivery_fee = 0 if promotion_applied else delivery_platform_fee(delivery_fee)
+    rider_delivery_fee = delivery_payout_fee(original_delivery_fee)
     accepted_payment_amounts = (delivery_fee, rider_delivery_fee)
     if all(abs(prepaid_payment.amount - amount) > 1 for amount in accepted_payment_amounts):
         raise HTTPException(status_code=400, detail="付款金额和当前订单金额不一致，请重新付款")
@@ -4045,6 +4291,15 @@ def create_order(
         raise HTTPException(status_code=400, detail="付款方式和当前订单不一致，请重新付款")
     if load_order_record(kpay_transaction_id):
         raise HTTPException(status_code=400, detail="这个付款订单已经创建过，请刷新订单列表")
+    if promotion_applied:
+        save_delivery_promotion_redemption(
+            user_phone=user_phone,
+            payment_id=kpay_transaction_id,
+            order_id=kpay_transaction_id,
+            original_delivery_fee=original_delivery_fee,
+            discounted_delivery_fee=delivery_fee,
+            invite_email=promo_invite_email,
+        )
     payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
     user_payment_status: PaymentStatus = prepaid_payment.status
     rider_deposit_status: PaymentStatus = "unpaid" if request.goods_amount > 0 else "not_required"
@@ -4075,6 +4330,9 @@ def create_order(
         pickup_lng=request.pickup_lng,
         dropoff_lat=request.dropoff_lat,
         dropoff_lng=request.dropoff_lng,
+        original_delivery_fee=original_delivery_fee if promotion_applied else None,
+        promotion_applied=promotion_applied,
+        promo_invite_email=promo_invite_email,
     )
     save_order(order, user_phone=user_phone)
     return order_for_response(order)
