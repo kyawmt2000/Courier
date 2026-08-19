@@ -2895,7 +2895,14 @@ async def route_distance_km(origin: tuple[float, float], destination: tuple[floa
     if matrix_distance is not None:
         return normalized_google_route_distance_km(matrix_distance)
 
-    raise HTTPException(status_code=502, detail="Google 路线距离计算失败，请检查 Google Map Location 或 Google Directions API 设置")
+    fallback_distance = haversine_km(origin, destination) * 1.3
+    logger.warning(
+        "Google route unavailable; using fallback distance %.2f km for %s -> %s",
+        fallback_distance,
+        origin,
+        destination,
+    )
+    return normalized_google_route_distance_km(fallback_distance)
 
 
 def normalized_google_route_distance_km(route_km: float) -> float:
