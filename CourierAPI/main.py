@@ -4501,6 +4501,43 @@ def update_rider_order_status(
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
+@app.post("/rider/orders/{order_id}/cancel", response_model=OrderResponse)
+def cancel_rider_order(
+    order_id: str,
+    authorization: str | None = Header(default=None),
+) -> OrderResponse:
+    rider_phone = require_account_phone(authorization)
+    record = load_order_record(order_id)
+    if record:
+        order, user_phone, stored_rider_phone = record
+        if stored_rider_phone != rider_phone:
+            raise HTTPException(status_code=403, detail="不能取消其他骑手的订单")
+        if not app_data_visible_to_account(rider_phone, order.created_at):
+            raise HTTPException(status_code=404, detail="订单不存在")
+        if order.status in ("accepted", "picking_up"):
+            released = order.model_copy(
+                update={
+                    "status": "matching",
+                    "rider_name": None,
+                    "accepted_at": None,
+                    "rider_deposit_status": "unpaid" if order.rider_deposit_status != "not_required" else "not_required",
+                    "rider_deposit_due_at": None,
+                    "rider_deposit_submitted_at": None,
+                    "rider_lat": None,
+                    "rider_lng": None,
+                    "rider_location_updated_at": None,
+                }
+            )
+            save_order(released, user_phone=user_phone, rider_phone=None)
+            return order_for_response(released)
+        if order.status == "delivering":
+            cancelled = order.model_copy(update={"status": "cancelled"})
+            save_order(cancelled, user_phone=user_phone, rider_phone=rider_phone)
+            return order_for_response(cancelled)
+        raise HTTPException(status_code=400, detail="这个订单当前不能取消送货")
+    raise HTTPException(status_code=404, detail="订单不存在")
+
+
 @app.post("/rider/orders/{order_id}/settlement", response_model=OrderResponse)
 def request_rider_settlement(
     order_id: str,
@@ -4579,6 +4616,8 @@ def cancel_order(
         order, stored_user_phone, rider_phone = record
         if stored_user_phone != user_phone:
             raise HTTPException(status_code=403, detail="不能取消其他账号的订单")
+        if order.status in ("delivering", "completed"):
+            raise HTTPException(status_code=400, detail="订单已经开始配送，不能取消")
         updated = order.model_copy(update={"status": "cancelled"})
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
