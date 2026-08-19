@@ -252,6 +252,10 @@ class OrderResponse(BaseModel):
     original_delivery_fee: float | None = None
     promotion_applied: bool = False
     promo_invite_email: str | None = None
+    cancellation_actor: str | None = None
+    cancellation_reason: str | None = None
+    cancellation_compensation_amount: float | None = None
+    cancelled_at: datetime | None = None
 
 
 class SignedUploadRequest(BaseModel):
@@ -4526,12 +4530,24 @@ def cancel_rider_order(
                     "rider_lat": None,
                     "rider_lng": None,
                     "rider_location_updated_at": None,
+                    "cancellation_actor": None,
+                    "cancellation_reason": None,
+                    "cancellation_compensation_amount": None,
+                    "cancelled_at": None,
                 }
             )
             save_order(released, user_phone=user_phone, rider_phone=None)
             return order_for_response(released)
         if order.status == "delivering":
-            cancelled = order.model_copy(update={"status": "cancelled"})
+            cancelled = order.model_copy(
+                update={
+                    "status": "cancelled",
+                    "cancellation_actor": "rider",
+                    "cancellation_reason": "骑手取消送货，需把货还给用户",
+                    "cancellation_compensation_amount": 1000,
+                    "cancelled_at": datetime.now(timezone.utc),
+                }
+            )
             save_order(cancelled, user_phone=user_phone, rider_phone=rider_phone)
             return order_for_response(cancelled)
         raise HTTPException(status_code=400, detail="这个订单当前不能取消送货")
@@ -4618,7 +4634,24 @@ def cancel_order(
             raise HTTPException(status_code=403, detail="不能取消其他账号的订单")
         if order.status in ("delivering", "completed"):
             raise HTTPException(status_code=400, detail="订单已经开始配送，不能取消")
-        updated = order.model_copy(update={"status": "cancelled"})
+        now = datetime.now(timezone.utc)
+        accepted_at = order.accepted_at or order.created_at
+        if accepted_at.tzinfo is None:
+            accepted_at = accepted_at.replace(tzinfo=timezone.utc)
+        is_late_confirmed_rider_deposit = (
+            order.rider_deposit_status == "confirmed"
+            and order.status in ("accepted", "picking_up")
+            and (now - accepted_at).total_seconds() >= 5 * 60
+        )
+        updated = order.model_copy(
+            update={
+                "status": "cancelled",
+                "cancellation_actor": "user",
+                "cancellation_reason": "用户取消订单",
+                "cancellation_compensation_amount": 1000 if is_late_confirmed_rider_deposit else 0,
+                "cancelled_at": now,
+            }
+        )
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
