@@ -748,7 +748,7 @@ def normalize_email(value: str | None) -> str | None:
 
 
 def delivery_promotion_text() -> str:
-    return f"优惠期间送货费 = {DELIVERY_PROMOTION_FEE_MMK:,.0f} MMK"
+    return f"优惠期间送货费 = {DELIVERY_PROMOTION_FEE_MMK:.0f} MMK"
 
 
 def delivery_promotion_redemption_count(user_phone: str) -> int:
