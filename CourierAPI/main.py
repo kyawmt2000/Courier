@@ -38,12 +38,6 @@ except ImportError:
 app = FastAPI(title="Courier API", version="1.0.0")
 CURRENT_TERMS_VERSION = "2026-07-20"
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
-FREE_DELIVERY_PROMO_ENABLED = os.getenv("FREE_DELIVERY_PROMO_ENABLED", "true").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
 
@@ -3901,9 +3895,6 @@ def create_prepaid_payment(
     if not payment_proof_url:
         raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
 
-    now = datetime.now(timezone.utc)
-    payment_status: PaymentStatus = "confirmed" if FREE_DELIVERY_PROMO_ENABLED else "pending"
-
     payment = PrepaidPaymentResponse(
         id=str(uuid4()),
         user_phone=user_phone,
@@ -3911,9 +3902,8 @@ def create_prepaid_payment(
         distance_km=request.distance_km,
         goods_amount=round(request.goods_amount, 2),
         payment_mode=request.payment_mode,
-        status=payment_status,
-        created_at=now,
-        confirmed_at=now if payment_status == "confirmed" else None,
+        status="pending",
+        created_at=datetime.now(timezone.utc),
         payment_proof_url=payment_proof_url,
     )
     save_prepaid_payment(payment)
