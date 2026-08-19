@@ -224,6 +224,7 @@ class OrderResponse(BaseModel):
     status: OrderStatus
     rider_name: str | None = None
     created_at: datetime
+    accepted_at: datetime | None = None
     pickup_lat: float | None = None
     pickup_lng: float | None = None
     dropoff_lat: float | None = None
@@ -4427,6 +4428,7 @@ def accept_order(
         updates: dict[str, object] = {
             "status": "accepted",
             "rider_name": request.rider_name,
+            "accepted_at": datetime.now(timezone.utc),
         }
         if order.rider_deposit_status != "not_required":
             updates["rider_deposit_due_at"] = rider_deposit_due_at()
