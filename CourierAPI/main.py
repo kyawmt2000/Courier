@@ -775,15 +775,17 @@ def delivery_promotion_invitee_email_used(email: str) -> bool:
 
 
 def delivery_promotion_invitee_has_completed_settled_order(email: str) -> bool:
-    # Friend email is valid only after that account has one completed order
-    # whose backend settlement is fully completed.
+    # Friend email is valid only when it belongs to the ordering user of a
+    # completed order with backend settlement activity. Rider emails do not
+    # qualify. Some order types settle only one side, so paid_to_user and
+    # paid_to_rider are also successful settled states here.
     with connect_db() as connection:
         rows = connection.execute(
             """
             SELECT orders.payload
             FROM accounts
             JOIN orders ON orders.user_phone = accounts.phone
-            WHERE lower(accounts.email) = ?
+            WHERE lower(trim(accounts.email)) = ?
             """,
             (email,),
         ).fetchall()
@@ -792,7 +794,7 @@ def delivery_promotion_invitee_has_completed_settled_order(email: str) -> bool:
             order = order_from_row(row)
         except Exception:
             continue
-        if order.status == "completed" and order.settlement_status == "completed":
+        if order.status == "completed" and order.settlement_status in ("paid_to_user", "paid_to_rider", "completed"):
             return True
     return False
 
