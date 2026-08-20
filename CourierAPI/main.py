@@ -1840,7 +1840,7 @@ ADMIN_HTML = r'''
     h1 { margin: 0; font-size: 20px; }
     .version { color: #6b7280; font-size: 12px; white-space: nowrap; }
     main { padding: 18px; display: grid; gap: 16px; }
-    .toolbar { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+    .toolbar { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     input, select, button { font: inherit; border: 1px solid #d1d5db; border-radius: 8px; padding: 9px 10px; background: #fff; transition: border-color .16s ease, box-shadow .16s ease, background .16s ease, color .16s ease, transform .12s ease, opacity .16s ease; }
     input:focus, select:focus { outline: none; border-color: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,.14); }
     button { cursor: pointer; background: #16a34a; color: white; border-color: #16a34a; font-weight: 700; }
@@ -1868,6 +1868,7 @@ ADMIN_HTML = r'''
     th { color: #6b7280; font-weight: 700; }
     tr { transition: background .14s ease; }
     tr:hover { background: #f9fafb; }
+    tr.is-new { background: #ecfdf5; animation: freshRow 2.4s ease-out 1; }
     .address-cell { width: 100%; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }
     .address-cell .muted { display: block; margin-top: 4px; }
     .actions-cell { width: 150px; }
@@ -1909,6 +1910,12 @@ ADMIN_HTML = r'''
     .service-reply input[type="file"] { max-width: 190px; align-self: center; }
     .empty { padding: 28px; text-align: center; color: #6b7280; background: #f9fafb; border-radius: 8px; }
     .hidden { display: none !important; }
+    .summary { display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)); gap: 10px; padding: 0; background: transparent; border: 0; }
+    .summary-card { display: grid; gap: 4px; min-height: 70px; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+    .summary-card strong { font-size: 22px; line-height: 1; }
+    .summary-card span { color: #6b7280; font-size: 12px; font-weight: 700; }
+    .filter { min-width: 128px; }
+    .auto-toggle.paused { background: #fff; color: #111827; border-color: #d1d5db; }
     .refresh-state { display: inline-flex; align-items: center; gap: 6px; color: #6b7280; font-size: 12px; white-space: nowrap; }
     .refresh-dot { width: 7px; height: 7px; border-radius: 999px; background: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,.14); }
     body.loading .refresh-dot { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245,158,11,.16); animation: pulse .8s ease-in-out infinite alternate; }
@@ -1923,18 +1930,43 @@ ADMIN_HTML = r'''
     .modal-close { width: auto; min-width: 44px; padding: 8px 12px; background: #fff; color: #111827; border-color: #d1d5db; }
     .modal-body { padding: 18px; display: grid; gap: 14px; }
     @keyframes pulse { from { opacity: .55; } to { opacity: 1; } }
-    @media (max-width: 1100px) { .account-detail { max-height: none; } }
+    @keyframes freshRow { from { box-shadow: inset 4px 0 0 #22c55e; } to { box-shadow: inset 4px 0 0 transparent; } }
+    @media (max-width: 1100px) { .account-detail { max-height: none; } .summary { grid-template-columns: repeat(2, minmax(140px, 1fr)); } }
     @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } header { flex-wrap: wrap; } .toolbar { margin-left: 0; width: 100%; flex-wrap: wrap; } }
+    @media (max-width: 560px) { .summary { grid-template-columns: 1fr; } .toolbar input, .toolbar select, .toolbar button { flex: 1 1 150px; min-width: 0; } }
   </style>
 </head>
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v19</span>
+    <span class="version">orders-ui-v20</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
+      <select id="statusFilter" class="filter" title="订单状态">
+        <option value="all">全部状态</option>
+        <option value="matching">待接单</option>
+        <option value="accepted">已接单</option>
+        <option value="picking_up">取件中</option>
+        <option value="delivering">配送中</option>
+        <option value="completed">已完成</option>
+        <option value="cancelled">已取消</option>
+      </select>
+      <select id="paymentFilter" class="filter" title="付款状态">
+        <option value="all">全部付款</option>
+        <option value="pending">待确认</option>
+        <option value="confirmed">已确认</option>
+        <option value="unpaid">未付</option>
+        <option value="rejected">已拒绝</option>
+      </select>
       <span class="refresh-state"><span class="refresh-dot"></span><span id="refreshStatus">就绪</span></span>
+      <select id="refreshInterval" title="自动同步速度">
+        <option value="3000">3 秒</option>
+        <option value="5000" selected>5 秒</option>
+        <option value="10000">10 秒</option>
+        <option value="30000">30 秒</option>
+      </select>
+      <button id="autoRefreshButton" class="auto-toggle" onclick="toggleAutoRefresh()">自动同步中</button>
       <button id="refreshButton" onclick="loadData()">刷新</button>
       <button id="tab-payments" class="tab active" onclick="showPage('payments')">货到付款订单</button>
       <button id="tab-orders" class="tab" onclick="showPage('orders')">货费已付款订单</button>
@@ -1944,6 +1976,7 @@ ADMIN_HTML = r'''
     </div>
   </header>
   <main>
+    <section class="summary" id="summary"></section>
     <section id="page-payments" class="page active">
       <h2>货到付款订单</h2>
       <table class="orders-table">
@@ -2023,6 +2056,12 @@ ADMIN_HTML = r'''
     let activeDetailId = null;
     let lastLoadStartedAt = 0;
     let searchTimer = null;
+    let keyTimer = null;
+    let autoRefreshTimer = null;
+    let autoRefreshEnabled = localStorage.getItem("blinkAdminAutoRefresh") !== "off";
+    let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
+    let hasLoadedOnce = false;
+    let highlightedIds = new Set();
     const pages = ["payments","orders","accounts","settlements","service"];
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
@@ -2103,6 +2142,35 @@ ADMIN_HTML = r'''
       const time = new Date(value || 0).getTime();
       return Number.isNaN(time) ? 0 : time;
     }
+    function identitySets(data = state) {
+      return {
+        orders: new Set((data.orders || []).map(item => item.id).filter(Boolean)),
+        payments: new Set((data.payments || []).map(item => item.id).filter(Boolean)),
+        messages: new Set((data.messages || []).map(item => item.id).filter(Boolean))
+      };
+    }
+    function rememberNewItems(nextState) {
+      if (!hasLoadedOnce) return { orders: 0, payments: 0, messages: 0 };
+      const previous = identitySets();
+      const freshOrders = (nextState.orders || []).filter(item => item.id && !previous.orders.has(item.id));
+      const freshPayments = (nextState.payments || []).filter(item => item.id && !previous.payments.has(item.id));
+      const freshMessages = (nextState.messages || []).filter(item => item.id && !previous.messages.has(item.id));
+      highlightedIds = new Set([
+        ...freshOrders.map(item => `order:${item.id}`),
+        ...freshPayments.map(item => `payment:${item.id}`),
+        ...freshMessages.map(item => `message:${item.id}`)
+      ]);
+      if (highlightedIds.size) {
+        setTimeout(() => {
+          highlightedIds.clear();
+          render();
+        }, 9000);
+      }
+      return { orders: freshOrders.length, payments: freshPayments.length, messages: freshMessages.length };
+    }
+    function rowClass(kind, id) {
+      return highlightedIds.has(`${kind}:${id}`) ? ` class="is-new"` : "";
+    }
     function newestDateMs(item, fields) {
       return Math.max(...fields.map(field => dateMs(item[field])));
     }
@@ -2143,6 +2211,39 @@ ADMIN_HTML = r'''
       if (status) status.textContent = text || (isLoading ? "同步中..." : "已同步");
       const button = document.getElementById("refreshButton");
       if (button) button.disabled = isLoading;
+    }
+    function refreshIntervalMs() {
+      const control = document.getElementById("refreshInterval");
+      return Number(control?.value || autoRefreshIntervalMs || 5000);
+    }
+    function updateAutoRefreshButton() {
+      const button = document.getElementById("autoRefreshButton");
+      if (!button) return;
+      button.textContent = autoRefreshEnabled ? "自动同步中" : "已暂停自动";
+      button.classList.toggle("paused", !autoRefreshEnabled);
+    }
+    function scheduleAutoRefresh() {
+      clearTimeout(autoRefreshTimer);
+      updateAutoRefreshButton();
+      if (!autoRefreshEnabled) {
+        setLoading(false, "自动同步已暂停");
+        return;
+      }
+      autoRefreshTimer = setTimeout(async () => {
+        await loadData({ silent: true, fromAuto: true });
+        scheduleAutoRefresh();
+      }, refreshIntervalMs());
+    }
+    function toggleAutoRefresh() {
+      autoRefreshEnabled = !autoRefreshEnabled;
+      localStorage.setItem("blinkAdminAutoRefresh", autoRefreshEnabled ? "on" : "off");
+      if (autoRefreshEnabled) {
+        loadData({ silent: true });
+      }
+      scheduleAutoRefresh();
+    }
+    function canSync() {
+      return document.getElementById("key").value.trim().length > 0;
     }
 
     async function errorText(response) {
@@ -2212,10 +2313,14 @@ ADMIN_HTML = r'''
     }
 
     async function loadData(options = {}) {
-      const { silent = false } = options;
+      const { silent = false, fromAuto = false } = options;
+      if (!canSync()) {
+        setLoading(false, "输入密码后自动同步");
+        return;
+      }
       const startedAt = Date.now();
       lastLoadStartedAt = startedAt;
-      if (!silent) setLoading(true, "同步中...");
+      setLoading(true, silent ? "自动同步中..." : "同步中...");
       try {
         const response = await fetch(`/admin/data?key=${keyParam()}`);
         if (!response.ok) {
@@ -2223,23 +2328,34 @@ ADMIN_HTML = r'''
         }
         const nextState = await response.json();
         if (startedAt !== lastLoadStartedAt) return;
+        const fresh = rememberNewItems(nextState);
         state = nextState;
+        hasLoadedOnce = true;
         render();
         showPage(currentPage, true);
         if (activeDetailId && state.orders.some(order => order.id === activeDetailId)) {
           showDetail(activeDetailId);
         }
-        if (!silent) showToast("后台数据已刷新");
+        const freshCount = fresh.orders + fresh.payments + fresh.messages;
+        if (freshCount) {
+          const parts = [];
+          if (fresh.orders) parts.push(`${fresh.orders} 个新订单`);
+          if (fresh.payments) parts.push(`${fresh.payments} 个新付款`);
+          if (fresh.messages) parts.push(`${fresh.messages} 条新消息`);
+          showToast(parts.join(" / "));
+        } else if (!silent) {
+          showToast("后台数据已刷新");
+        }
         setLoading(false, `已同步 ${new Date().toLocaleTimeString()}`);
       } catch (error) {
         setLoading(false, "同步失败");
-        showToast(error.message || "请求失败", "error");
+        if (!fromAuto || !hasLoadedOnce) showToast(error.message || "请求失败", "error");
       }
     }
 
     function pendingPaymentRow(payment, prepaid) {
       return `
-        <tr>
+        <tr${rowClass("payment", payment.id)}>
           <td><strong>订单 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
           <td>${displayAccount(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
           <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
@@ -2253,7 +2369,7 @@ ADMIN_HTML = r'''
 
     function orderTableRow(order, prepaid) {
       return `
-        <tr onclick="showDetail('${order.id}')">
+        <tr${rowClass("order", order.id)} onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
@@ -2294,20 +2410,53 @@ ADMIN_HTML = r'''
       }
     }
 
+    function selectedFilter(id) {
+      return document.getElementById(id)?.value || "all";
+    }
+    function orderMatchesFilters(order) {
+      const statusFilter = selectedFilter("statusFilter");
+      const paymentFilter = selectedFilter("paymentFilter");
+      return (statusFilter === "all" || order.status === statusFilter)
+        && (paymentFilter === "all" || order.user_payment_status === paymentFilter || order.rider_deposit_status === paymentFilter);
+    }
+    function paymentMatchesFilters(payment) {
+      const paymentFilter = selectedFilter("paymentFilter");
+      const statusFilter = selectedFilter("statusFilter");
+      return statusFilter === "all" && (paymentFilter === "all" || payment.status === paymentFilter);
+    }
+    function renderSummary(orders, payments) {
+      const summary = document.getElementById("summary");
+      if (!summary) return;
+      const pendingOrders = orders.filter(order => order.status === "matching").length;
+      const activeOrders = orders.filter(order => ["accepted","picking_up","delivering"].includes(order.status)).length;
+      const pendingPayments = payments.filter(payment => payment.status === "pending").length
+        + orders.filter(order => order.user_payment_status === "pending" || order.rider_deposit_status === "pending").length;
+      const completed = orders.filter(order => order.status === "completed").length;
+      const serviceCount = serviceConversations().length;
+      summary.innerHTML = `
+        <div class="summary-card"><span>待接单</span><strong>${pendingOrders}</strong></div>
+        <div class="summary-card"><span>进行中</span><strong>${activeOrders}</strong></div>
+        <div class="summary-card"><span>待确认付款/押金</span><strong>${pendingPayments}</strong></div>
+        <div class="summary-card"><span>已完成</span><strong>${completed}</strong></div>
+        <div class="summary-card"><span>客服会话</span><strong>${serviceCount}</strong></div>
+      `;
+    }
+
     function render() {
       const q = document.getElementById("q").value.toLowerCase();
-      const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q)));
+      const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q) && orderMatchesFilters(order)));
       const accounts = filteredAccounts();
       const codOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "cod"));
       const prepaidOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "prepaid"));
-      const usedPaymentIds = new Set(orders.map(order => order.kpay_transaction_id).filter(Boolean));
+      const usedPaymentIds = new Set((state.orders || []).map(order => order.kpay_transaction_id).filter(Boolean));
       const isPrepaidPayment = payment => payment.payment_mode === "prepaid";
       const pendingCodPayments = sortByDateDesc((state.payments || []).filter(payment =>
-        !isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
+        !isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q) && paymentMatchesFilters(payment)
       ));
       const pendingPrepaidPayments = sortByDateDesc((state.payments || []).filter(payment =>
-        isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q)
+        isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q) && paymentMatchesFilters(payment)
       ));
+      renderSummary(state.orders || [], state.payments || []);
       const codRows = sortByDateDesc([
         ...pendingCodPayments.map(payment => ({ kind: "payment", payment, created_at: payment.created_at })),
         ...codOrderRows.map(order => ({ kind: "order", order, created_at: order.created_at }))
@@ -2823,10 +2972,36 @@ ADMIN_HTML = r'''
       clearTimeout(searchTimer);
       searchTimer = setTimeout(render, 120);
     });
+    document.getElementById("statusFilter").addEventListener("change", render);
+    document.getElementById("paymentFilter").addEventListener("change", render);
+    document.getElementById("refreshInterval").addEventListener("change", event => {
+      autoRefreshIntervalMs = Number(event.target.value || 5000);
+      localStorage.setItem("blinkAdminRefreshMs", String(autoRefreshIntervalMs));
+      scheduleAutoRefresh();
+    });
+    document.getElementById("key").addEventListener("input", () => {
+      clearTimeout(keyTimer);
+      keyTimer = setTimeout(() => {
+        if (canSync()) loadData({ silent: true });
+      }, 450);
+    });
     document.addEventListener("keydown", event => {
       if (event.key === "Escape" && selectedAccountPhone) closeAccountModal();
     });
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && autoRefreshEnabled) loadData({ silent: true, fromAuto: true });
+    });
+    const intervalControl = document.getElementById("refreshInterval");
+    if (intervalControl) {
+      intervalControl.value = String(autoRefreshIntervalMs);
+      if (intervalControl.value !== String(autoRefreshIntervalMs)) {
+        intervalControl.value = "5000";
+        autoRefreshIntervalMs = 5000;
+      }
+    }
     showPage(currentPage);
+    renderSummary([], []);
+    scheduleAutoRefresh();
   </script>
 </body>
 </html>
