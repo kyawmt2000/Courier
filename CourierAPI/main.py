@@ -42,7 +42,10 @@ DELIVERY_PROMOTION_ENABLED = os.getenv("DELIVERY_PROMOTION_ENABLED", "true").low
 DELIVERY_PROMOTION_FEE_MMK = float(os.getenv("DELIVERY_PROMOTION_FEE_MMK", "1000") or 1000)
 DELIVERY_PROMOTION_START_AT = os.getenv("DELIVERY_PROMOTION_START_AT", "").strip()
 DELIVERY_PROMOTION_END_AT = os.getenv("DELIVERY_PROMOTION_END_AT", "2026-08-31T23:59:59+06:30").strip()
-PLATFORM_KPAY_QR_IMAGE_URL = os.getenv("PLATFORM_KPAY_QR_IMAGE_URL", "").strip()
+PLATFORM_KPAY_QR_IMAGE_URL = os.getenv(
+    "PLATFORM_KPAY_QR_IMAGE_URL",
+    "https://storage.googleapis.com/courierblink/platform-pay-qr.jpg",
+).strip()
 PLATFORM_KPAY_ACCOUNT_NAME = os.getenv("PLATFORM_KPAY_ACCOUNT_NAME", "Blink").strip()
 PLATFORM_KPAY_ACCOUNT_NOTE = os.getenv("PLATFORM_KPAY_ACCOUNT_NOTE", "KPay Payment QR").strip()
 logger = logging.getLogger("courier-api")
@@ -3960,7 +3963,7 @@ def health_check() -> HealthResponse:
 @app.get("/config/payment", response_model=PlatformPaymentConfigResponse)
 def get_platform_payment_config() -> PlatformPaymentConfigResponse:
     return PlatformPaymentConfigResponse(
-        kpay_qr_image_url=clean_optional_text(PLATFORM_KPAY_QR_IMAGE_URL),
+        kpay_qr_image_url=clean_optional_text(signed_gcs_read_url(PLATFORM_KPAY_QR_IMAGE_URL)),
         kpay_account_name=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NAME),
         kpay_account_note=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NOTE),
     )
