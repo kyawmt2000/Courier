@@ -41,7 +41,7 @@ RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
 DELIVERY_PROMOTION_ENABLED = os.getenv("DELIVERY_PROMOTION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 DELIVERY_PROMOTION_FEE_MMK = float(os.getenv("DELIVERY_PROMOTION_FEE_MMK", "1000") or 1000)
 DELIVERY_PROMOTION_START_AT = os.getenv("DELIVERY_PROMOTION_START_AT", "").strip()
-DELIVERY_PROMOTION_END_AT = os.getenv("DELIVERY_PROMOTION_END_AT", "2026-08-22T23:59:59+06:30").strip()
+DELIVERY_PROMOTION_END_AT = os.getenv("DELIVERY_PROMOTION_END_AT", "2026-08-31T23:59:59+06:30").strip()
 PLATFORM_KPAY_QR_IMAGE_URL = os.getenv("PLATFORM_KPAY_QR_IMAGE_URL", "").strip()
 PLATFORM_KPAY_ACCOUNT_NAME = os.getenv("PLATFORM_KPAY_ACCOUNT_NAME", "Blink").strip()
 PLATFORM_KPAY_ACCOUNT_NOTE = os.getenv("PLATFORM_KPAY_ACCOUNT_NOTE", "KPay Payment QR").strip()
@@ -475,6 +475,8 @@ def init_storage() -> None:
                 payment_qr_url TEXT,
                 terms_accepted_at TEXT,
                 terms_version TEXT,
+                app_role TEXT,
+                app_role_updated_at TEXT,
                 app_deleted_at TEXT,
                 app_data_hidden_before TEXT,
                 last_login_at TEXT NOT NULL
@@ -536,6 +538,8 @@ def init_storage() -> None:
         add_column_if_missing(connection, "accounts", "payment_qr_url", "TEXT")
         add_column_if_missing(connection, "accounts", "terms_accepted_at", "TEXT")
         add_column_if_missing(connection, "accounts", "terms_version", "TEXT")
+        add_column_if_missing(connection, "accounts", "app_role", "TEXT")
+        add_column_if_missing(connection, "accounts", "app_role_updated_at", "TEXT")
         add_column_if_missing(connection, "accounts", "app_deleted_at", "TEXT")
         add_column_if_missing(connection, "accounts", "app_data_hidden_before", "TEXT")
         add_column_if_missing(connection, "accounts", "last_login_at", "TEXT NOT NULL DEFAULT ''")
@@ -1717,6 +1721,29 @@ def account_nickname(phone: str | None) -> str | None:
     return clean_optional_text(row["nickname"]) if row else None
 
 
+def normalize_app_role(role: str | None) -> str | None:
+    value = (role or "").strip().lower()
+    return value if value in {"user", "rider"} else None
+
+
+def mark_account_app_role(phone: str | None, role: str | None) -> None:
+    app_role = normalize_app_role(role)
+    if not phone or not app_role:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with connect_db() as connection:
+        connection.execute(
+            """
+            INSERT INTO accounts (phone, app_role, app_role_updated_at, last_login_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(phone) DO UPDATE SET
+                app_role = excluded.app_role,
+                app_role_updated_at = excluded.app_role_updated_at
+            """,
+            (phone, app_role, now, now),
+        )
+
+
 def mark_account_deleted_for_app(phone: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
     with connect_db() as connection:
@@ -1791,7 +1818,7 @@ def load_admin_accounts() -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
             """
-            SELECT phone, email, nickname, payment_qr_url, avatar_url, last_login_at
+            SELECT phone, email, nickname, payment_qr_url, avatar_url, app_role, app_role_updated_at, last_login_at
             FROM accounts
             ORDER BY last_login_at DESC
             """
@@ -1799,6 +1826,23 @@ def load_admin_accounts() -> list[dict]:
     result: list[dict] = []
     for row in rows:
         account = dict(row)
+        phone = account.get("phone")
+        if not normalize_app_role(account.get("app_role")) and phone:
+            with connect_db() as connection:
+                inferred = connection.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM orders WHERE rider_phone = ?) AS rider_orders,
+                        (SELECT COUNT(*) FROM orders WHERE user_phone = ?) AS user_orders,
+                        (SELECT COUNT(*) FROM chat_messages WHERE sender_phone = ? AND sender_type = 'rider') AS rider_messages,
+                        (SELECT COUNT(*) FROM chat_messages WHERE sender_phone = ? AND sender_type = 'user') AS user_messages
+                    """,
+                    (phone, phone, phone, phone),
+                ).fetchone()
+            rider_score = int(inferred["rider_orders"] or 0) + int(inferred["rider_messages"] or 0)
+            user_score = int(inferred["user_orders"] or 0) + int(inferred["user_messages"] or 0)
+            if rider_score or user_score:
+                account["app_role"] = "rider" if rider_score >= user_score else "user"
         account["avatar_url"] = signed_gcs_read_url(account.get("avatar_url"))
         account["payment_qr_url"] = signed_gcs_read_url(account.get("payment_qr_url"))
         result.append(account)
@@ -1848,8 +1892,9 @@ ADMIN_HTML = r'''
     button:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
     button:disabled { cursor: wait; opacity: .64; }
     button.secondary { background: #fff; color: #111827; border-color: #d1d5db; }
-    button.tab { background: #fff; color: #374151; border-color: #d1d5db; }
+    button.tab { display: inline-flex; align-items: center; gap: 6px; background: #fff; color: #374151; border-color: #d1d5db; }
     button.tab.active { background: #111827; color: #fff; border-color: #111827; }
+    .tab-badge { min-width: 18px; padding: 2px 6px; border-radius: 999px; background: #ef4444; color: #fff; font-size: 11px; line-height: 1.2; text-align: center; }
     section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; transition: opacity .18s ease, transform .18s ease; }
     .page { display: none; }
     .page.active { display: block; }
@@ -1875,6 +1920,8 @@ ADMIN_HTML = r'''
     .actions-cell button { width: 100%; margin-bottom: 6px; padding: 8px 6px; white-space: normal; }
     .grid { display: grid; grid-template-columns: 1.4fr .9fr; gap: 16px; align-items: start; }
     .pill { display: inline-flex; border-radius: 999px; padding: 3px 8px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 700; }
+    .role-pill { display: inline-flex; margin-left: 6px; padding: 2px 7px; border-radius: 999px; background: #ecfdf5; color: #047857; font-size: 11px; font-weight: 700; vertical-align: middle; }
+    .role-pill.rider { background: #fff7ed; color: #c2410c; }
     .muted { color: #6b7280; }
     .detail { display: grid; gap: 10px; }
     .detail img { max-width: 100%; max-height: 260px; object-fit: contain; border-radius: 8px; background: #f3f4f6; }
@@ -2050,6 +2097,7 @@ ADMIN_HTML = r'''
   <script>
     let state = { orders: [], accounts: [], messages: [], payments: [] };
     let currentPage = "payments";
+    let tabBadges = { payments: 0, orders: 0, accounts: 0, settlements: 0, service: 0 };
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
@@ -2063,6 +2111,13 @@ ADMIN_HTML = r'''
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
     const pages = ["payments","orders","accounts","settlements","service"];
+    const pageTitles = {
+      payments: "货到付款订单",
+      orders: "货费已付款订单",
+      accounts: "账号资料",
+      settlements: "结算",
+      service: "Customer Service"
+    };
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
     const settlementOptions = ["pending","paid_to_user","paid_to_rider","completed"];
@@ -2114,6 +2169,15 @@ ADMIN_HTML = r'''
     function accountLoginHtml(phone, fallbackEmail = "") {
       return `${escapeHtml(accountLoginLabel(phone, fallbackEmail))}<br><span class="muted">${accountEmailHtml(phone, fallbackEmail)}</span>`;
     }
+    function appRoleLabel(role) {
+      if (role === "rider") return "骑手";
+      if (role === "user") return "用户";
+      return "未知";
+    }
+    function appRoleHtml(role) {
+      const value = role === "rider" ? "rider" : "user";
+      return `<span class="role-pill ${value}">${escapeHtml(appRoleLabel(role))}</span>`;
+    }
     function displayAccount(phone, fallbackName = "", fallbackEmail = "") {
       const name = accountName(phone, fallbackName);
       if (!phone) return escapeHtml(name || "未接单");
@@ -2143,18 +2207,34 @@ ADMIN_HTML = r'''
       return Number.isNaN(time) ? 0 : time;
     }
     function identitySets(data = state) {
+      const settlementEvents = [];
+      (data.orders || []).forEach(order => {
+        ["user_settlement_requested_at","rider_settlement_requested_at","user_settlement_paid_at","rider_settlement_paid_at"].forEach(field => {
+          if (order[field]) settlementEvents.push(`${order.id}:${field}:${order[field]}`);
+        });
+      });
       return {
         orders: new Set((data.orders || []).map(item => item.id).filter(Boolean)),
         payments: new Set((data.payments || []).map(item => item.id).filter(Boolean)),
-        messages: new Set((data.messages || []).map(item => item.id).filter(Boolean))
+        accounts: new Set((data.accounts || []).map(item => item.phone).filter(Boolean)),
+        messages: new Set((data.messages || []).map(item => item.id).filter(Boolean)),
+        settlements: new Set(settlementEvents)
       };
     }
     function rememberNewItems(nextState) {
-      if (!hasLoadedOnce) return { orders: 0, payments: 0, messages: 0 };
+      if (!hasLoadedOnce) return { orders: 0, payments: 0, accounts: 0, settlements: 0, messages: 0 };
       const previous = identitySets();
       const freshOrders = (nextState.orders || []).filter(item => item.id && !previous.orders.has(item.id));
       const freshPayments = (nextState.payments || []).filter(item => item.id && !previous.payments.has(item.id));
+      const freshAccounts = (nextState.accounts || []).filter(item => item.phone && !previous.accounts.has(item.phone));
       const freshMessages = (nextState.messages || []).filter(item => item.id && !previous.messages.has(item.id));
+      const nextSettlementEvents = Array.from(identitySets(nextState).settlements);
+      const freshSettlements = nextSettlementEvents.filter(item => !previous.settlements.has(item));
+      freshOrders.forEach(order => incrementTabBadge(order.payment_mode === "prepaid" ? "orders" : "payments"));
+      freshPayments.forEach(payment => incrementTabBadge(payment.payment_mode === "prepaid" ? "orders" : "payments"));
+      if (freshAccounts.length) incrementTabBadge("accounts", freshAccounts.length);
+      if (freshSettlements.length) incrementTabBadge("settlements", freshSettlements.length);
+      if (freshMessages.length) incrementTabBadge("service", freshMessages.length);
       highlightedIds = new Set([
         ...freshOrders.map(item => `order:${item.id}`),
         ...freshPayments.map(item => `payment:${item.id}`),
@@ -2166,7 +2246,14 @@ ADMIN_HTML = r'''
           render();
         }, 9000);
       }
-      return { orders: freshOrders.length, payments: freshPayments.length, messages: freshMessages.length };
+      updateTabBadges();
+      return {
+        orders: freshOrders.length,
+        payments: freshPayments.length,
+        accounts: freshAccounts.length,
+        settlements: freshSettlements.length,
+        messages: freshMessages.length
+      };
     }
     function rowClass(kind, id) {
       return highlightedIds.has(`${kind}:${id}`) ? ` class="is-new"` : "";
@@ -2182,10 +2269,28 @@ ADMIN_HTML = r'''
     }
     function showPage(page, keepDetail = false) {
       currentPage = page;
+      clearTabBadge(page);
       if (!keepDetail) hideDetail();
       pages.forEach(name => {
         document.getElementById(`page-${name}`)?.classList.toggle("active", name === page);
         document.getElementById(`tab-${name}`)?.classList.toggle("active", name === page);
+      });
+      updateTabBadges();
+    }
+    function incrementTabBadge(page, count = 1) {
+      if (!pages.includes(page) || page === currentPage) return;
+      tabBadges[page] = (tabBadges[page] || 0) + count;
+    }
+    function clearTabBadge(page) {
+      if (!pages.includes(page)) return;
+      tabBadges[page] = 0;
+    }
+    function updateTabBadges() {
+      pages.forEach(page => {
+        const button = document.getElementById(`tab-${page}`);
+        if (!button) return;
+        const count = tabBadges[page] || 0;
+        button.innerHTML = `${escapeHtml(pageTitles[page] || page)}${count ? ` <span class="tab-badge">${count > 99 ? "99+" : count}</span>` : ""}`;
       });
     }
     function hideDetail() {
@@ -2336,11 +2441,13 @@ ADMIN_HTML = r'''
         if (activeDetailId && state.orders.some(order => order.id === activeDetailId)) {
           showDetail(activeDetailId);
         }
-        const freshCount = fresh.orders + fresh.payments + fresh.messages;
+        const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.settlements + fresh.messages;
         if (freshCount) {
           const parts = [];
           if (fresh.orders) parts.push(`${fresh.orders} 个新订单`);
           if (fresh.payments) parts.push(`${fresh.payments} 个新付款`);
+          if (fresh.accounts) parts.push(`${fresh.accounts} 个新账号`);
+          if (fresh.settlements) parts.push(`${fresh.settlements} 条新结算`);
           if (fresh.messages) parts.push(`${fresh.messages} 条新消息`);
           showToast(parts.join(" / "));
         } else if (!silent) {
@@ -2400,7 +2507,7 @@ ADMIN_HTML = r'''
       accountsTable.innerHTML = accounts.map(account => `
         <tr class="account-row ${account.phone === selectedAccountPhone ? "active" : ""}" onclick="selectAccount(${jsValue(account.phone)})">
           <td>${account.avatar_url ? `<img src="${escapeHtml(account.avatar_url)}" alt="头像" style="width:44px;height:44px;object-fit:cover;border-radius:50%;background:#f3f4f6;">` : ""}</td>
-          <td>${escapeHtml(account.nickname || "")}</td>
+          <td>${escapeHtml(account.nickname || "")}${appRoleHtml(account.app_role)}</td>
           <td>${account.payment_qr_url ? `<a href="${escapeHtml(account.payment_qr_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img src="${escapeHtml(account.payment_qr_url)}" alt="收款码" title="点击查看收款码" style="width:54px;height:54px;object-fit:cover;border-radius:8px;background:#f3f4f6;border:1px solid #e5e7eb;"></a>` : `<span class="muted">未上传</span>`}</td>
           <td>${accountLoginHtml(account.phone, account.email)}</td>
           <td>${account.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</td>
@@ -2668,7 +2775,7 @@ ADMIN_HTML = r'''
         <section>
           <div class="row"><b>登录邮箱</b><span>${escapeHtml(accountLoginLabel(selectedAccountPhone, account?.email || ""))}</span></div>
           <div class="row"><b>邮箱</b><span>${accountEmail(selectedAccountPhone, account?.email || "") ? escapeHtml(accountEmail(selectedAccountPhone, account?.email || "")) : "未绑定"}</span></div>
-          <div class="row"><b>昵称</b><span>${escapeHtml(account?.nickname || "")}</span></div>
+          <div class="row"><b>昵称</b><span>${escapeHtml(account?.nickname || "")}${appRoleHtml(account?.app_role)}</span></div>
           <div class="row"><b>最近登录</b><span>${account?.last_login_at ? escapeHtml(new Date(account.last_login_at).toLocaleString()) : ""}</span></div>
         </section>
         <section>
@@ -4052,7 +4159,10 @@ def admin_update_order(
 
 
 @app.post("/auth/login", response_model=LoginResponse)
-def login(request: LoginRequest) -> LoginResponse:
+def login(
+    request: LoginRequest,
+    x_blink_app_role: str | None = Header(default=None, alias="X-Blink-App-Role"),
+) -> LoginResponse:
     phone = normalize_myanmar_phone(request.phone)
     if not is_test_login(phone, request.code):
         stored = sms_codes.get(phone)
@@ -4066,6 +4176,7 @@ def login(request: LoginRequest) -> LoginResponse:
 
     sms_codes.pop(phone, None)
     profile = save_account(phone, nickname=None if load_account_profile(phone) else "快送用户")
+    mark_account_app_role(phone, x_blink_app_role)
 
     return LoginResponse(
         token=f"dev-token-{phone}",
@@ -4074,13 +4185,17 @@ def login(request: LoginRequest) -> LoginResponse:
 
 
 @app.post("/auth/oauth-login", response_model=LoginResponse)
-def oauth_login(request: OAuthLoginRequest) -> LoginResponse:
+def oauth_login(
+    request: OAuthLoginRequest,
+    x_blink_app_role: str | None = Header(default=None, alias="X-Blink-App-Role"),
+) -> LoginResponse:
     subject, email, name = require_oauth_identity(request)
     account_id = oauth_account_id(request.provider, subject)
     fallback_name = "Apple 用户" if request.provider == "apple" else "Gmail 用户"
     existing = load_account_profile(account_id)
     nickname = existing.nickname if existing else clean_optional_text(name) or clean_optional_text(email) or fallback_name
     profile = save_account(account_id, email=email, nickname=nickname)
+    mark_account_app_role(account_id, x_blink_app_role)
 
     return LoginResponse(
         token=f"dev-token-{account_id}",
@@ -4089,8 +4204,12 @@ def oauth_login(request: OAuthLoginRequest) -> LoginResponse:
 
 
 @app.get("/account/profile", response_model=UserProfile)
-def get_account_profile(authorization: str | None = Header(default=None)) -> UserProfile:
+def get_account_profile(
+    authorization: str | None = Header(default=None),
+    x_blink_app_role: str | None = Header(default=None, alias="X-Blink-App-Role"),
+) -> UserProfile:
     phone = require_account_phone(authorization)
+    mark_account_app_role(phone, x_blink_app_role)
     profile = load_account_profile(phone)
     if profile:
         return profile
@@ -4101,8 +4220,10 @@ def get_account_profile(authorization: str | None = Header(default=None)) -> Use
 def update_account_profile(
     request: UpdateProfileRequest,
     authorization: str | None = Header(default=None),
+    x_blink_app_role: str | None = Header(default=None, alias="X-Blink-App-Role"),
 ) -> UserProfile:
     phone = require_account_phone(authorization)
+    mark_account_app_role(phone, x_blink_app_role)
     nickname = clean_optional_text(request.nickname)
     avatar_url = clean_optional_text(request.avatar_url)
     payment_qr_url = clean_optional_text(request.payment_qr_url)
@@ -4118,8 +4239,12 @@ def update_account_profile(
 
 
 @app.post("/account/terms", response_model=UserProfile)
-def accept_account_terms(authorization: str | None = Header(default=None)) -> UserProfile:
+def accept_account_terms(
+    authorization: str | None = Header(default=None),
+    x_blink_app_role: str | None = Header(default=None, alias="X-Blink-App-Role"),
+) -> UserProfile:
     phone = require_account_phone(authorization)
+    mark_account_app_role(phone, x_blink_app_role)
     return save_account(
         phone,
         terms_accepted_at=datetime.now(timezone.utc).isoformat(),
@@ -4275,6 +4400,7 @@ def create_chat_message(
     sender_phone = phone_from_authorization(authorization)
     if not sender_phone and request.sender_phone:
         sender_phone = normalize_chat_sender_account(request.sender_phone)
+    mark_account_app_role(sender_phone, request.sender_type)
     text = request.text.strip()
     image_url = request.image_url.strip() if request.image_url else None
     sender_name = account_nickname(sender_phone) or request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
@@ -4318,6 +4444,7 @@ def create_chat_message(
 @app.get("/orders", response_model=list[OrderResponse])
 def list_orders(authorization: str | None = Header(default=None)) -> list[OrderResponse]:
     user_phone = require_account_phone(authorization)
+    mark_account_app_role(user_phone, "user")
     return [order_for_response(order) for order in load_user_orders(user_phone)]
 
 
@@ -4328,6 +4455,7 @@ def get_delivery_promotion(
     authorization: str | None = Header(default=None),
 ) -> DeliveryPromotionResponse:
     user_phone = require_account_phone(authorization)
+    mark_account_app_role(user_phone, "user")
     return delivery_promotion_quote(user_phone, distance_km, invite_email)
 
 
@@ -4337,6 +4465,7 @@ def create_prepaid_payment(
     authorization: str | None = Header(default=None),
 ) -> PrepaidPaymentResponse:
     user_phone = require_account_phone(authorization)
+    mark_account_app_role(user_phone, "user")
     payment_proof_url = clean_optional_text(request.payment_proof_url)
     if not payment_proof_url:
         raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
@@ -4373,6 +4502,7 @@ async def create_dinger_payment(
     authorization: str | None = Header(default=None),
 ) -> PrepaidPaymentResponse:
     user_phone = require_account_phone(authorization)
+    mark_account_app_role(user_phone, "user")
     payment_id = str(uuid4())
     try:
         dinger_response = await create_dinger_charge(payment_id, request, user_phone)
@@ -4445,6 +4575,7 @@ def get_prepaid_payment(
     authorization: str | None = Header(default=None),
 ) -> PrepaidPaymentResponse:
     user_phone = require_account_phone(authorization)
+    mark_account_app_role(user_phone, "user")
     payment = load_prepaid_payment(payment_id)
     if not payment:
         raise HTTPException(status_code=404, detail="付款记录不存在")
@@ -4459,6 +4590,7 @@ def create_order(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     user_phone = require_account_phone(authorization)
+    mark_account_app_role(user_phone, "user")
     original_delivery_fee = estimate_price(request.distance_km, request.weight_kg)
     kpay_transaction_id = clean_optional_text(request.kpay_transaction_id)
     goods_image_url = clean_optional_text(request.goods_image_url)
@@ -4546,6 +4678,7 @@ def get_order(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     user_phone = require_account_phone(authorization)
+    mark_account_app_role(user_phone, "user")
     release_expired_rider_deposit_orders()
     record = load_order_record(order_id)
     if record:
@@ -4565,6 +4698,7 @@ def request_user_settlement(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     user_phone = require_account_phone(authorization)
+    mark_account_app_role(user_phone, "user")
     record = load_order_record(order_id)
     if record:
         order, stored_user_phone, rider_phone = record
@@ -4602,6 +4736,7 @@ def request_user_settlement(
 @app.get("/rider/orders", response_model=list[OrderResponse])
 def list_rider_orders(authorization: str | None = Header(default=None)) -> list[OrderResponse]:
     rider_phone = require_account_phone(authorization)
+    mark_account_app_role(rider_phone, "rider")
     return [order_for_response(order) for order in load_rider_orders(rider_phone)]
 
 
@@ -4612,6 +4747,7 @@ def accept_order(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
+    mark_account_app_role(rider_phone, "rider")
     release_expired_rider_deposit_orders()
     record = load_order_record(order_id)
     if record:
@@ -4642,6 +4778,7 @@ def mark_rider_deposit_transferred(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
+    mark_account_app_role(rider_phone, "rider")
     release_expired_rider_deposit_orders()
     record = load_order_record(order_id)
     if record:
@@ -4674,6 +4811,7 @@ def update_rider_order_status(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
+    mark_account_app_role(rider_phone, "rider")
     release_expired_rider_deposit_orders()
     allowed = ["picking_up", "delivering", "completed"]
     if request.status not in allowed:
@@ -4704,6 +4842,7 @@ def cancel_rider_order(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
+    mark_account_app_role(rider_phone, "rider")
     record = load_order_record(order_id)
     if record:
         order, user_phone, stored_rider_phone = record
@@ -4754,6 +4893,7 @@ def request_rider_settlement(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
+    mark_account_app_role(rider_phone, "rider")
     record = load_order_record(order_id)
     if record:
         order, user_phone, stored_rider_phone = record
@@ -4793,6 +4933,7 @@ def update_rider_location(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
+    mark_account_app_role(rider_phone, "rider")
     record = load_order_record(order_id)
     if record:
         order, user_phone, stored_rider_phone = record
@@ -4820,6 +4961,7 @@ def cancel_order(
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     user_phone = require_account_phone(authorization)
+    mark_account_app_role(user_phone, "user")
     record = load_order_record(order_id)
     if record:
         order, stored_user_phone, rider_phone = record
