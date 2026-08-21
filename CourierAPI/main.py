@@ -48,7 +48,7 @@ PLATFORM_KPAY_QR_IMAGE_URL = os.getenv(
 ).strip()
 PLATFORM_KPAY_ACCOUNT_NAME = os.getenv("PLATFORM_KPAY_ACCOUNT_NAME", "Blink").strip()
 PLATFORM_KPAY_ACCOUNT_NOTE = os.getenv("PLATFORM_KPAY_ACCOUNT_NOTE", "KPay Payment QR").strip()
-MAX_GOODS_AMOUNT_MMK = float(os.getenv("MAX_GOODS_AMOUNT_MMK", "200000") or 200000)
+MAX_GOODS_AMOUNT_MMK = float(os.getenv("MAX_GOODS_AMOUNT_MMK", "300000") or 300000)
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
 
@@ -90,7 +90,7 @@ class PlatformPaymentConfigResponse(BaseModel):
     kpay_qr_image_url: str | None = None
     kpay_account_name: str | None = None
     kpay_account_note: str | None = None
-    max_goods_amount_mmk: float = 200000
+    max_goods_amount_mmk: float = 300000
 
 
 class UserProfile(BaseModel):
