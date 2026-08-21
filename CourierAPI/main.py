@@ -2172,9 +2172,10 @@ ADMIN_HTML = r'''
     function appRoleLabel(role) {
       if (role === "rider") return "骑手";
       if (role === "user") return "用户";
-      return "未知";
+      return "";
     }
     function appRoleHtml(role) {
+      if (role !== "rider" && role !== "user") return "";
       const value = role === "rider" ? "rider" : "user";
       return `<span class="role-pill ${value}">${escapeHtml(appRoleLabel(role))}</span>`;
     }
