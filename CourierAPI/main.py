@@ -57,6 +57,14 @@ ANDROID_RIDER_LATEST_VERSION_CODE = int(os.getenv("ANDROID_RIDER_LATEST_VERSION_
 ANDROID_RIDER_LATEST_VERSION_NAME = os.getenv("ANDROID_RIDER_LATEST_VERSION_NAME", "1.0").strip()
 ANDROID_RIDER_APK_URL = os.getenv("ANDROID_RIDER_APK_URL", "").strip()
 ANDROID_RIDER_FORCE_UPDATE = os.getenv("ANDROID_RIDER_FORCE_UPDATE", "false").lower() in {"1", "true", "yes", "on"}
+IOS_USER_LATEST_BUILD_NUMBER = int(os.getenv("IOS_USER_LATEST_BUILD_NUMBER", "1") or 1)
+IOS_USER_LATEST_VERSION_NAME = os.getenv("IOS_USER_LATEST_VERSION_NAME", "1.0").strip()
+IOS_USER_APP_STORE_URL = os.getenv("IOS_USER_APP_STORE_URL", "").strip()
+IOS_USER_FORCE_UPDATE = os.getenv("IOS_USER_FORCE_UPDATE", "false").lower() in {"1", "true", "yes", "on"}
+IOS_RIDER_LATEST_BUILD_NUMBER = int(os.getenv("IOS_RIDER_LATEST_BUILD_NUMBER", "1") or 1)
+IOS_RIDER_LATEST_VERSION_NAME = os.getenv("IOS_RIDER_LATEST_VERSION_NAME", "1.0").strip()
+IOS_RIDER_APP_STORE_URL = os.getenv("IOS_RIDER_APP_STORE_URL", "").strip()
+IOS_RIDER_FORCE_UPDATE = os.getenv("IOS_RIDER_FORCE_UPDATE", "false").lower() in {"1", "true", "yes", "on"}
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
 
@@ -2038,8 +2046,7 @@ ADMIN_HTML = r'''
       </select>
       <button id="autoRefreshButton" class="auto-toggle" onclick="toggleAutoRefresh()">自动同步中</button>
       <button id="refreshButton" onclick="loadData()">刷新</button>
-      <button id="tab-payments" class="tab active" onclick="showPage('payments')">货到付款订单</button>
-      <button id="tab-orders" class="tab" onclick="showPage('orders')">货费已付款订单</button>
+      <button id="tab-payments" class="tab active" onclick="showPage('payments')">订单</button>
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
       <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
       <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
@@ -2048,25 +2055,14 @@ ADMIN_HTML = r'''
   <main>
     <section class="summary" id="summary"></section>
     <section id="page-payments" class="page active">
-      <h2>货到付款订单</h2>
+      <h2>订单</h2>
       <table class="orders-table">
         <colgroup>
           <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
           <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
         </colgroup>
-        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>送货费付款</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>付款截图</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
         <tbody id="codOrders"></tbody>
-      </table>
-    </section>
-    <section id="page-orders" class="page">
-      <h2>货费已付款订单</h2>
-      <table class="orders-table">
-        <colgroup>
-          <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
-          <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
-        </colgroup>
-        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>用户付款</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
-        <tbody id="orders"></tbody>
       </table>
     </section>
     <section id="detailSection" class="hidden">
@@ -2133,10 +2129,9 @@ ADMIN_HTML = r'''
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
-    const pages = ["payments","orders","accounts","settlements","service"];
+    const pages = ["payments","accounts","settlements","service"];
     const pageTitles = {
-      payments: "货到付款订单",
-      orders: "货费已付款订单",
+      payments: "订单",
       accounts: "账号资料",
       settlements: "结算",
       service: "Customer Service"
@@ -2254,8 +2249,8 @@ ADMIN_HTML = r'''
       const freshMessages = (nextState.messages || []).filter(item => item.id && !previous.messages.has(item.id));
       const nextSettlementEvents = Array.from(identitySets(nextState).settlements);
       const freshSettlements = nextSettlementEvents.filter(item => !previous.settlements.has(item));
-      freshOrders.forEach(order => incrementTabBadge(order.payment_mode === "prepaid" ? "orders" : "payments"));
-      freshPayments.forEach(payment => incrementTabBadge(payment.payment_mode === "prepaid" ? "orders" : "payments"));
+      freshOrders.forEach(() => incrementTabBadge("payments"));
+      freshPayments.forEach(() => incrementTabBadge("payments"));
       if (freshAccounts.length) incrementTabBadge("accounts", freshAccounts.length);
       if (freshSettlements.length) incrementTabBadge("settlements", freshSettlements.length);
       if (freshMessages.length) incrementTabBadge("service", freshMessages.length);
@@ -2416,28 +2411,9 @@ ADMIN_HTML = r'''
     }
 
     function ensureOrderTables() {
-      const codSection = document.getElementById("page-payments");
-      let prepaidSection = document.getElementById("page-orders");
-      if (!prepaidSection && codSection) {
-        prepaidSection = document.createElement("section");
-        prepaidSection.id = "page-orders";
-        prepaidSection.className = "page";
-        prepaidSection.innerHTML = `
-          <h2>货费已付款订单</h2>
-          <table class="orders-table">
-            <colgroup>
-              <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
-              <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
-            </colgroup>
-            <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>用户付款</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
-            <tbody id="orders"></tbody>
-          </table>
-        `;
-        codSection.insertAdjacentElement("afterend", prepaidSection);
-      }
       return {
         cod: document.getElementById("codOrders"),
-        prepaid: document.getElementById("orders")
+        prepaid: document.getElementById("codOrders")
       };
     }
 
@@ -2487,8 +2463,8 @@ ADMIN_HTML = r'''
     function pendingPaymentRow(payment, prepaid) {
       return `
         <tr${rowClass("payment", payment.id)}>
-          <td><strong>订单 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
-          <td>${displayAccount(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
+          <td><strong>订单 #${escapeHtml(payment.id.slice(0, 6).toUpperCase())}</strong><br><span class="pill">${label(payment.payment_mode)}</span><br><span class="muted">${escapeHtml(new Date(payment.created_at).toLocaleString())}</span></td>
+          <td><span class="pill">${label(payment.payment_mode)}</span><br>${displayAccount(payment.user_phone)}<br><span class="muted">用户已上传付款截图，等待后台确认后才能下单</span></td>
           <td><span class="pill">${label(payment.status)}</span><br><span class="muted">${label(payment.payment_mode)}</span></td>
           <td>${prepaid ? "送货费" : "配送费"} ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
@@ -2501,8 +2477,8 @@ ADMIN_HTML = r'''
     function orderTableRow(order, prepaid) {
       return `
         <tr${rowClass("order", order.id)} onclick="showDetail('${order.id}')">
-          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
+          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="pill">${label(order.payment_mode)}</span><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td><span class="pill">${label(order.payment_mode)}</span><br>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
           <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
@@ -2577,29 +2553,19 @@ ADMIN_HTML = r'''
       const q = document.getElementById("q").value.toLowerCase();
       const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q) && orderMatchesFilters(order)));
       const accounts = filteredAccounts();
-      const codOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "cod"));
-      const prepaidOrderRows = sortByDateDesc(orders.filter(order => order.payment_mode === "prepaid"));
       const usedPaymentIds = new Set((state.orders || []).map(order => order.kpay_transaction_id).filter(Boolean));
       const isPrepaidPayment = payment => payment.payment_mode === "prepaid";
-      const pendingCodPayments = sortByDateDesc((state.payments || []).filter(payment =>
-        !isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q) && paymentMatchesFilters(payment)
-      ));
-      const pendingPrepaidPayments = sortByDateDesc((state.payments || []).filter(payment =>
-        isPrepaidPayment(payment) && !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q) && paymentMatchesFilters(payment)
+      const pendingPayments = sortByDateDesc((state.payments || []).filter(payment =>
+        !usedPaymentIds.has(payment.id) && JSON.stringify(payment).toLowerCase().includes(q) && paymentMatchesFilters(payment)
       ));
       renderSummary(state.orders || [], state.payments || []);
-      const codRows = sortByDateDesc([
-        ...pendingCodPayments.map(payment => ({ kind: "payment", payment, created_at: payment.created_at })),
-        ...codOrderRows.map(order => ({ kind: "order", order, created_at: order.created_at }))
-      ]);
-      const prepaidRows = sortByDateDesc([
-        ...pendingPrepaidPayments.map(payment => ({ kind: "payment", payment, created_at: payment.created_at })),
-        ...prepaidOrderRows.map(order => ({ kind: "order", order, created_at: order.created_at }))
+      const orderRows = sortByDateDesc([
+        ...pendingPayments.map(payment => ({ kind: "payment", payment, created_at: payment.created_at })),
+        ...orders.map(order => ({ kind: "order", order, created_at: order.created_at }))
       ]);
       const tables = ensureOrderTables();
-      const codOrdersTable = tables.cod;
-      const prepaidOrdersTable = tables.prepaid;
-      if (!codOrdersTable || !prepaidOrdersTable) {
+      const ordersTable = tables.cod;
+      if (!ordersTable) {
         console.error("后台订单表格节点缺失，请刷新页面。");
         const activePage = document.querySelector(".page.active");
         if (activePage) {
@@ -2608,17 +2574,11 @@ ADMIN_HTML = r'''
         return;
       }
 
-      codOrdersTable.innerHTML = codRows.map(row =>
-        row.kind === "payment" ? pendingPaymentRow(row.payment, false) : orderTableRow(row.order, false)
+      ordersTable.innerHTML = orderRows.map(row =>
+        row.kind === "payment" ? pendingPaymentRow(row.payment, isPrepaidPayment(row.payment)) : orderTableRow(row.order, row.order.payment_mode === "prepaid")
       ).join("");
-      if (!codRows.length) {
-        codOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货到付款订单</td></tr>`;
-      }
-      prepaidOrdersTable.innerHTML = prepaidRows.map(row =>
-        row.kind === "payment" ? pendingPaymentRow(row.payment, true) : orderTableRow(row.order, true)
-      ).join("");
-      if (!prepaidRows.length) {
-        prepaidOrdersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无货费已付款订单</td></tr>`;
+      if (!orderRows.length) {
+        ordersTable.innerHTML = `<tr><td colspan="8" class="muted">暂无订单</td></tr>`;
       }
       renderAccountRows(accounts);
       renderAccountDetail();
@@ -3989,8 +3949,20 @@ def get_platform_payment_config() -> PlatformPaymentConfigResponse:
 
 
 @app.get("/config/app-update", response_model=AppUpdateConfigResponse)
-def get_app_update_config(app_type: Literal["user", "rider"] = Query(alias="app")) -> AppUpdateConfigResponse:
-    if app_type == "rider":
+def get_app_update_config(
+    app_type: Literal["user", "rider", "ios_user", "ios_rider"] = Query(alias="app"),
+) -> AppUpdateConfigResponse:
+    if app_type == "ios_user":
+        version_code = IOS_USER_LATEST_BUILD_NUMBER
+        version_name = IOS_USER_LATEST_VERSION_NAME
+        download_url = IOS_USER_APP_STORE_URL
+        force_update = IOS_USER_FORCE_UPDATE
+    elif app_type == "ios_rider":
+        version_code = IOS_RIDER_LATEST_BUILD_NUMBER
+        version_name = IOS_RIDER_LATEST_VERSION_NAME
+        download_url = IOS_RIDER_APP_STORE_URL
+        force_update = IOS_RIDER_FORCE_UPDATE
+    elif app_type == "rider":
         version_code = ANDROID_RIDER_LATEST_VERSION_CODE
         version_name = ANDROID_RIDER_LATEST_VERSION_NAME
         download_url = ANDROID_RIDER_APK_URL
