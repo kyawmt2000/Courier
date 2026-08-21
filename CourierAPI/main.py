@@ -48,6 +48,7 @@ PLATFORM_KPAY_QR_IMAGE_URL = os.getenv(
 ).strip()
 PLATFORM_KPAY_ACCOUNT_NAME = os.getenv("PLATFORM_KPAY_ACCOUNT_NAME", "Blink").strip()
 PLATFORM_KPAY_ACCOUNT_NOTE = os.getenv("PLATFORM_KPAY_ACCOUNT_NOTE", "KPay Payment QR").strip()
+MAX_GOODS_AMOUNT_MMK = float(os.getenv("MAX_GOODS_AMOUNT_MMK", "200000") or 200000)
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
 
@@ -89,6 +90,7 @@ class PlatformPaymentConfigResponse(BaseModel):
     kpay_qr_image_url: str | None = None
     kpay_account_name: str | None = None
     kpay_account_note: str | None = None
+    max_goods_amount_mmk: float = 200000
 
 
 class UserProfile(BaseModel):
@@ -3966,6 +3968,7 @@ def get_platform_payment_config() -> PlatformPaymentConfigResponse:
         kpay_qr_image_url=clean_optional_text(signed_gcs_read_url(PLATFORM_KPAY_QR_IMAGE_URL)),
         kpay_account_name=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NAME),
         kpay_account_note=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NOTE),
+        max_goods_amount_mmk=MAX_GOODS_AMOUNT_MMK,
     )
 
 
@@ -4475,6 +4478,8 @@ def create_prepaid_payment(
     payment_proof_url = clean_optional_text(request.payment_proof_url)
     if not payment_proof_url:
         raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
+    if request.goods_amount > MAX_GOODS_AMOUNT_MMK:
+        raise HTTPException(status_code=400, detail=f"货物价格不能超过 {MAX_GOODS_AMOUNT_MMK:,.0f} MMK")
     original_delivery_fee = estimate_price(request.distance_km, 1)
     promotion = delivery_promotion_quote(user_phone, request.distance_km, request.promo_invite_email)
     promotion_applied = promotion.active and promotion.eligible
@@ -4604,6 +4609,8 @@ def create_order(
 
     if request.goods_amount <= 0:
         raise HTTPException(status_code=400, detail="请填写货物价格")
+    if request.goods_amount > MAX_GOODS_AMOUNT_MMK:
+        raise HTTPException(status_code=400, detail=f"货物价格不能超过 {MAX_GOODS_AMOUNT_MMK:,.0f} MMK")
 
     if not goods_image_url:
         raise HTTPException(status_code=400, detail="请上传商品图片")
