@@ -49,6 +49,14 @@ PLATFORM_KPAY_QR_IMAGE_URL = os.getenv(
 PLATFORM_KPAY_ACCOUNT_NAME = os.getenv("PLATFORM_KPAY_ACCOUNT_NAME", "Blink").strip()
 PLATFORM_KPAY_ACCOUNT_NOTE = os.getenv("PLATFORM_KPAY_ACCOUNT_NOTE", "KPay Payment QR").strip()
 MAX_GOODS_AMOUNT_MMK = float(os.getenv("MAX_GOODS_AMOUNT_MMK", "200000") or 200000)
+ANDROID_USER_LATEST_VERSION_CODE = int(os.getenv("ANDROID_USER_LATEST_VERSION_CODE", "1") or 1)
+ANDROID_USER_LATEST_VERSION_NAME = os.getenv("ANDROID_USER_LATEST_VERSION_NAME", "1.0").strip()
+ANDROID_USER_APK_URL = os.getenv("ANDROID_USER_APK_URL", "").strip()
+ANDROID_USER_FORCE_UPDATE = os.getenv("ANDROID_USER_FORCE_UPDATE", "false").lower() in {"1", "true", "yes", "on"}
+ANDROID_RIDER_LATEST_VERSION_CODE = int(os.getenv("ANDROID_RIDER_LATEST_VERSION_CODE", "1") or 1)
+ANDROID_RIDER_LATEST_VERSION_NAME = os.getenv("ANDROID_RIDER_LATEST_VERSION_NAME", "1.0").strip()
+ANDROID_RIDER_APK_URL = os.getenv("ANDROID_RIDER_APK_URL", "").strip()
+ANDROID_RIDER_FORCE_UPDATE = os.getenv("ANDROID_RIDER_FORCE_UPDATE", "false").lower() in {"1", "true", "yes", "on"}
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
 
@@ -91,6 +99,14 @@ class PlatformPaymentConfigResponse(BaseModel):
     kpay_account_name: str | None = None
     kpay_account_note: str | None = None
     max_goods_amount_mmk: float = 200000
+
+
+class AppUpdateConfigResponse(BaseModel):
+    latest_version_code: int = 1
+    latest_version_name: str = "1.0"
+    download_url: str | None = None
+    force_update: bool = False
+    message: str | None = None
 
 
 class UserProfile(BaseModel):
@@ -3969,6 +3985,28 @@ def get_platform_payment_config() -> PlatformPaymentConfigResponse:
         kpay_account_name=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NAME),
         kpay_account_note=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NOTE),
         max_goods_amount_mmk=MAX_GOODS_AMOUNT_MMK,
+    )
+
+
+@app.get("/config/app-update", response_model=AppUpdateConfigResponse)
+def get_app_update_config(app_type: Literal["user", "rider"] = Query(alias="app")) -> AppUpdateConfigResponse:
+    if app_type == "rider":
+        version_code = ANDROID_RIDER_LATEST_VERSION_CODE
+        version_name = ANDROID_RIDER_LATEST_VERSION_NAME
+        download_url = ANDROID_RIDER_APK_URL
+        force_update = ANDROID_RIDER_FORCE_UPDATE
+    else:
+        version_code = ANDROID_USER_LATEST_VERSION_CODE
+        version_name = ANDROID_USER_LATEST_VERSION_NAME
+        download_url = ANDROID_USER_APK_URL
+        force_update = ANDROID_USER_FORCE_UPDATE
+
+    return AppUpdateConfigResponse(
+        latest_version_code=version_code,
+        latest_version_name=version_name,
+        download_url=clean_optional_text(download_url),
+        force_update=force_update,
+        message="发现新版本，请更新后继续使用。" if force_update else "发现新版本，建议现在更新。",
     )
 
 
