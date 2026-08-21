@@ -1843,6 +1843,8 @@ def load_admin_accounts() -> list[dict]:
             user_score = int(inferred["user_orders"] or 0) + int(inferred["user_messages"] or 0)
             if rider_score or user_score:
                 account["app_role"] = "rider" if rider_score >= user_score else "user"
+        if not normalize_app_role(account.get("app_role")):
+            account["app_role"] = "user"
         account["avatar_url"] = signed_gcs_read_url(account.get("avatar_url"))
         account["payment_qr_url"] = signed_gcs_read_url(account.get("payment_qr_url"))
         result.append(account)
