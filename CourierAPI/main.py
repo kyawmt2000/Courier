@@ -256,6 +256,7 @@ class OrderResponse(BaseModel):
     rider_deposit_status: PaymentStatus = "unpaid"
     rider_deposit_due_at: datetime | None = None
     rider_deposit_submitted_at: datetime | None = None
+    rider_deposit_proof_url: str | None = None
     settlement_status: SettlementStatus = "pending"
     kpay_transaction_id: str | None = None
     payment_proof_url: str | None = None
@@ -382,6 +383,10 @@ class AdminUpdateOrderRequest(BaseModel):
     user_payment_status: PaymentStatus | None = None
     rider_deposit_status: PaymentStatus | None = None
     settlement_status: SettlementStatus | None = None
+
+
+class RiderDepositTransferRequest(BaseModel):
+    payment_proof_url: str | None = None
 
 
 class AdminUpdatePrepaidPaymentRequest(BaseModel):
@@ -1168,6 +1173,7 @@ def order_for_response(order: OrderResponse) -> OrderResponse:
             "rider_delivery_fee": rider_fee,
             "goods_image_url": signed_gcs_read_url(order.goods_image_url),
             "payment_proof_url": signed_gcs_read_url(order.payment_proof_url),
+            "rider_deposit_proof_url": signed_gcs_read_url(order.rider_deposit_proof_url),
             "rider_settlement_qr_url": signed_gcs_read_url(order.rider_settlement_qr_url),
             "user_settlement_qr_url": signed_gcs_read_url(order.user_settlement_qr_url),
         }
@@ -1519,6 +1525,7 @@ def release_expired_rider_deposit_orders() -> None:
                     "rider_deposit_status": "unpaid",
                     "rider_deposit_due_at": None,
                     "rider_deposit_submitted_at": None,
+                    "rider_deposit_proof_url": None,
                 }
             )
             connection.execute(
@@ -2486,7 +2493,7 @@ ADMIN_HTML = r'''
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
           <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
-          <td>${riderDepositLabel(order.rider_deposit_status)}</td>
+          <td>${riderDepositLabel(order.rider_deposit_status)}<br>${order.rider_deposit_proof_url ? `<img src="${escapeHtml(order.rider_deposit_proof_url)}" alt="骑手押金截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : ""}</td>
           <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
           <td class="actions-cell">
             ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}', this)">${prepaid ? "确认用户付款" : "确认送货费"}</button>` : ""}
@@ -2913,6 +2920,7 @@ ADMIN_HTML = r'''
         <div class="row"><b>用户付款</b><span>${escapeHtml(label(order.user_payment_status))}</span></div>
         <div class="row"><b>骑手押金</b><span>${escapeHtml(riderDepositLabel(order.rider_deposit_status))}</span></div>
         ${order.payment_proof_url ? `<div class="row"><b>KPay 截图</b><span><img src="${order.payment_proof_url}" alt="KPay 转账截图"></span></div>` : ""}
+        ${order.rider_deposit_proof_url ? `<div class="row"><b>骑手押金截图</b><span><img src="${order.rider_deposit_proof_url}" alt="骑手押金截图"></span></div>` : ""}
         <div class="row"><b>取件</b><span>${escapeHtml(order.pickup_address)}</span></div>
         <div class="row"><b>收货</b><span>${escapeHtml(order.dropoff_address)}</span></div>
         <div class="row"><b>备注</b><span>${escapeHtml(order.note || "")}</span></div>
@@ -4791,6 +4799,7 @@ def accept_order(
         if order.rider_deposit_status != "not_required":
             updates["rider_deposit_due_at"] = rider_deposit_due_at()
             updates["rider_deposit_submitted_at"] = None
+            updates["rider_deposit_proof_url"] = None
         updated = order.model_copy(update=updates)
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
@@ -4800,6 +4809,7 @@ def accept_order(
 @app.post("/rider/orders/{order_id}/deposit", response_model=OrderResponse)
 def mark_rider_deposit_transferred(
     order_id: str,
+    request: RiderDepositTransferRequest,
     authorization: str | None = Header(default=None),
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
@@ -4818,10 +4828,14 @@ def mark_rider_deposit_transferred(
             raise HTTPException(status_code=400, detail="这个订单不需要骑手押金")
         if order.rider_deposit_status == "confirmed":
             return order_for_response(order)
+        payment_proof_url = clean_optional_text(request.payment_proof_url)
+        if not payment_proof_url:
+            raise HTTPException(status_code=400, detail="请上传转账截图")
         updated = order.model_copy(
             update={
                 "rider_deposit_status": "pending",
                 "rider_deposit_submitted_at": datetime.now(timezone.utc),
+                "rider_deposit_proof_url": payment_proof_url,
             }
         )
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
@@ -4884,6 +4898,7 @@ def cancel_rider_order(
                     "rider_deposit_status": "unpaid" if order.rider_deposit_status != "not_required" else "not_required",
                     "rider_deposit_due_at": None,
                     "rider_deposit_submitted_at": None,
+                    "rider_deposit_proof_url": None,
                     "rider_lat": None,
                     "rider_lng": None,
                     "rider_location_updated_at": None,
