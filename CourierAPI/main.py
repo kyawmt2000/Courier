@@ -3415,7 +3415,7 @@ async def google_routes_estimate(
     destination: tuple[float, float],
     api_key: str,
 ) -> tuple[int, str, str]:
-    departure_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    departure_time = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
     async with httpx.AsyncClient(timeout=12) as client:
         response = await client.post(
             "https://routes.googleapis.com/directions/v2:computeRoutes",
