@@ -30,5 +30,13 @@ services:
         sync: false
       - key: GOOGLE_CLIENT_IDS
         sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
       - key: ADMIN_PASSWORD
         sync: false
+      - key: DELIVERY_PROMOTION_ENABLED
+        value: true
+      - key: DELIVERY_PROMOTION_FEE_MMK
+        value: 1000
+      - key: DELIVERY_PROMOTION_END_AT
+        value: "2026-08-31T23:59:59+06:30"
