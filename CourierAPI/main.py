@@ -3641,7 +3641,7 @@ async def google_routes_estimate(
     try:
         response.raise_for_status()
         route = payload["routes"][0]
-        distance_meters = int(route["distanceMeters"])
+        distance_meters = int(route.get("distanceMeters") or 0)
         duration = str(route.get("duration") or "")
         route_polyline = route["polyline"]["encodedPolyline"]
     except (httpx.HTTPStatusError, KeyError, IndexError, TypeError, ValueError):
@@ -3649,7 +3649,7 @@ async def google_routes_estimate(
         logger.warning("Google Routes API failed: %s", payload)
         raise HTTPException(status_code=502, detail=f"Route unavailable: {google_message}")
 
-    if distance_meters <= 0 or not route_polyline or not duration:
+    if distance_meters < 0 or not route_polyline or not duration:
         logger.warning("Google Routes API returned invalid route: %s", payload)
         raise HTTPException(status_code=502, detail="Route unavailable")
 
