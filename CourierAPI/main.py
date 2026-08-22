@@ -1473,6 +1473,21 @@ def load_order_record(order_id: str) -> tuple[OrderResponse, str, str | None] | 
     return order_from_row(row), row["user_phone"], row["rider_phone"]
 
 
+def rider_has_active_delivery_order(rider_phone: str) -> bool:
+    with connect_db() as connection:
+        row = connection.execute(
+            """
+            SELECT id
+            FROM orders
+            WHERE rider_phone = ?
+              AND status IN ('accepted', 'picking_up', 'delivering')
+            LIMIT 1
+            """,
+            (rider_phone,),
+        ).fetchone()
+    return row is not None
+
+
 def utc_datetime(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -4786,6 +4801,8 @@ def accept_order(
     rider_phone = require_account_phone(authorization)
     mark_account_app_role(rider_phone, "rider")
     release_expired_rider_deposit_orders()
+    if rider_has_active_delivery_order(rider_phone):
+        raise HTTPException(status_code=409, detail="你已有进行中订单，完成后才能接受新的订单。")
     record = load_order_record(order_id)
     if record:
         order, user_phone, _ = record
