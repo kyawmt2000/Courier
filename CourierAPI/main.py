@@ -14,9 +14,9 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from cryptography.hazmat.primitives import padding as symmetric_padding
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
@@ -320,6 +320,7 @@ class DistanceEstimateResponse(BaseModel):
     dropoff_lat: float
     dropoff_lng: float
     route_polyline: str | None = None
+    route_map_url: str | None = None
 
 
 class AcceptOrderRequest(BaseModel):
@@ -3423,6 +3424,20 @@ def normalized_google_route_distance_km(route_km: float) -> float:
     return route_km
 
 
+def route_map_query(
+    pickup: tuple[float, float],
+    dropoff: tuple[float, float],
+    route_polyline: str | None,
+) -> str:
+    query = (
+        f"pickup_lat={pickup[0]}&pickup_lng={pickup[1]}"
+        f"&dropoff_lat={dropoff[0]}&dropoff_lng={dropoff[1]}"
+    )
+    if route_polyline:
+        query += f"&route_polyline={quote(route_polyline, safe='')}"
+    return query
+
+
 async def google_directions_distance_km(
     origin: tuple[float, float],
     destination: tuple[float, float],
@@ -5036,12 +5051,50 @@ def cancel_order(
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
+@app.get("/distance/route-map")
+async def route_preview_map(
+    pickup_lat: float = Query(...),
+    pickup_lng: float = Query(...),
+    dropoff_lat: float = Query(...),
+    dropoff_lng: float = Query(...),
+    route_polyline: str | None = Query(default=None),
+) -> StreamingResponse:
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY is not configured")
+
+    path_value = f"color:0x243CFFFF|weight:6|enc:{route_polyline}" if route_polyline else (
+        f"color:0x243CFFFF|weight:6|{pickup_lat},{pickup_lng}|{dropoff_lat},{dropoff_lng}"
+    )
+    params = {
+        "size": "640x720",
+        "scale": "2",
+        "maptype": "roadmap",
+        "markers": [
+            f"color:blue|label:P|{pickup_lat},{pickup_lng}",
+            f"color:red|label:D|{dropoff_lat},{dropoff_lng}",
+        ],
+        "path": path_value,
+        "key": api_key,
+    }
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.get("https://maps.googleapis.com/maps/api/staticmap", params=params)
+    if response.status_code != 200:
+        logger.warning("Google Static Maps failed: %s %s", response.status_code, response.text[:500])
+        raise HTTPException(status_code=502, detail="Google route map unavailable")
+    return StreamingResponse(iter([response.content]), media_type=response.headers.get("content-type", "image/png"))
+
+
 @app.post("/distance/estimate", response_model=DistanceEstimateResponse)
-async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimateResponse:
+async def estimate_distance(request: DistanceEstimateRequest, http_request: Request) -> DistanceEstimateResponse:
     pickup = await geocode_location(request.pickup_location)
     dropoff = await geocode_location(request.dropoff_location)
     route_km, route_polyline = await route_distance_estimate(pickup, dropoff)
     distance_km = round(route_km, 1)
+    route_map_url = (
+        f"{http_request.url_for('route_preview_map')}?"
+        f"{route_map_query(pickup, dropoff, route_polyline)}"
+    )
     return DistanceEstimateResponse(
         distance_km=distance_km,
         price=estimate_price(distance_km, 1),
@@ -5050,6 +5103,7 @@ async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimat
         dropoff_lat=dropoff[0],
         dropoff_lng=dropoff[1],
         route_polyline=route_polyline,
+        route_map_url=route_map_url,
     )
 
 
