@@ -3466,6 +3466,9 @@ async def google_directions_estimate(
                 "destination": destination_value,
                 "mode": "driving",
                 "units": "metric",
+                "alternatives": "true",
+                "departure_time": str(int(datetime.now(timezone.utc).timestamp())),
+                "traffic_model": "best_guess",
                 "key": api_key,
             },
         )
@@ -3477,7 +3480,8 @@ async def google_directions_estimate(
         return None
 
     try:
-        route = payload["routes"][0]
+        routes = payload["routes"]
+        route = min(routes, key=google_directions_route_duration_seconds)
         legs = route["legs"]
         meters = sum(float(leg["distance"]["value"]) for leg in legs)
         route_polyline = route.get("overview_polyline", {}).get("points")
@@ -3486,6 +3490,18 @@ async def google_directions_estimate(
         return None
 
     return meters / 1000, route_polyline
+
+
+def google_directions_route_duration_seconds(route: dict) -> float:
+    legs = route.get("legs") or []
+    total = 0.0
+    for leg in legs:
+        duration = leg.get("duration_in_traffic") or leg.get("duration") or {}
+        try:
+            total += float(duration.get("value", 0))
+        except (TypeError, ValueError):
+            total += 0.0
+    return total or float("inf")
 
 
 async def google_distance_matrix_km(
