@@ -1498,7 +1498,7 @@ def release_expired_rider_deposit_orders() -> None:
 
         for row in rows:
             order = order_from_row(row)
-            if order.rider_deposit_status in ("not_required", "confirmed"):
+            if order.rider_deposit_status in ("not_required", "confirmed", "pending"):
                 continue
             due_at = utc_datetime(order.rider_deposit_due_at)
             if due_at is None:
@@ -1522,10 +1522,14 @@ def release_expired_rider_deposit_orders() -> None:
                 update={
                     "status": "matching",
                     "rider_name": None,
+                    "accepted_at": None,
                     "rider_deposit_status": "unpaid",
                     "rider_deposit_due_at": None,
                     "rider_deposit_submitted_at": None,
                     "rider_deposit_proof_url": None,
+                    "rider_lat": None,
+                    "rider_lng": None,
+                    "rider_location_updated_at": None,
                 }
             )
             connection.execute(
@@ -4834,6 +4838,7 @@ def mark_rider_deposit_transferred(
         updated = order.model_copy(
             update={
                 "rider_deposit_status": "pending",
+                "rider_deposit_due_at": None,
                 "rider_deposit_submitted_at": datetime.now(timezone.utc),
                 "rider_deposit_proof_url": payment_proof_url,
             }
