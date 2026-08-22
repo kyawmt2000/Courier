@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -49,6 +50,10 @@ PLATFORM_KPAY_QR_IMAGE_URL = os.getenv(
 PLATFORM_KPAY_ACCOUNT_NAME = os.getenv("PLATFORM_KPAY_ACCOUNT_NAME", "Blink").strip()
 PLATFORM_KPAY_ACCOUNT_NOTE = os.getenv("PLATFORM_KPAY_ACCOUNT_NOTE", "KPay Payment QR").strip()
 MAX_GOODS_AMOUNT_MMK = float(os.getenv("MAX_GOODS_AMOUNT_MMK", "200000") or 200000)
+ORDER_HOURS_DEFAULT_ENABLED = os.getenv("ORDER_HOURS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+ORDER_HOURS_DEFAULT_START = os.getenv("ORDER_HOURS_START", "06:00").strip() or "06:00"
+ORDER_HOURS_DEFAULT_END = os.getenv("ORDER_HOURS_END", "18:00").strip() or "18:00"
+ORDER_HOURS_TIMEZONE = os.getenv("ORDER_HOURS_TIMEZONE", "Asia/Yangon").strip() or "Asia/Yangon"
 ANDROID_USER_LATEST_VERSION_CODE = int(os.getenv("ANDROID_USER_LATEST_VERSION_CODE", "1") or 1)
 ANDROID_USER_LATEST_VERSION_NAME = os.getenv("ANDROID_USER_LATEST_VERSION_NAME", "1.0").strip()
 ANDROID_USER_APK_URL = os.getenv("ANDROID_USER_APK_URL", "").strip()
@@ -107,6 +112,12 @@ class PlatformPaymentConfigResponse(BaseModel):
     kpay_account_name: str | None = None
     kpay_account_note: str | None = None
     max_goods_amount_mmk: float = 200000
+    order_hours_enabled: bool = True
+    order_hours_start: str = "06:00"
+    order_hours_end: str = "18:00"
+    order_hours_timezone: str = "Asia/Yangon"
+    order_hours_available: bool = True
+    order_hours_message: str | None = None
 
 
 class AppUpdateConfigResponse(BaseModel):
@@ -393,6 +404,13 @@ class AdminUpdatePrepaidPaymentRequest(BaseModel):
     status: PaymentStatus | None = None
 
 
+class AdminOrderHoursRequest(BaseModel):
+    enabled: bool = True
+    start: str = "06:00"
+    end: str = "18:00"
+    timezone: str = "Asia/Yangon"
+
+
 sms_codes: dict[str, tuple[str, datetime]] = {}
 
 
@@ -562,6 +580,15 @@ def init_storage() -> None:
             "CREATE INDEX IF NOT EXISTS idx_delivery_promo_invitee "
             "ON delivery_promotion_redemptions (invitee_email)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS platform_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         add_column_if_missing(connection, "chat_messages", "conversation_id", "TEXT NOT NULL DEFAULT 'main'")
         add_column_if_missing(connection, "chat_messages", "sender_phone", "TEXT")
         add_column_if_missing(connection, "chat_messages", "image_url", "TEXT")
@@ -595,6 +622,78 @@ def init_storage() -> None:
 
 
 init_storage()
+
+
+def load_platform_settings() -> dict[str, str]:
+    with connect_db() as connection:
+        rows = connection.execute("SELECT key, value FROM platform_settings").fetchall()
+    return {row["key"]: row["value"] for row in rows}
+
+
+def save_platform_setting(key: str, value: str) -> None:
+    with connect_db() as connection:
+        connection.execute(
+            """
+            INSERT INTO platform_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (key, value, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def normalize_order_hour(value: str, fallback: str) -> str:
+    cleaned = (value or "").strip()
+    if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", cleaned):
+        return cleaned
+    return fallback
+
+
+def order_hours_config() -> dict[str, object]:
+    settings = load_platform_settings()
+    enabled_text = settings.get("order_hours_enabled")
+    enabled = ORDER_HOURS_DEFAULT_ENABLED if enabled_text is None else enabled_text.lower() in {"1", "true", "yes", "on"}
+    return {
+        "enabled": enabled,
+        "start": normalize_order_hour(settings.get("order_hours_start", ORDER_HOURS_DEFAULT_START), "06:00"),
+        "end": normalize_order_hour(settings.get("order_hours_end", ORDER_HOURS_DEFAULT_END), "18:00"),
+        "timezone": settings.get("order_hours_timezone", ORDER_HOURS_TIMEZONE) or "Asia/Yangon",
+    }
+
+
+def order_hours_local_now(config: dict[str, object] | None = None) -> datetime:
+    zone_name = str((config or order_hours_config()).get("timezone") or "Asia/Yangon")
+    try:
+        zone = ZoneInfo(zone_name)
+    except Exception:
+        zone = timezone(timedelta(hours=6, minutes=30))
+    return datetime.now(zone)
+
+
+def order_hours_status(now: datetime | None = None) -> dict[str, object]:
+    config = order_hours_config()
+    local_now = now or order_hours_local_now(config)
+    if not config["enabled"]:
+        return {**config, "available": True, "message": None}
+    start_text = str(config["start"])
+    end_text = str(config["end"])
+    start_time = datetime.strptime(start_text, "%H:%M").time()
+    end_time = datetime.strptime(end_text, "%H:%M").time()
+    current_time = local_now.time()
+    if start_time <= end_time:
+        available = start_time <= current_time < end_time
+    else:
+        available = current_time >= start_time or current_time < end_time
+    message = None if available else f"现在不能下单。下单时间是 {start_text} - {end_text}。"
+    return {**config, "available": available, "message": message}
+
+
+def require_order_hours_available() -> None:
+    status = order_hours_status()
+    if not status["available"]:
+        raise HTTPException(status_code=403, detail=status["message"] or "现在不能下单。")
 
 
 def normalize_myanmar_phone(phone: str) -> str:
@@ -2037,6 +2136,11 @@ ADMIN_HTML = r'''
     .modal-head h3 { margin: 0; font-size: 16px; }
     .modal-close { width: auto; min-width: 44px; padding: 8px 12px; background: #fff; color: #111827; border-color: #d1d5db; }
     .modal-body { padding: 18px; display: grid; gap: 14px; }
+    .settings-panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; margin-bottom: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .settings-panel h2 { margin: 0 10px 0 0; }
+    .settings-panel label { font-size: 13px; color: #4b5563; display: inline-flex; align-items: center; gap: 6px; }
+    .settings-panel input[type="time"], .settings-panel input[type="text"] { width: auto; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; }
+    .settings-status { color: #6b7280; font-size: 13px; }
     @keyframes pulse { from { opacity: .55; } to { opacity: 1; } }
     @keyframes freshRow { from { box-shadow: inset 4px 0 0 #22c55e; } to { box-shadow: inset 4px 0 0 transparent; } }
     @media (max-width: 1100px) { .account-detail { max-height: none; } .summary { grid-template-columns: repeat(2, minmax(140px, 1fr)); } }
@@ -2084,6 +2188,15 @@ ADMIN_HTML = r'''
   </header>
   <main>
     <section class="summary" id="summary"></section>
+    <section class="settings-panel">
+      <h2>下单时间设置</h2>
+      <label><input id="orderHoursEnabled" type="checkbox" checked>启用</label>
+      <label>开始 <input id="orderHoursStart" type="time" value="06:00"></label>
+      <label>结束 <input id="orderHoursEnd" type="time" value="18:00"></label>
+      <label>时区 <input id="orderHoursTimezone" type="text" value="Asia/Yangon"></label>
+      <button onclick="saveOrderHours(this)">保存</button>
+      <span id="orderHoursStatus" class="settings-status">06:00 - 18:00</span>
+    </section>
     <section id="page-payments" class="page active">
       <h2>订单</h2>
       <table class="orders-table">
@@ -2144,7 +2257,7 @@ ADMIN_HTML = r'''
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    let state = { orders: [], accounts: [], messages: [], payments: [] };
+    let state = { orders: [], accounts: [], messages: [], payments: [], order_hours: null };
     let currentPage = "payments";
     let tabBadges = { payments: 0, orders: 0, accounts: 0, settlements: 0, service: 0 };
     let selectedServiceConversationId = null;
@@ -2431,6 +2544,47 @@ ADMIN_HTML = r'''
       }
     }
 
+    function renderOrderHours() {
+      const hours = state.order_hours || {};
+      const enabled = document.getElementById("orderHoursEnabled");
+      const start = document.getElementById("orderHoursStart");
+      const end = document.getElementById("orderHoursEnd");
+      const timezone = document.getElementById("orderHoursTimezone");
+      const status = document.getElementById("orderHoursStatus");
+      if (enabled) enabled.checked = hours.enabled !== false;
+      if (start && hours.start) start.value = hours.start;
+      if (end && hours.end) end.value = hours.end;
+      if (timezone && hours.timezone) timezone.value = hours.timezone;
+      if (status) {
+        const available = hours.available === false ? "当前不可下单" : "当前可下单";
+        status.textContent = `${hours.start || "06:00"} - ${hours.end || "18:00"} (${hours.timezone || "Asia/Yangon"}) / ${available}`;
+      }
+    }
+
+    async function saveOrderHours(button) {
+      const enabled = document.getElementById("orderHoursEnabled").checked;
+      const start = document.getElementById("orderHoursStart").value || "06:00";
+      const end = document.getElementById("orderHoursEnd").value || "18:00";
+      const timezone = document.getElementById("orderHoursTimezone").value || "Asia/Yangon";
+      setButtonBusy(button, true, "保存中");
+      try {
+        const response = await fetch(`/admin/config/order-hours?key=${keyParam()}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled, start, end, timezone })
+        });
+        if (!response.ok) throw new Error(await errorText(response));
+        const data = await response.json();
+        state.order_hours = data.order_hours;
+        renderOrderHours();
+        showToast("下单时间已保存");
+      } catch (error) {
+        showToast(error.message || "保存失败", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
     function upsertPayment(updated) {
       const index = state.payments.findIndex(payment => payment.id === updated.id);
       if (index >= 0) {
@@ -2580,6 +2734,7 @@ ADMIN_HTML = r'''
     }
 
     function render() {
+      renderOrderHours();
       const q = document.getElementById("q").value.toLowerCase();
       const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q) && orderMatchesFilters(order)));
       const accounts = filteredAccounts();
@@ -3969,11 +4124,18 @@ def health_check() -> HealthResponse:
 
 @app.get("/config/payment", response_model=PlatformPaymentConfigResponse)
 def get_platform_payment_config() -> PlatformPaymentConfigResponse:
+    hours = order_hours_status()
     return PlatformPaymentConfigResponse(
         kpay_qr_image_url=clean_optional_text(signed_gcs_read_url(PLATFORM_KPAY_QR_IMAGE_URL)),
         kpay_account_name=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NAME),
         kpay_account_note=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NOTE),
         max_goods_amount_mmk=MAX_GOODS_AMOUNT_MMK,
+        order_hours_enabled=bool(hours["enabled"]),
+        order_hours_start=str(hours["start"]),
+        order_hours_end=str(hours["end"]),
+        order_hours_timezone=str(hours["timezone"]),
+        order_hours_available=bool(hours["available"]),
+        order_hours_message=clean_optional_text(str(hours["message"])) if hours["message"] else None,
     )
 
 
@@ -4058,7 +4220,28 @@ def admin_data(key: str = Query(default="")) -> dict:
         "accounts": accounts_data,
         "messages": messages_data,
         "payments": payments_data,
+        "order_hours": order_hours_status(),
     }
+
+
+@app.patch("/admin/config/order-hours")
+def admin_update_order_hours(
+    request: AdminOrderHoursRequest,
+    key: str = Query(default=""),
+) -> dict:
+    require_admin_key(key)
+    start = normalize_order_hour(request.start, "06:00")
+    end = normalize_order_hour(request.end, "18:00")
+    zone_name = request.timezone.strip() or "Asia/Yangon"
+    try:
+        ZoneInfo(zone_name)
+    except Exception:
+        zone_name = "Asia/Yangon"
+    save_platform_setting("order_hours_enabled", "true" if request.enabled else "false")
+    save_platform_setting("order_hours_start", start)
+    save_platform_setting("order_hours_end", end)
+    save_platform_setting("order_hours_timezone", zone_name)
+    return {"order_hours": order_hours_status()}
 
 
 @app.post("/admin/chat/messages", response_model=ChatMessageResponse)
@@ -4514,6 +4697,7 @@ def create_prepaid_payment(
 ) -> PrepaidPaymentResponse:
     user_phone = require_account_phone(authorization)
     mark_account_app_role(user_phone, "user")
+    require_order_hours_available()
     payment_proof_url = clean_optional_text(request.payment_proof_url)
     if not payment_proof_url:
         raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
@@ -4553,6 +4737,7 @@ async def create_dinger_payment(
 ) -> PrepaidPaymentResponse:
     user_phone = require_account_phone(authorization)
     mark_account_app_role(user_phone, "user")
+    require_order_hours_available()
     payment_id = str(uuid4())
     try:
         dinger_response = await create_dinger_charge(payment_id, request, user_phone)
@@ -4641,6 +4826,7 @@ def create_order(
 ) -> OrderResponse:
     user_phone = require_account_phone(authorization)
     mark_account_app_role(user_phone, "user")
+    require_order_hours_available()
     original_delivery_fee = estimate_price(request.distance_km, request.weight_kg)
     kpay_transaction_id = clean_optional_text(request.kpay_transaction_id)
     goods_image_url = clean_optional_text(request.goods_image_url)
