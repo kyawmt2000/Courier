@@ -3375,17 +3375,43 @@ def nominatim_query_candidates(text: str) -> list[str]:
     return candidates
 
 
+def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
+    lat1, lon1 = origin
+    lat2, lon2 = destination
+    radius_km = 6371.0
+
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return radius_km * c
+
+
+def fallback_road_distance_meters(origin: tuple[float, float], destination: tuple[float, float]) -> int:
+    # Yangon street routes are usually longer than straight-line distance; keep this conservative.
+    estimated_km = max(haversine_km(origin, destination) * 1.35, 0.1)
+    return max(int(round(estimated_km * 1000)), 1)
+
+
 async def route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
     distance_meters, _ = await route_distance_estimate(origin, destination)
     distance_km = distance_meters / 1000
     return distance_km
 
 
-async def route_distance_estimate(origin: tuple[float, float], destination: tuple[float, float]) -> tuple[int, str]:
+async def route_distance_estimate(origin: tuple[float, float], destination: tuple[float, float]) -> tuple[int, str | None]:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY is not configured")
-    return await google_routes_estimate(origin, destination, api_key)
+        logger.warning("GOOGLE_MAPS_API_KEY is not configured; using fallback distance estimate")
+        return fallback_road_distance_meters(origin, destination), None
+    try:
+        return await google_routes_estimate(origin, destination, api_key)
+    except HTTPException as error:
+        logger.warning("Google route estimate failed; using fallback distance estimate: %s", error.detail)
+        return fallback_road_distance_meters(origin, destination), None
 
 
 def route_map_query(
@@ -5020,10 +5046,10 @@ async def route_preview_map(
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY is not configured")
-    if not route_polyline:
-        raise HTTPException(status_code=400, detail="Google route polyline is required")
-
-    path_value = f"color:0x243CFFFF|weight:6|enc:{route_polyline}"
+    if route_polyline:
+        path_value = f"color:0x243CFFFF|weight:6|enc:{route_polyline}"
+    else:
+        path_value = f"color:0x243CFFFF|weight:6|{pickup_lat},{pickup_lng}|{dropoff_lat},{dropoff_lng}"
     params = {
         "size": "640x720",
         "scale": "2",
