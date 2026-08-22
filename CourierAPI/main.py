@@ -5099,7 +5099,7 @@ def cancel_rider_order(
             raise HTTPException(status_code=403, detail="不能取消其他骑手的订单")
         if not app_data_visible_to_account(rider_phone, order.created_at):
             raise HTTPException(status_code=404, detail="订单不存在")
-        if order.status in ("accepted", "picking_up"):
+        if order.status in ("accepted", "picking_up", "delivering"):
             released = order.model_copy(
                 update={
                     "status": "matching",
@@ -5120,18 +5120,6 @@ def cancel_rider_order(
             )
             save_order(released, user_phone=user_phone, rider_phone=None)
             return order_for_response(released)
-        if order.status == "delivering":
-            cancelled = order.model_copy(
-                update={
-                    "status": "cancelled",
-                    "cancellation_actor": "rider",
-                    "cancellation_reason": "骑手取消送货，需把货还给用户",
-                    "cancellation_compensation_amount": 1000,
-                    "cancelled_at": datetime.now(timezone.utc),
-                }
-            )
-            save_order(cancelled, user_phone=user_phone, rider_phone=rider_phone)
-            return order_for_response(cancelled)
         raise HTTPException(status_code=400, detail="这个订单当前不能取消送货")
     raise HTTPException(status_code=404, detail="订单不存在")
 
