@@ -3413,6 +3413,7 @@ async def google_routes_estimate(
     destination: tuple[float, float],
     api_key: str,
 ) -> tuple[int, str]:
+    departure_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     async with httpx.AsyncClient(timeout=12) as client:
         response = await client.post(
             "https://routes.googleapis.com/directions/v2:computeRoutes",
@@ -3440,10 +3441,16 @@ async def google_routes_estimate(
                 },
                 "travelMode": "DRIVE",
                 "routingPreference": "TRAFFIC_AWARE",
+                "departureTime": departure_time,
+                "units": "METRIC",
                 "polylineQuality": "HIGH_QUALITY",
             },
         )
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.warning("Google Routes API returned non-JSON response: %s", response.text[:500])
+            raise HTTPException(status_code=502, detail="Google route unavailable")
 
     try:
         response.raise_for_status()
@@ -3451,14 +3458,32 @@ async def google_routes_estimate(
         distance_meters = int(route["distanceMeters"])
         route_polyline = route["polyline"]["encodedPolyline"]
     except (httpx.HTTPStatusError, KeyError, IndexError, TypeError, ValueError):
+        google_message = google_routes_error_message(payload)
         logger.warning("Google Routes API failed: %s", payload)
-        raise HTTPException(status_code=502, detail="Google route unavailable")
+        raise HTTPException(status_code=502, detail=f"Google route unavailable: {google_message}")
 
     if distance_meters <= 0 or not route_polyline:
         logger.warning("Google Routes API returned invalid route: %s", payload)
         raise HTTPException(status_code=502, detail="Google route unavailable")
 
     return distance_meters, route_polyline
+
+
+def google_routes_error_message(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return "UNKNOWN"
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = str(error.get("message") or "").strip()
+        status = str(error.get("status") or "").strip()
+        code = error.get("code")
+        parts = [part for part in (status, message, str(code) if code else "") if part]
+        if parts:
+            return " - ".join(parts)
+    status = str(payload.get("status") or "").strip()
+    if status:
+        return status
+    return "UNKNOWN"
 
 def chat_message_from_row(row: sqlite3.Row) -> ChatMessageResponse:
     sender_phone = row["sender_phone"]
