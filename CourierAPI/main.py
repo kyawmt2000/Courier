@@ -319,6 +319,7 @@ class DistanceEstimateResponse(BaseModel):
     pickup_lng: float
     dropoff_lat: float
     dropoff_lng: float
+    route_polyline: str | None = None
 
 
 class AcceptOrderRequest(BaseModel):
@@ -3388,17 +3389,23 @@ def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) 
 
 
 async def route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
+    distance_km, _ = await route_distance_estimate(origin, destination)
+    return distance_km
+
+
+async def route_distance_estimate(origin: tuple[float, float], destination: tuple[float, float]) -> tuple[float, str | None]:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY is not configured")
 
-    directions_distance = await google_directions_distance_km(origin, destination, api_key)
-    if directions_distance is not None:
-        return normalized_google_route_distance_km(directions_distance)
+    directions_estimate = await google_directions_estimate(origin, destination, api_key)
+    if directions_estimate is not None:
+        distance_km, route_polyline = directions_estimate
+        return normalized_google_route_distance_km(distance_km), route_polyline
 
     matrix_distance = await google_distance_matrix_km(origin, destination, api_key)
     if matrix_distance is not None:
-        return normalized_google_route_distance_km(matrix_distance)
+        return normalized_google_route_distance_km(matrix_distance), None
 
     fallback_distance = haversine_km(origin, destination) * 1.3
     logger.warning(
@@ -3407,7 +3414,7 @@ async def route_distance_km(origin: tuple[float, float], destination: tuple[floa
         origin,
         destination,
     )
-    return normalized_google_route_distance_km(fallback_distance)
+    return normalized_google_route_distance_km(fallback_distance), None
 
 
 def normalized_google_route_distance_km(route_km: float) -> float:
@@ -3421,6 +3428,18 @@ async def google_directions_distance_km(
     destination: tuple[float, float],
     api_key: str,
 ) -> float | None:
+    estimate = await google_directions_estimate(origin, destination, api_key)
+    if estimate is None:
+        return None
+    distance_km, _ = estimate
+    return distance_km
+
+
+async def google_directions_estimate(
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    api_key: str,
+) -> tuple[float, str | None] | None:
     origin_value = f"{origin[0]},{origin[1]}"
     destination_value = f"{destination[0]},{destination[1]}"
 
@@ -3443,13 +3462,15 @@ async def google_directions_distance_km(
         return None
 
     try:
-        legs = payload["routes"][0]["legs"]
+        route = payload["routes"][0]
+        legs = route["legs"]
         meters = sum(float(leg["distance"]["value"]) for leg in legs)
+        route_polyline = route.get("overview_polyline", {}).get("points")
     except (KeyError, IndexError, TypeError, ValueError):
         logger.warning("Google Directions malformed response: %s", payload)
         return None
 
-    return meters / 1000
+    return meters / 1000, route_polyline
 
 
 async def google_distance_matrix_km(
@@ -5019,7 +5040,8 @@ def cancel_order(
 async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimateResponse:
     pickup = await geocode_location(request.pickup_location)
     dropoff = await geocode_location(request.dropoff_location)
-    distance_km = round(await route_distance_km(pickup, dropoff), 1)
+    route_km, route_polyline = await route_distance_estimate(pickup, dropoff)
+    distance_km = round(route_km, 1)
     return DistanceEstimateResponse(
         distance_km=distance_km,
         price=estimate_price(distance_km, 1),
@@ -5027,6 +5049,7 @@ async def estimate_distance(request: DistanceEstimateRequest) -> DistanceEstimat
         pickup_lng=pickup[1],
         dropoff_lat=dropoff[0],
         dropoff_lng=dropoff[1],
+        route_polyline=route_polyline,
     )
 
 
