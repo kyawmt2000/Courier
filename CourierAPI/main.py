@@ -1123,6 +1123,8 @@ def upload_folder(value: str) -> str:
         "profile picture": "profile picture",
         "payment qr": "payment qr",
         "payment qr code": "payment qr",
+        "rider deposit": "rider deposit",
+        "rider deposit proof": "rider deposit",
         "rider settlement": "rider settlement",
         "user settlement": "user settlement",
     }
