@@ -3438,6 +3438,12 @@ def route_map_query(
     return query
 
 
+def public_request_base_url(request: Request) -> str:
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return f"{proto.split(',')[0].strip()}://{host.split(',')[0].strip()}"
+
+
 async def google_directions_distance_km(
     origin: tuple[float, float],
     destination: tuple[float, float],
@@ -5108,7 +5114,7 @@ async def estimate_distance(request: DistanceEstimateRequest, http_request: Requ
     route_km, route_polyline = await route_distance_estimate(pickup, dropoff)
     distance_km = round(route_km, 1)
     route_map_url = (
-        f"{http_request.url_for('route_preview_map')}?"
+        f"{public_request_base_url(http_request)}/distance/route-map?"
         f"{route_map_query(pickup, dropoff, route_polyline)}"
     )
     return DistanceEstimateResponse(
