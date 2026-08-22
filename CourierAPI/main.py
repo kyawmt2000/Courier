@@ -322,6 +322,7 @@ class DistanceEstimateResponse(BaseModel):
     dropoff_lng: float
     route_polyline: str | None = None
     route_map_url: str | None = None
+    route_duration: str | None = None
 
 
 class AcceptOrderRequest(BaseModel):
@@ -3375,43 +3376,18 @@ def nominatim_query_candidates(text: str) -> list[str]:
     return candidates
 
 
-def haversine_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
-    lat1, lon1 = origin
-    lat2, lon2 = destination
-    radius_km = 6371.0
-
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
-    )
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return radius_km * c
-
-
-def fallback_road_distance_meters(origin: tuple[float, float], destination: tuple[float, float]) -> int:
-    # Yangon street routes are usually longer than straight-line distance; keep this conservative.
-    estimated_km = max(haversine_km(origin, destination) * 1.35, 0.1)
-    return max(int(round(estimated_km * 1000)), 1)
-
-
 async def route_distance_km(origin: tuple[float, float], destination: tuple[float, float]) -> float:
-    distance_meters, _ = await route_distance_estimate(origin, destination)
+    distance_meters, _, _ = await route_distance_estimate(origin, destination)
     distance_km = distance_meters / 1000
     return distance_km
 
 
-async def route_distance_estimate(origin: tuple[float, float], destination: tuple[float, float]) -> tuple[int, str | None]:
+async def route_distance_estimate(origin: tuple[float, float], destination: tuple[float, float]) -> tuple[int, str, str]:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
-        logger.warning("GOOGLE_MAPS_API_KEY is not configured; using fallback distance estimate")
-        return fallback_road_distance_meters(origin, destination), None
-    try:
-        return await google_routes_estimate(origin, destination, api_key)
-    except HTTPException as error:
-        logger.warning("Google route estimate failed; using fallback distance estimate: %s", error.detail)
-        return fallback_road_distance_meters(origin, destination), None
+        logger.warning("GOOGLE_MAPS_API_KEY is not configured")
+        raise HTTPException(status_code=500, detail="Route unavailable")
+    return await google_routes_estimate(origin, destination, api_key)
 
 
 def route_map_query(
@@ -3438,7 +3414,7 @@ async def google_routes_estimate(
     origin: tuple[float, float],
     destination: tuple[float, float],
     api_key: str,
-) -> tuple[int, str]:
+) -> tuple[int, str, str]:
     departure_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     async with httpx.AsyncClient(timeout=12) as client:
         response = await client.post(
@@ -3476,23 +3452,29 @@ async def google_routes_estimate(
             payload = response.json()
         except ValueError:
             logger.warning("Google Routes API returned non-JSON response: %s", response.text[:500])
-            raise HTTPException(status_code=502, detail="Google route unavailable")
+            raise HTTPException(status_code=502, detail="Route unavailable")
 
     try:
         response.raise_for_status()
         route = payload["routes"][0]
         distance_meters = int(route["distanceMeters"])
+        duration = str(route.get("duration") or "")
         route_polyline = route["polyline"]["encodedPolyline"]
     except (httpx.HTTPStatusError, KeyError, IndexError, TypeError, ValueError):
         google_message = google_routes_error_message(payload)
         logger.warning("Google Routes API failed: %s", payload)
-        raise HTTPException(status_code=502, detail=f"Google route unavailable: {google_message}")
+        raise HTTPException(status_code=502, detail=f"Route unavailable: {google_message}")
 
-    if distance_meters <= 0 or not route_polyline:
+    if distance_meters <= 0 or not route_polyline or not duration:
         logger.warning("Google Routes API returned invalid route: %s", payload)
-        raise HTTPException(status_code=502, detail="Google route unavailable")
+        raise HTTPException(status_code=502, detail="Route unavailable")
 
-    return distance_meters, route_polyline
+    logger.info("Pickup coordinate: %s,%s", origin[0], origin[1])
+    logger.info("Dropoff coordinate: %s,%s", destination[0], destination[1])
+    logger.info("Google route distanceMeters: %s", distance_meters)
+    logger.info("Google route duration: %s", duration)
+
+    return distance_meters, route_polyline, duration
 
 
 def google_routes_error_message(payload: object) -> str:
@@ -5049,7 +5031,7 @@ async def route_preview_map(
     if route_polyline:
         path_value = f"color:0x243CFFFF|weight:6|enc:{route_polyline}"
     else:
-        path_value = f"color:0x243CFFFF|weight:6|{pickup_lat},{pickup_lng}|{dropoff_lat},{dropoff_lng}"
+        raise HTTPException(status_code=400, detail="Route unavailable")
     params = {
         "size": "640x720",
         "scale": "2",
@@ -5073,7 +5055,7 @@ async def route_preview_map(
 async def estimate_distance(request: DistanceEstimateRequest, http_request: Request) -> DistanceEstimateResponse:
     pickup = await geocode_location(request.pickup_location)
     dropoff = await geocode_location(request.dropoff_location)
-    distance_meters, route_polyline = await route_distance_estimate(pickup, dropoff)
+    distance_meters, route_polyline, route_duration = await route_distance_estimate(pickup, dropoff)
     distance_km = distance_meters / 1000
     route_map_url = (
         f"{public_request_base_url(http_request)}/distance/route-map?"
@@ -5089,6 +5071,7 @@ async def estimate_distance(request: DistanceEstimateRequest, http_request: Requ
         dropoff_lng=dropoff[1],
         route_polyline=route_polyline,
         route_map_url=route_map_url,
+        route_duration=route_duration,
     )
 
 
