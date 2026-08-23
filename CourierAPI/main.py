@@ -52,7 +52,7 @@ PLATFORM_KPAY_ACCOUNT_NOTE = os.getenv("PLATFORM_KPAY_ACCOUNT_NOTE", "KPay Payme
 MAX_GOODS_AMOUNT_MMK = float(os.getenv("MAX_GOODS_AMOUNT_MMK", "200000") or 200000)
 ORDER_HOURS_DEFAULT_ENABLED = os.getenv("ORDER_HOURS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 ORDER_HOURS_DEFAULT_START = os.getenv("ORDER_HOURS_START", "06:00").strip() or "06:00"
-ORDER_HOURS_DEFAULT_END = os.getenv("ORDER_HOURS_END", "18:00").strip() or "18:00"
+ORDER_HOURS_DEFAULT_END = os.getenv("ORDER_HOURS_END", "00:00").strip() or "00:00"
 ORDER_HOURS_TIMEZONE = os.getenv("ORDER_HOURS_TIMEZONE", "Asia/Yangon").strip() or "Asia/Yangon"
 ANDROID_USER_LATEST_VERSION_CODE = int(os.getenv("ANDROID_USER_LATEST_VERSION_CODE", "1") or 1)
 ANDROID_USER_LATEST_VERSION_NAME = os.getenv("ANDROID_USER_LATEST_VERSION_NAME", "1.0").strip()
@@ -114,7 +114,7 @@ class PlatformPaymentConfigResponse(BaseModel):
     max_goods_amount_mmk: float = 200000
     order_hours_enabled: bool = True
     order_hours_start: str = "06:00"
-    order_hours_end: str = "18:00"
+    order_hours_end: str = "00:00"
     order_hours_timezone: str = "Asia/Yangon"
     order_hours_available: bool = True
     order_hours_message: str | None = None
@@ -407,7 +407,7 @@ class AdminUpdatePrepaidPaymentRequest(BaseModel):
 class AdminOrderHoursRequest(BaseModel):
     enabled: bool = True
     start: str = "06:00"
-    end: str = "18:00"
+    end: str = "00:00"
     timezone: str = "Asia/Yangon"
 
 
@@ -1250,7 +1250,7 @@ def upload_base64_image(image_data: str, content_type: str | None, file_name: st
         blob.upload_from_string(data, content_type=content_type)
     except Exception as exc:
         logger.exception("GCS image upload failed")
-        raise HTTPException(status_code=500, detail="图片上传失败") from exc
+        raise HTTPException(status_code=500, detail="Image upload failed. Please try again.") from exc
 
     return f"https://storage.googleapis.com/{bucket_name}/{quote(object_name)}"
 
@@ -2197,7 +2197,7 @@ ADMIN_HTML = r'''
       <label>结束 <input id="orderHoursEnd" type="time" value="00:00"></label>
       <label>时区 <input id="orderHoursTimezone" type="text" value="Asia/Yangon"></label>
       <button onclick="saveOrderHours(this)">保存</button>
-      <span id="orderHoursStatus" class="settings-status">06:00 - 18:00</span>
+      <span id="orderHoursStatus" class="settings-status">06:00 - 00:00</span>
     </section>
     <section id="page-payments" class="page active">
       <h2>订单</h2>
@@ -2521,7 +2521,7 @@ ADMIN_HTML = r'''
         const data = JSON.parse(text);
         return data.detail || data.message || text;
       } catch (_) {
-        return text || "请求失败";
+        return text || "Request failed";
       }
     }
 
@@ -2559,14 +2559,14 @@ ADMIN_HTML = r'''
       if (timezone && hours.timezone) timezone.value = hours.timezone;
       if (status) {
         const available = hours.available === false ? "当前不可下单" : "当前可下单";
-        status.textContent = `${hours.start || "06:00"} - ${hours.end || "18:00"} (${hours.timezone || "Asia/Yangon"}) / ${available}`;
+        status.textContent = `${hours.start || "06:00"} - ${hours.end || "00:00"} (${hours.timezone || "Asia/Yangon"}) / ${available}`;
       }
     }
 
     async function saveOrderHours(button) {
       const enabled = document.getElementById("orderHoursEnabled").checked;
       const start = document.getElementById("orderHoursStart").value || "06:00";
-      const end = document.getElementById("orderHoursEnd").value || "18:00";
+      const end = document.getElementById("orderHoursEnd").value || "00:00";
       const timezone = document.getElementById("orderHoursTimezone").value || "Asia/Yangon";
       setButtonBusy(button, true, "保存中");
       try {
@@ -2642,7 +2642,7 @@ ADMIN_HTML = r'''
         setLoading(false, `已同步 ${new Date().toLocaleTimeString()}`);
       } catch (error) {
         setLoading(false, "同步失败");
-        if (!fromAuto || !hasLoadedOnce) showToast(error.message || "请求失败", "error");
+        if (!fromAuto || !hasLoadedOnce) showToast(error.message || "Request failed", "error");
       }
     }
 
@@ -3172,7 +3172,7 @@ ADMIN_HTML = r'''
         loadData({ silent: true });
         return updated;
       } catch (error) {
-        showToast(error.message || "请求失败", "error");
+        showToast(error.message || "Request failed", "error");
         return null;
       } finally {
         setButtonBusy(button, false);
@@ -3211,7 +3211,7 @@ ADMIN_HTML = r'''
         showToast("已确认用户付款");
         loadData({ silent: true });
       } catch (error) {
-        showToast(error.message || "请求失败", "error");
+        showToast(error.message || "Request failed", "error");
       } finally {
         setButtonBusy(button, false);
       }
@@ -4233,7 +4233,7 @@ def admin_update_order_hours(
 ) -> dict:
     require_admin_key(key)
     start = normalize_order_hour(request.start, "06:00")
-    end = normalize_order_hour(request.end, "18:00")
+    end = normalize_order_hour(request.end, "00:00")
     zone_name = request.timezone.strip() or "Asia/Yangon"
     try:
         ZoneInfo(zone_name)
@@ -4745,7 +4745,7 @@ async def create_dinger_payment(
         dinger_response = await create_dinger_charge(payment_id, request, user_phone)
     except httpx.HTTPError as exc:
         logger.exception("Dinger payment request failed")
-        raise HTTPException(status_code=502, detail="Dinger 付款请求失败") from exc
+        raise HTTPException(status_code=502, detail="Dinger payment request failed. Please try again.") from exc
 
     payment = PrepaidPaymentResponse(
         id=payment_id,
