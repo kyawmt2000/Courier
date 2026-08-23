@@ -658,7 +658,7 @@ def order_hours_config() -> dict[str, object]:
     return {
         "enabled": enabled,
         "start": normalize_order_hour(settings.get("order_hours_start", ORDER_HOURS_DEFAULT_START), "06:00"),
-        "end": normalize_order_hour(settings.get("order_hours_end", ORDER_HOURS_DEFAULT_END), "18:00"),
+        "end": normalize_order_hour(settings.get("order_hours_end", ORDER_HOURS_DEFAULT_END), "23:30"),
         "timezone": settings.get("order_hours_timezone", ORDER_HOURS_TIMEZONE) or "Asia/Yangon",
     }
 
