@@ -658,7 +658,7 @@ def order_hours_config() -> dict[str, object]:
     return {
         "enabled": enabled,
         "start": normalize_order_hour(settings.get("order_hours_start", ORDER_HOURS_DEFAULT_START), "06:00"),
-        "end": normalize_order_hour(settings.get("order_hours_end", ORDER_HOURS_DEFAULT_END), "23:30"),
+        "end": normalize_order_hour(settings.get("order_hours_end", ORDER_HOURS_DEFAULT_END), "00:00"),
         "timezone": settings.get("order_hours_timezone", ORDER_HOURS_TIMEZONE) or "Asia/Yangon",
     }
 
@@ -2194,7 +2194,7 @@ ADMIN_HTML = r'''
       <h2>下单时间设置</h2>
       <label><input id="orderHoursEnabled" type="checkbox" checked>启用</label>
       <label>开始 <input id="orderHoursStart" type="time" value="06:00"></label>
-      <label>结束 <input id="orderHoursEnd" type="time" value="23:45"></label>
+      <label>结束 <input id="orderHoursEnd" type="time" value="00:00"></label>
       <label>时区 <input id="orderHoursTimezone" type="text" value="Asia/Yangon"></label>
       <button onclick="saveOrderHours(this)">保存</button>
       <span id="orderHoursStatus" class="settings-status">06:00 - 18:00</span>
