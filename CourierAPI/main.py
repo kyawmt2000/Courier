@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -3595,16 +3595,20 @@ async def expand_location_text(text: str) -> str:
         ),
     ]
 
+    redirected_url = await expand_google_maps_redirect_url(url_text, user_agents)
+    if redirected_url:
+        return redirected_url
+
     async with httpx.AsyncClient(follow_redirects=True, timeout=12) as client:
         for user_agent in user_agents:
-            response = await client.get(
-                url_text,
-                headers={
-                    "User-Agent": user_agent,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-            )
+            try:
+                response = await client.get(
+                    url_text,
+                    headers=google_maps_request_headers(user_agent),
+                )
+            except httpx.HTTPError as error:
+                logger.warning("Google Maps short link expansion failed for %s: %s", url_text, error)
+                continue
             expanded_url = str(response.url)
             decoded_html = decoded_google_maps_text(response.text)
             if parse_coordinate(decoded_html):
@@ -3618,6 +3622,57 @@ async def expand_location_text(text: str) -> str:
                 return expanded_url
 
         return text
+
+
+def google_maps_request_headers(user_agent: str) -> dict[str, str]:
+    return {
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+
+async def expand_google_maps_redirect_url(url_text: str, user_agents: list[str]) -> str | None:
+    timeout = httpx.Timeout(6, connect=4, read=4)
+    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+        for user_agent in user_agents:
+            current_url = url_text
+            for _ in range(6):
+                redirected = False
+                for method in ("HEAD", "GET"):
+                    try:
+                        request = client.build_request(
+                            method,
+                            current_url,
+                            headers=google_maps_request_headers(user_agent),
+                        )
+                        response = await client.send(request, stream=True)
+                    except httpx.HTTPError as error:
+                        logger.warning("Google Maps redirect probe failed for %s: %s", current_url, error)
+                        continue
+
+                    try:
+                        location = response.headers.get("location")
+                        if location:
+                            current_url = urljoin(current_url, location)
+                            redirected = True
+                            break
+
+                        response_url = str(response.url)
+                        if not is_google_maps_short_link(response_url):
+                            return response_url
+                    finally:
+                        await response.aclose()
+
+                    break
+
+                if not redirected:
+                    break
+
+                if parse_coordinate(current_url) or not is_google_maps_short_link(current_url):
+                    return current_url
+
+    return None
 
 
 def google_maps_query_text(text: str) -> str:
