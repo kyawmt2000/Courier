@@ -37,7 +37,7 @@ except ImportError:
 
 
 app = FastAPI(title="Courier API", version="1.0.0")
-CURRENT_TERMS_VERSION = "2026-07-20"
+CURRENT_TERMS_VERSION = "2026-08-24"
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
 ACCEPTED_PICKUP_START_TIMEOUT = timedelta(
     minutes=int(os.getenv("ACCEPTED_PICKUP_START_TIMEOUT_MINUTES", "30") or 30)
