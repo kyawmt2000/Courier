@@ -284,6 +284,7 @@ class OrderResponse(BaseModel):
     payment_proof_url: str | None = None
     status: OrderStatus
     rider_name: str | None = None
+    rider_phone: str | None = None
     created_at: datetime
     accepted_at: datetime | None = None
     pickup_started_at: datetime | None = None
@@ -1281,7 +1282,7 @@ def delivery_payout_fee(delivery_fee: float) -> float:
     return max(delivery_fee - delivery_platform_fee(delivery_fee), 0)
 
 
-def order_for_response(order: OrderResponse) -> OrderResponse:
+def order_for_response(order: OrderResponse, rider_phone: str | None = None) -> OrderResponse:
     delivery_fee = order.delivery_fee or order.price
     platform_fee = order.platform_delivery_fee if order.promotion_applied else order.platform_delivery_fee or delivery_platform_fee(delivery_fee)
     rider_fee = order.rider_delivery_fee or delivery_payout_fee(order.original_delivery_fee or delivery_fee)
@@ -1294,6 +1295,7 @@ def order_for_response(order: OrderResponse) -> OrderResponse:
             "rider_deposit_proof_url": signed_gcs_read_url(order.rider_deposit_proof_url),
             "rider_settlement_qr_url": signed_gcs_read_url(order.rider_settlement_qr_url),
             "user_settlement_qr_url": signed_gcs_read_url(order.user_settlement_qr_url),
+            "rider_phone": rider_phone if rider_phone is not None else order.rider_phone,
         }
     )
 
@@ -1515,14 +1517,14 @@ def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = 
         )
 
 
-def load_user_orders(user_phone: str) -> list[OrderResponse]:
+def load_user_orders(user_phone: str) -> list[tuple[OrderResponse, str | None]]:
     process_order_timeouts()
     hidden_before = account_data_hidden_before(user_phone)
     with connect_db() as connection:
         if hidden_before:
             rows = connection.execute(
                 """
-                SELECT payload FROM orders
+                SELECT rider_phone, payload FROM orders
                 WHERE user_phone = ?
                   AND created_at > ?
                 ORDER BY created_at DESC
@@ -1532,13 +1534,13 @@ def load_user_orders(user_phone: str) -> list[OrderResponse]:
         else:
             rows = connection.execute(
                 """
-                SELECT payload FROM orders
+                SELECT rider_phone, payload FROM orders
                 WHERE user_phone = ?
                 ORDER BY created_at DESC
                 """,
                 (user_phone,),
             ).fetchall()
-    return [order_from_row(row) for row in rows]
+    return [(order_from_row(row), row["rider_phone"]) for row in rows]
 
 
 def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
@@ -4730,7 +4732,7 @@ def admin_update_order(
         updates["user_settlement_bill_created_at"] = now
     updated = order.model_copy(update=updates)
     save_order(updated, user_phone=user_phone, rider_phone=next_rider_phone)
-    return order_for_response(updated)
+    return order_for_response(updated, rider_phone=next_rider_phone)
 
 
 @app.post("/auth/login", response_model=LoginResponse)
@@ -5020,7 +5022,7 @@ def create_chat_message(
 def list_orders(authorization: str | None = Header(default=None)) -> list[OrderResponse]:
     user_phone = require_account_phone(authorization)
     mark_account_app_role(user_phone, "user")
-    return [order_for_response(order) for order in load_user_orders(user_phone)]
+    return [order_for_response(order, rider_phone=rider_phone) for order, rider_phone in load_user_orders(user_phone)]
 
 
 @app.get("/promotion/delivery", response_model=DeliveryPromotionResponse)
@@ -5264,12 +5266,12 @@ def get_order(
     process_order_timeouts()
     record = load_order_record(order_id)
     if record:
-        order, stored_user_phone, _ = record
+        order, stored_user_phone, rider_phone = record
         if stored_user_phone != user_phone:
             raise HTTPException(status_code=403, detail="不能查看其他账号的订单")
         if not app_data_visible_to_account(user_phone, order.created_at):
             raise HTTPException(status_code=404, detail="订单不存在")
-        return order_for_response(order)
+        return order_for_response(order, rider_phone=rider_phone)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
@@ -5293,7 +5295,7 @@ def request_user_settlement(
         if order.status != "completed":
             raise HTTPException(status_code=400, detail="骑手完成送货后才能提醒平台转货费")
         if order.settlement_status in ("paid_to_user", "completed"):
-            return order_for_response(order)
+            return order_for_response(order, rider_phone=rider_phone)
 
         name = request.name.strip()
         qr_url = clean_optional_text(request.qr_url)
@@ -5311,7 +5313,7 @@ def request_user_settlement(
             }
         )
         save_order(updated, user_phone=stored_user_phone, rider_phone=rider_phone)
-        return order_for_response(updated)
+        return order_for_response(updated, rider_phone=rider_phone)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
@@ -5356,7 +5358,7 @@ def accept_order(
             updates["rider_deposit_proof_url"] = None
         updated = order.model_copy(update=updates)
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
-        return order_for_response(updated)
+        return order_for_response(updated, rider_phone=rider_phone)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
@@ -5394,7 +5396,7 @@ def mark_rider_deposit_transferred(
             }
         )
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
-        return order_for_response(updated)
+        return order_for_response(updated, rider_phone=rider_phone)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
@@ -5441,7 +5443,7 @@ def update_rider_order_status(
                 updates["delivery_started_at"] = now
         updated = order.model_copy(update=updates)
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
-        return order_for_response(updated)
+        return order_for_response(updated, rider_phone=rider_phone)
     raise HTTPException(status_code=404, detail="订单不存在")
 
 
