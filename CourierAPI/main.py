@@ -37,7 +37,8 @@ except ImportError:
 
 
 app = FastAPI(title="Courier API", version="1.0.0")
-CURRENT_TERMS_VERSION = "2026-08-24"
+CURRENT_TERMS_VERSION = "2026-08-24-off-platform"
+RIDER_CANCEL_DELIVERY_PENALTY_MMK = float(os.getenv("RIDER_CANCEL_DELIVERY_PENALTY_MMK", "1000") or 1000)
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
 ACCEPTED_PICKUP_START_TIMEOUT = timedelta(
     minutes=int(os.getenv("ACCEPTED_PICKUP_START_TIMEOUT_MINUTES", "30") or 30)
@@ -127,6 +128,7 @@ class PlatformPaymentConfigResponse(BaseModel):
     order_hours_timezone: str = "Asia/Yangon"
     order_hours_available: bool = True
     order_hours_message: str | None = None
+    rider_cancel_delivery_penalty_mmk: float = 1000
 
 
 class AppUpdateConfigResponse(BaseModel):
@@ -4346,7 +4348,7 @@ TERMS_CONDITIONS_HTML = """
   <main>
     <article class="page">
       <h1>Blink Delivery Terms and Conditions</h1>
-      <p class="updated">Last updated: July 19, 2026</p>
+      <p class="updated">Last updated: August 24, 2026</p>
 
       <p>
         Blink Delivery ("Blink", "we", "our", or "us") provides a logistics
@@ -4409,13 +4411,19 @@ TERMS_CONDITIONS_HTML = """
         practices, and providing correct settlement information.
       </p>
 
-      <h2>6. Changes to These Terms</h2>
+      <h2>6. Off-platform Deliveries</h2>
+      <p>
+        Blink is not responsible for orders whose delivery is not completed
+        through the Blink platform.
+      </p>
+
+      <h2>7. Changes to These Terms</h2>
       <p>
         We may update these Terms from time to time. When we make changes, we
         will update the "Last updated" date above.
       </p>
 
-      <h2>7. Contact Us</h2>
+      <h2>8. Contact Us</h2>
       <p>
         If you have questions about these Terms or need support, send us a
         WhatsApp message at <a href="https://wa.me/959424594930">+95 942 459 4930</a>.
@@ -4450,6 +4458,7 @@ def get_platform_payment_config() -> PlatformPaymentConfigResponse:
         order_hours_timezone=str(hours["timezone"]),
         order_hours_available=bool(hours["available"]),
         order_hours_message=clean_optional_text(str(hours["message"])) if hours["message"] else None,
+        rider_cancel_delivery_penalty_mmk=RIDER_CANCEL_DELIVERY_PENALTY_MMK,
     )
 
 
