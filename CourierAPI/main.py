@@ -3472,10 +3472,6 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
     if reliable_coordinate:
         return reliable_coordinate
 
-    lite_coordinate = parse_google_lite_coordinate(text)
-    if lite_coordinate:
-        return lite_coordinate
-
     bare_match = re.fullmatch(r"\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*", text)
     if bare_match:
         lat = float(bare_match.group(1))
@@ -3483,17 +3479,6 @@ def parse_coordinate(text: str) -> tuple[float, float] | None:
         if is_valid_coordinate(lat, lng):
             return lat, lng
 
-    return None
-
-
-def parse_google_lite_coordinate(text: str) -> tuple[float, float] | None:
-    text = decoded_google_maps_text(text)
-    values = [float(value) for value in re.findall(r"-?\d{1,6}\.\d{4,}", text)]
-    for first, second in zip(values, values[1:]):
-        if is_likely_service_coordinate(first, second):
-            return first, second
-        if is_likely_service_coordinate(second, first):
-            return second, first
     return None
 
 
@@ -3523,10 +3508,6 @@ def parse_reliable_google_maps_coordinate(text: str) -> tuple[float, float] | No
 
 def is_valid_coordinate(lat: float, lng: float) -> bool:
     return -90 <= lat <= 90 and -180 <= lng <= 180
-
-
-def is_likely_service_coordinate(lat: float, lng: float) -> bool:
-    return is_valid_coordinate(lat, lng) and 9 <= lat <= 29 and 92 <= lng <= 102
 
 
 def is_google_maps_short_link(text: str) -> bool:
