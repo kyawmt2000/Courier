@@ -357,6 +357,7 @@ class DistanceEstimateResponse(BaseModel):
 
 class AcceptOrderRequest(BaseModel):
     rider_name: str
+    rider_phone: str | None = None
 
 
 class UpdateOrderStatusRequest(BaseModel):
@@ -5347,6 +5348,7 @@ def accept_order(
         updates: dict[str, object] = {
             "status": "accepted",
             "rider_name": request.rider_name,
+            "rider_phone": clean_optional_text(request.rider_phone),
             "accepted_at": datetime.now(timezone.utc),
             "pickup_started_at": None,
             "delivery_started_at": None,
