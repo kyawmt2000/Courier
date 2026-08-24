@@ -53,6 +53,8 @@ DELIVERY_PROMOTION_ENABLED = os.getenv("DELIVERY_PROMOTION_ENABLED", "true").low
 DELIVERY_PROMOTION_FEE_MMK = float(os.getenv("DELIVERY_PROMOTION_FEE_MMK", "1000") or 1000)
 DELIVERY_PROMOTION_START_AT = os.getenv("DELIVERY_PROMOTION_START_AT", "").strip()
 DELIVERY_PROMOTION_END_AT = os.getenv("DELIVERY_PROMOTION_END_AT", "2026-08-31T23:59:59+06:30").strip()
+DELIVERY_WEIGHT_FEE_THRESHOLD_KG = float(os.getenv("DELIVERY_WEIGHT_FEE_THRESHOLD_KG", "7") or 7)
+DELIVERY_WEIGHT_EXTRA_FEE_MMK = float(os.getenv("DELIVERY_WEIGHT_EXTRA_FEE_MMK", "1000") or 1000)
 PLATFORM_KPAY_QR_IMAGE_URL = os.getenv(
     "PLATFORM_KPAY_QR_IMAGE_URL",
     "https://storage.googleapis.com/courierblink/platform-pay-qr.jpg",
@@ -129,6 +131,8 @@ class PlatformPaymentConfigResponse(BaseModel):
     order_hours_available: bool = True
     order_hours_message: str | None = None
     rider_cancel_delivery_penalty_mmk: float = 1000
+    delivery_weight_fee_threshold_kg: float = 7
+    delivery_weight_extra_fee_mmk: float = 1000
 
 
 class AppUpdateConfigResponse(BaseModel):
@@ -187,7 +191,7 @@ class CreateOrderRequest(BaseModel):
     pickup_address: str
     dropoff_address: str
     parcel_type: str
-    weight_kg: float = Field(gt=0)
+    weight_kg: float = Field(ge=1, le=10)
     note: str = ""
     distance_km: float = Field(gt=0)
     payment_mode: PaymentMode = "cod"
@@ -211,11 +215,15 @@ class DeliveryPromotionResponse(BaseModel):
     eligible: bool = False
     invite_email: str | None = None
     message: str | None = None
+    weight_kg: float = 1
+    weight_fee_threshold_kg: float = 7
+    weight_extra_fee: float = 1000
 
 
 class CreatePrepaidPaymentRequest(BaseModel):
     amount: float = Field(gt=0)
     distance_km: float = Field(gt=0)
+    weight_kg: float = Field(default=1, ge=1, le=10)
     goods_amount: float = Field(default=0, ge=0)
     payment_proof_url: str
     payment_mode: PaymentMode = "cod"
@@ -225,6 +233,7 @@ class CreatePrepaidPaymentRequest(BaseModel):
 class CreateDingerPaymentRequest(BaseModel):
     amount: float = Field(gt=0)
     distance_km: float = Field(gt=0)
+    weight_kg: float = Field(default=1, ge=1, le=10)
     payment_mode: PaymentMode = "cod"
     provider_name: str = "KBZPAY"
     method_name: str = "QR"
@@ -243,6 +252,7 @@ class PrepaidPaymentResponse(BaseModel):
     user_phone: str
     amount: float
     distance_km: float
+    weight_kg: float = 1
     goods_amount: float = 0
     payment_mode: PaymentMode = "cod"
     status: PaymentStatus = "pending"
@@ -886,7 +896,9 @@ async def send_sms_code(phone: str, code: str) -> None:
 
 
 def estimate_price(distance_km: float, weight_kg: float) -> float:
-    return round(distance_km * 1055, 2)
+    base_fee = round(distance_km * 1055, 2)
+    weight_extra_fee = DELIVERY_WEIGHT_EXTRA_FEE_MMK if weight_kg >= DELIVERY_WEIGHT_FEE_THRESHOLD_KG else 0
+    return round(base_fee + weight_extra_fee, 2)
 
 
 def parse_config_datetime(value: str) -> datetime | None:
@@ -989,14 +1001,22 @@ def validate_delivery_promotion_invite_email(user_phone: str, invite_email: str 
     return email
 
 
-def delivery_promotion_quote(user_phone: str, distance_km: float, invite_email: str | None = None) -> DeliveryPromotionResponse:
-    original_fee = estimate_price(distance_km, 1)
+def delivery_promotion_quote(
+    user_phone: str,
+    distance_km: float,
+    weight_kg: float = 1,
+    invite_email: str | None = None,
+) -> DeliveryPromotionResponse:
+    original_fee = estimate_price(distance_km, weight_kg)
     if not delivery_promotion_is_active():
         return DeliveryPromotionResponse(
             active=False,
             original_fee=original_fee,
             payable_fee=original_fee,
             message="优惠未开启",
+            weight_kg=weight_kg,
+            weight_fee_threshold_kg=DELIVERY_WEIGHT_FEE_THRESHOLD_KG,
+            weight_extra_fee=DELIVERY_WEIGHT_EXTRA_FEE_MMK,
         )
 
     requires_invite = delivery_promotion_redemption_count(user_phone) > 0
@@ -1020,6 +1040,9 @@ def delivery_promotion_quote(user_phone: str, distance_km: float, invite_email: 
         eligible=eligible,
         invite_email=normalized_invite_email,
         message=message,
+        weight_kg=weight_kg,
+        weight_fee_threshold_kg=DELIVERY_WEIGHT_FEE_THRESHOLD_KG,
+        weight_extra_fee=DELIVERY_WEIGHT_EXTRA_FEE_MMK,
     )
 
 
@@ -4465,6 +4488,8 @@ def get_platform_payment_config() -> PlatformPaymentConfigResponse:
         order_hours_available=bool(hours["available"]),
         order_hours_message=clean_optional_text(str(hours["message"])) if hours["message"] else None,
         rider_cancel_delivery_penalty_mmk=RIDER_CANCEL_DELIVERY_PENALTY_MMK,
+        delivery_weight_fee_threshold_kg=DELIVERY_WEIGHT_FEE_THRESHOLD_KG,
+        delivery_weight_extra_fee_mmk=DELIVERY_WEIGHT_EXTRA_FEE_MMK,
     )
 
 
@@ -5032,12 +5057,13 @@ def list_orders(authorization: str | None = Header(default=None)) -> list[OrderR
 @app.get("/promotion/delivery", response_model=DeliveryPromotionResponse)
 def get_delivery_promotion(
     distance_km: float = Query(gt=0),
+    weight_kg: float = Query(default=1, ge=1, le=10),
     invite_email: str | None = Query(default=None),
     authorization: str | None = Header(default=None),
 ) -> DeliveryPromotionResponse:
     user_phone = require_account_phone(authorization)
     mark_account_app_role(user_phone, "user")
-    return delivery_promotion_quote(user_phone, distance_km, invite_email)
+    return delivery_promotion_quote(user_phone, distance_km, weight_kg, invite_email)
 
 
 @app.post("/payments/prepaid", response_model=PrepaidPaymentResponse)
@@ -5053,8 +5079,8 @@ def create_prepaid_payment(
         raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
     if request.goods_amount > MAX_GOODS_AMOUNT_MMK:
         raise HTTPException(status_code=400, detail=f"货物价格不能超过 {MAX_GOODS_AMOUNT_MMK:,.0f} MMK")
-    original_delivery_fee = estimate_price(request.distance_km, 1)
-    promotion = delivery_promotion_quote(user_phone, request.distance_km, request.promo_invite_email)
+    original_delivery_fee = estimate_price(request.distance_km, request.weight_kg)
+    promotion = delivery_promotion_quote(user_phone, request.distance_km, request.weight_kg, request.promo_invite_email)
     promotion_applied = promotion.active and promotion.eligible
     if promotion.active and promotion.requires_invite_email and not promotion.eligible:
         discount_fee = promotion.discount_fee or DELIVERY_PROMOTION_FEE_MMK
@@ -5067,6 +5093,7 @@ def create_prepaid_payment(
         user_phone=user_phone,
         amount=round(payment_amount, 2),
         distance_km=request.distance_km,
+        weight_kg=request.weight_kg,
         goods_amount=round(request.goods_amount, 2),
         payment_mode=request.payment_mode,
         status="pending",
@@ -5100,6 +5127,7 @@ async def create_dinger_payment(
         user_phone=user_phone,
         amount=round(request.amount, 2),
         distance_km=request.distance_km,
+        weight_kg=request.weight_kg,
         payment_mode=request.payment_mode,
         status="pending",
         created_at=datetime.now(timezone.utc),
@@ -5201,6 +5229,8 @@ def create_order(
         raise HTTPException(status_code=400, detail="送货费付款未通过，请重新付款")
     if prepaid_payment.status != "confirmed":
         raise HTTPException(status_code=400, detail="请等待后台确认收到送货费后再下单")
+    if abs(prepaid_payment.weight_kg - request.weight_kg) > 0.01:
+        raise HTTPException(status_code=400, detail="付款重量和当前订单重量不一致，请重新付款")
     promotion_applied = prepaid_payment.promotion_applied
     promo_invite_email = normalize_email(prepaid_payment.promo_invite_email)
     delivery_fee = round(prepaid_payment.amount, 2) if promotion_applied else original_delivery_fee
