@@ -1296,7 +1296,6 @@ def order_for_response(order: OrderResponse, rider_phone: str | None = None) -> 
             "rider_deposit_proof_url": signed_gcs_read_url(order.rider_deposit_proof_url),
             "rider_settlement_qr_url": signed_gcs_read_url(order.rider_settlement_qr_url),
             "user_settlement_qr_url": signed_gcs_read_url(order.user_settlement_qr_url),
-            "rider_phone": rider_phone if rider_phone is not None else order.rider_phone,
         }
     )
 
