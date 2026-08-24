@@ -39,6 +39,15 @@ except ImportError:
 app = FastAPI(title="Courier API", version="1.0.0")
 CURRENT_TERMS_VERSION = "2026-07-20"
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
+ACCEPTED_PICKUP_START_TIMEOUT = timedelta(
+    minutes=int(os.getenv("ACCEPTED_PICKUP_START_TIMEOUT_MINUTES", "30") or 30)
+)
+PICKUP_CONFIRM_TIMEOUT = timedelta(
+    minutes=int(os.getenv("PICKUP_CONFIRM_TIMEOUT_MINUTES", "120") or 120)
+)
+DELIVERY_COMPLETE_TIMEOUT = timedelta(
+    minutes=int(os.getenv("DELIVERY_COMPLETE_TIMEOUT_MINUTES", "180") or 180)
+)
 DELIVERY_PROMOTION_ENABLED = os.getenv("DELIVERY_PROMOTION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 DELIVERY_PROMOTION_FEE_MMK = float(os.getenv("DELIVERY_PROMOTION_FEE_MMK", "1000") or 1000)
 DELIVERY_PROMOTION_START_AT = os.getenv("DELIVERY_PROMOTION_START_AT", "").strip()
@@ -275,6 +284,8 @@ class OrderResponse(BaseModel):
     rider_name: str | None = None
     created_at: datetime
     accepted_at: datetime | None = None
+    pickup_started_at: datetime | None = None
+    delivery_started_at: datetime | None = None
     pickup_lat: float | None = None
     pickup_lng: float | None = None
     dropoff_lat: float | None = None
@@ -306,6 +317,10 @@ class OrderResponse(BaseModel):
     cancellation_reason: str | None = None
     cancellation_compensation_amount: float | None = None
     cancelled_at: datetime | None = None
+    delivery_timeout_code: str | None = None
+    delivery_timeout_title: str | None = None
+    delivery_timeout_message: str | None = None
+    delivery_timeout_created_at: datetime | None = None
 
 
 class SignedUploadRequest(BaseModel):
@@ -1499,7 +1514,7 @@ def save_order(order: OrderResponse, user_phone: str, rider_phone: str | None = 
 
 
 def load_user_orders(user_phone: str) -> list[OrderResponse]:
-    release_expired_rider_deposit_orders()
+    process_order_timeouts()
     hidden_before = account_data_hidden_before(user_phone)
     with connect_db() as connection:
         if hidden_before:
@@ -1525,7 +1540,7 @@ def load_user_orders(user_phone: str) -> list[OrderResponse]:
 
 
 def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
-    release_expired_rider_deposit_orders()
+    process_order_timeouts()
     hidden_before = account_data_hidden_before(rider_phone)
     with connect_db() as connection:
         if hidden_before:
@@ -1601,6 +1616,64 @@ def rider_deposit_due_at(now: datetime | None = None) -> datetime:
     return (now or datetime.now(timezone.utc)) + RIDER_DEPOSIT_CONFIRM_WINDOW
 
 
+def order_delivery_timeout_message(code: str) -> tuple[str, str]:
+    messages = {
+        "accepted_auto_released": (
+            "订单已自动释放",
+            "骑手接单后 30 分钟没有开始取件，系统已自动释放订单，其他骑手可以重新接单。",
+        ),
+        "pickup_confirmation_timeout": (
+            "取件超时",
+            "骑手开始取件后 2 小时还没有确认取件，后台已标记超时，可手动释放给其他骑手。",
+        ),
+        "delivery_completion_timeout": (
+            "送达超时",
+            "骑手确认取件后 3 小时还没有完成送达，后台已收到提醒，请及时联系骑手处理。",
+        ),
+    }
+    return messages.get(code, ("配送超时提醒", "订单配送流程已超时，请联系后台处理。"))
+
+
+def timeout_update(code: str, now: datetime) -> dict[str, object]:
+    title, message = order_delivery_timeout_message(code)
+    return {
+        "delivery_timeout_code": code,
+        "delivery_timeout_title": title,
+        "delivery_timeout_message": message,
+        "delivery_timeout_created_at": now,
+    }
+
+
+def clear_delivery_timeout_update() -> dict[str, object]:
+    return {
+        "delivery_timeout_code": None,
+        "delivery_timeout_title": None,
+        "delivery_timeout_message": None,
+        "delivery_timeout_created_at": None,
+    }
+
+
+def released_order_update() -> dict[str, object]:
+    return {
+        "status": "matching",
+        "rider_name": None,
+        "accepted_at": None,
+        "pickup_started_at": None,
+        "delivery_started_at": None,
+        "rider_deposit_status": "unpaid",
+        "rider_deposit_due_at": None,
+        "rider_deposit_submitted_at": None,
+        "rider_deposit_proof_url": None,
+        "rider_lat": None,
+        "rider_lng": None,
+        "rider_location_updated_at": None,
+        "cancellation_actor": None,
+        "cancellation_reason": None,
+        "cancellation_compensation_amount": None,
+        "cancelled_at": None,
+    }
+
+
 def release_expired_rider_deposit_orders() -> None:
     now = datetime.now(timezone.utc)
     with connect_db() as connection:
@@ -1662,6 +1735,75 @@ def release_expired_rider_deposit_orders() -> None:
                     row["id"],
                 ),
             )
+
+
+def process_delivery_timeout_orders() -> None:
+    now = datetime.now(timezone.utc)
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, user_phone, rider_phone, payload
+            FROM orders
+            WHERE status IN ('accepted', 'picking_up', 'delivering')
+            """
+        ).fetchall()
+
+        for row in rows:
+            order = order_from_row(row)
+            updates: dict[str, object] | None = None
+            should_release = False
+
+            if order.status == "accepted":
+                accepted_at = utc_datetime(order.accepted_at or order.created_at)
+                if accepted_at and now - accepted_at >= ACCEPTED_PICKUP_START_TIMEOUT:
+                    updates = {
+                        **released_order_update(),
+                        **timeout_update("accepted_auto_released", now),
+                    }
+                    if order.rider_deposit_status == "not_required":
+                        updates["rider_deposit_status"] = "not_required"
+                    should_release = True
+            elif order.status == "picking_up":
+                pickup_started_at = utc_datetime(order.pickup_started_at or order.accepted_at or order.created_at)
+                if (
+                    pickup_started_at
+                    and now - pickup_started_at >= PICKUP_CONFIRM_TIMEOUT
+                    and order.delivery_timeout_code != "pickup_confirmation_timeout"
+                ):
+                    updates = timeout_update("pickup_confirmation_timeout", now)
+            elif order.status == "delivering":
+                delivery_started_at = utc_datetime(order.delivery_started_at or order.pickup_started_at or order.accepted_at or order.created_at)
+                if (
+                    delivery_started_at
+                    and now - delivery_started_at >= DELIVERY_COMPLETE_TIMEOUT
+                    and order.delivery_timeout_code != "delivery_completion_timeout"
+                ):
+                    updates = timeout_update("delivery_completion_timeout", now)
+
+            if updates is None:
+                continue
+
+            updated = order.model_copy(update=updates)
+            connection.execute(
+                """
+                UPDATE orders
+                SET rider_phone = ?,
+                    status = ?,
+                    payload = ?
+                WHERE id = ?
+                """,
+                (
+                    None if should_release else row["rider_phone"],
+                    updated.status,
+                    json.dumps(updated.model_dump(mode="json"), ensure_ascii=False),
+                    row["id"],
+                ),
+            )
+
+
+def process_order_timeouts() -> None:
+    release_expired_rider_deposit_orders()
+    process_delivery_timeout_orders()
 
 
 def sync_orders_for_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
@@ -1940,7 +2082,7 @@ def require_admin_key(key: str | None) -> None:
 
 
 def load_admin_orders() -> list[dict]:
-    release_expired_rider_deposit_orders()
+    process_order_timeouts()
     with connect_db() as connection:
         rows = connection.execute(
             """
@@ -2665,7 +2807,7 @@ ADMIN_HTML = r'''
         <tr${rowClass("order", order.id)} onclick="showDetail('${order.id}')">
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="pill">${label(order.payment_mode)}</span><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td><span class="pill">${label(order.payment_mode)}</span><br>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
-          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span></td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)} / 用户付款：${label(order.user_payment_status)}</span>${timeoutBadge(order)}</td>
           <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
           <td>${riderDepositLabel(order.rider_deposit_status)}<br>${order.rider_deposit_proof_url ? `<img src="${escapeHtml(order.rider_deposit_proof_url)}" alt="骑手押金截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : ""}</td>
@@ -2673,8 +2815,19 @@ ADMIN_HTML = r'''
           <td class="actions-cell">
             ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}', this)">${prepaid ? "确认用户付款" : "确认送货费"}</button>` : ""}
             ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}', this)">确认骑手押金</button>` : ""}
+            ${canReleaseTimedOutOrder(order) ? `<button onclick="event.stopPropagation(); releaseTimedOutOrder('${order.id}', this)">释放给其他骑手</button>` : ""}
           </td>
         </tr>`;
+    }
+
+    function timeoutBadge(order) {
+      if (!order.delivery_timeout_title && !order.delivery_timeout_message) return "";
+      return `<br><span class="muted" style="color:#b45309;font-weight:700;">${escapeHtml(order.delivery_timeout_title || "超时提醒")}</span>`;
+    }
+
+    function canReleaseTimedOutOrder(order) {
+      return ["accepted_auto_released", "pickup_confirmation_timeout"].includes(order.delivery_timeout_code) &&
+        ["matching", "accepted", "picking_up"].includes(order.status);
     }
 
     function filteredAccounts() {
@@ -3100,6 +3253,7 @@ ADMIN_HTML = r'''
         <div class="row"><b>取件</b><span>${escapeHtml(order.pickup_address)}</span></div>
         <div class="row"><b>收货</b><span>${escapeHtml(order.dropoff_address)}</span></div>
         <div class="row"><b>备注</b><span>${escapeHtml(order.note || "")}</span></div>
+        ${order.delivery_timeout_message ? `<div class="row"><b>超时提醒</b><span>${escapeHtml(order.delivery_timeout_message)}${order.delivery_timeout_created_at ? `<br><span class="muted">${escapeHtml(new Date(order.delivery_timeout_created_at).toLocaleString())}</span>` : ""}</span></div>` : ""}
         <div class="actions">
           <select id="status">${optionHtml(statusOptions, order.status)}</select>
           <select id="userPayment">${optionHtml(paymentOptions, order.user_payment_status)}</select>
@@ -3107,6 +3261,7 @@ ADMIN_HTML = r'''
           <select id="settlement">${optionHtml(settlementOptions, order.settlement_status)}</select>
         </div>
         ${order.user_payment_status !== "confirmed" ? `<button onclick="confirmUserPayment('${order.id}', this)">确认收到送货费</button>` : ""}
+        ${canReleaseTimedOutOrder(order) ? `<button onclick="releaseTimedOutOrder('${order.id}', this)">释放给其他骑手</button>` : ""}
         <button onclick="saveOrder('${order.id}', this)">保存订单状态</button>
       `;
     }
@@ -3245,6 +3400,10 @@ ADMIN_HTML = r'''
       const order = state.orders.find(item => item.id === id);
       const status = order?.settlement_status === "paid_to_rider" ? "completed" : "paid_to_user";
       await patchOrder(id, { settlement_status: status }, button, "已确认转账给用户");
+    }
+
+    async function releaseTimedOutOrder(id, button = null) {
+      await patchOrder(id, { status: "matching" }, button, "订单已释放给其他骑手");
     }
 
     document.getElementById("q").addEventListener("input", () => {
@@ -4330,7 +4489,7 @@ def admin_update_order(
     key: str = Query(default=""),
 ) -> OrderResponse:
     require_admin_key(key)
-    release_expired_rider_deposit_orders()
+    process_order_timeouts()
     record = load_order_record(order_id)
     if not record:
         raise HTTPException(status_code=404, detail="订单不存在")
@@ -4355,6 +4514,27 @@ def admin_update_order(
     now = datetime.now(timezone.utc)
     if request.rider_deposit_status == "confirmed":
         updates["rider_deposit_due_at"] = None
+    next_rider_phone = rider_phone
+    if request.status == "matching":
+        updates.update(released_order_update())
+        if order.rider_deposit_status == "not_required":
+            updates["rider_deposit_status"] = "not_required"
+        if order.delivery_timeout_code:
+            updates.update(timeout_update(order.delivery_timeout_code, order.delivery_timeout_created_at or now))
+        next_rider_phone = None
+    elif request.status in ("accepted", "picking_up", "delivering", "completed"):
+        updates.update(clear_delivery_timeout_update())
+        if request.status == "accepted":
+            updates["accepted_at"] = order.accepted_at or now
+        if request.status == "picking_up" and order.pickup_started_at is None:
+            updates["pickup_started_at"] = now
+        if request.status == "delivering":
+            if order.pickup_started_at is None:
+                updates["pickup_started_at"] = now
+            if order.delivery_started_at is None:
+                updates["delivery_started_at"] = now
+        if request.status == "completed" and order.delivery_started_at is None:
+            updates["delivery_started_at"] = now
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_paid_at:
         updates["rider_settlement_paid_at"] = now
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_bill_created_at:
@@ -4387,7 +4567,7 @@ def admin_update_order(
         updates["user_settlement_bill_amount"] = order.goods_amount
         updates["user_settlement_bill_created_at"] = now
     updated = order.model_copy(update=updates)
-    save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
+    save_order(updated, user_phone=user_phone, rider_phone=next_rider_phone)
     return order_for_response(updated)
 
 
@@ -4919,7 +5099,7 @@ def get_order(
 ) -> OrderResponse:
     user_phone = require_account_phone(authorization)
     mark_account_app_role(user_phone, "user")
-    release_expired_rider_deposit_orders()
+    process_order_timeouts()
     record = load_order_record(order_id)
     if record:
         order, stored_user_phone, _ = record
@@ -4988,7 +5168,7 @@ def accept_order(
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
     mark_account_app_role(rider_phone, "rider")
-    release_expired_rider_deposit_orders()
+    process_order_timeouts()
     if rider_has_active_delivery_order(rider_phone):
         raise HTTPException(status_code=409, detail="你已有进行中订单，完成后才能接受新的订单。")
     record = load_order_record(order_id)
@@ -5004,6 +5184,9 @@ def accept_order(
             "status": "accepted",
             "rider_name": request.rider_name,
             "accepted_at": datetime.now(timezone.utc),
+            "pickup_started_at": None,
+            "delivery_started_at": None,
+            **clear_delivery_timeout_update(),
         }
         if order.rider_deposit_status != "not_required":
             updates["rider_deposit_due_at"] = rider_deposit_due_at()
@@ -5023,7 +5206,7 @@ def mark_rider_deposit_transferred(
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
     mark_account_app_role(rider_phone, "rider")
-    release_expired_rider_deposit_orders()
+    process_order_timeouts()
     record = load_order_record(order_id)
     if record:
         order, user_phone, stored_rider_phone = record
@@ -5061,7 +5244,7 @@ def update_rider_order_status(
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
     mark_account_app_role(rider_phone, "rider")
-    release_expired_rider_deposit_orders()
+    process_order_timeouts()
     allowed = ["picking_up", "delivering", "completed"]
     if request.status not in allowed:
         raise HTTPException(status_code=400, detail="骑手不能设置这个订单状态")
@@ -5079,7 +5262,22 @@ def update_rider_order_status(
             and order.rider_deposit_status != "confirmed"
         ):
             raise HTTPException(status_code=403, detail="平台确认骑手押金后才能开始取件配送")
-        updated = order.model_copy(update={"status": request.status})
+        updates: dict[str, object] = {
+            "status": request.status,
+            **clear_delivery_timeout_update(),
+        }
+        now = datetime.now(timezone.utc)
+        if request.status == "picking_up" and order.pickup_started_at is None:
+            updates["pickup_started_at"] = now
+        if request.status == "delivering":
+            if order.pickup_started_at is None:
+                updates["pickup_started_at"] = now
+            if order.delivery_started_at is None:
+                updates["delivery_started_at"] = now
+        if request.status == "completed":
+            if order.delivery_started_at is None:
+                updates["delivery_started_at"] = now
+        updated = order.model_copy(update=updates)
         save_order(updated, user_phone=user_phone, rider_phone=rider_phone)
         return order_for_response(updated)
     raise HTTPException(status_code=404, detail="订单不存在")
@@ -5116,6 +5314,7 @@ def cancel_rider_order(
                     "cancellation_reason": None,
                     "cancellation_compensation_amount": None,
                     "cancelled_at": None,
+                    **clear_delivery_timeout_update(),
                 }
             )
             save_order(released, user_phone=user_phone, rider_phone=None)
