@@ -3689,7 +3689,8 @@ def google_maps_query_text(text: str) -> str:
 
 
 async def geocode_location(text: str) -> tuple[float, float]:
-    expanded = await expand_location_text(text.strip())
+    original_text = text.strip()
+    expanded = await expand_location_text(original_text)
 
     coordinate = parse_coordinate(expanded)
     if coordinate:
@@ -3707,6 +3708,11 @@ async def geocode_location(text: str) -> tuple[float, float]:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY is not configured")
+
+    if is_google_maps_link(original_text) or is_google_maps_link(expanded):
+        places_coordinate = await google_places_coordinate(query_text, api_key)
+        if places_coordinate:
+            return places_coordinate
 
     async with httpx.AsyncClient(timeout=12) as client:
         response = await client.get(
@@ -3726,6 +3732,90 @@ async def geocode_location(text: str) -> tuple[float, float]:
 
     location = payload["results"][0]["geometry"]["location"]
     return float(location["lat"]), float(location["lng"])
+
+
+def is_google_maps_link(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        "maps.app.goo.gl" in lowered
+        or "goo.gl/maps" in lowered
+        or "google." in lowered and "/maps" in lowered
+        or "maps.google" in lowered
+    )
+
+
+async def google_places_coordinate(query_text: str, api_key: str) -> tuple[float, float] | None:
+    cleaned_query = query_text.strip()
+    if not cleaned_query or parse_coordinate(cleaned_query):
+        return None
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        for url, params in google_places_lookup_requests(cleaned_query, api_key):
+            try:
+                response = await client.get(url, params=params)
+                payload = response.json()
+            except Exception as error:
+                logger.warning("Google Places lookup failed for %s: %s", cleaned_query, error)
+                continue
+
+            coordinate = google_places_payload_coordinate(payload)
+            if coordinate:
+                return coordinate
+
+            status = payload.get("status")
+            if status and status not in {"OK", "ZERO_RESULTS"}:
+                logger.warning("Google Places lookup status for %s: %s", cleaned_query, status)
+
+    return None
+
+
+def google_places_lookup_requests(query_text: str, api_key: str) -> list[tuple[str, dict[str, str]]]:
+    return [
+        (
+            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+            {
+                "input": query_text,
+                "inputtype": "textquery",
+                "fields": "geometry,place_id,name,formatted_address",
+                "key": api_key,
+            },
+        ),
+        (
+            "https://maps.googleapis.com/maps/api/place/textsearch/json",
+            {
+                "query": query_text,
+                "key": api_key,
+            },
+        ),
+    ]
+
+
+def google_places_payload_coordinate(payload: dict) -> tuple[float, float] | None:
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list) and candidates:
+        return google_geometry_coordinate(candidates[0].get("geometry"))
+
+    results = payload.get("results")
+    if isinstance(results, list) and results:
+        return google_geometry_coordinate(results[0].get("geometry"))
+
+    return None
+
+
+def google_geometry_coordinate(geometry: object) -> tuple[float, float] | None:
+    if not isinstance(geometry, dict):
+        return None
+    location = geometry.get("location")
+    if not isinstance(location, dict):
+        return None
+    try:
+        lat = float(location["lat"])
+        lng = float(location["lng"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if is_valid_coordinate(lat, lng):
+        return lat, lng
+    return None
 
 
 async def nominatim_geocode_location(text: str) -> tuple[float, float] | None:
