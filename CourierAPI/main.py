@@ -3114,8 +3114,17 @@ ADMIN_HTML = r'''
     }
 
     function serviceConversations() {
+      const adminConversationIds = new Set(
+        (state.messages || [])
+          .filter(message => message.sender_type === "admin")
+          .map(message => String(message.conversation_id || "").toLowerCase())
+      );
+      const serviceMessages = (state.messages || []).filter(message => {
+        const conversationId = String(message.conversation_id || "").toLowerCase();
+        return !conversationId.startsWith("order:") || adminConversationIds.has(conversationId);
+      });
       const grouped = new Map();
-      state.messages.forEach(message => {
+      serviceMessages.forEach(message => {
         const existing = grouped.get(message.conversation_id);
         if (!existing || new Date(message.created_at) > new Date(existing.created_at)) {
           grouped.set(message.conversation_id, message);
@@ -3133,6 +3142,8 @@ ADMIN_HTML = r'''
       const conversations = serviceConversations();
       if (!selectedServiceConversationId && conversations.length) {
         selectedServiceConversationId = conversations[0].conversation_id;
+      } else if (selectedServiceConversationId && !conversations.some(message => message.conversation_id === selectedServiceConversationId)) {
+        selectedServiceConversationId = conversations.length ? conversations[0].conversation_id : null;
       }
 
       const list = document.getElementById("chatConversations");
@@ -3155,8 +3166,17 @@ ADMIN_HTML = r'''
         return;
       }
 
+      const adminConversationIds = new Set(
+        (state.messages || [])
+          .filter(message => message.sender_type === "admin")
+          .map(message => String(message.conversation_id || "").toLowerCase())
+      );
       const messages = state.messages
         .filter(message => message.conversation_id === selectedServiceConversationId)
+        .filter(message => {
+          const conversationId = String(message.conversation_id || "").toLowerCase();
+          return !conversationId.startsWith("order:") || adminConversationIds.has(conversationId);
+        })
         .sort((a, b) => dateMs(a.created_at) - dateMs(b.created_at));
       title.textContent = selectedServiceConversationId ? serviceConversationTitle(selectedServiceConversationId) : "聊天记录";
       chat.innerHTML = messages.map(message => `
