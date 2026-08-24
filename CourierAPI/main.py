@@ -1287,10 +1287,14 @@ def order_for_response(order: OrderResponse, rider_phone: str | None = None) -> 
     delivery_fee = order.delivery_fee or order.price
     platform_fee = order.platform_delivery_fee if order.promotion_applied else order.platform_delivery_fee or delivery_platform_fee(delivery_fee)
     rider_fee = order.rider_delivery_fee or delivery_payout_fee(order.original_delivery_fee or delivery_fee)
+    account_rider_name = account_nickname(rider_phone)
+    order_rider_name = clean_optional_text(order.rider_name)
+    rider_name = account_rider_name if order_rider_name in (None, "Rider") else order_rider_name
     return order.model_copy(
         update={
             "platform_delivery_fee": platform_fee,
             "rider_delivery_fee": rider_fee,
+            "rider_name": rider_name,
             "goods_image_url": signed_gcs_read_url(order.goods_image_url),
             "payment_proof_url": signed_gcs_read_url(order.payment_proof_url),
             "rider_deposit_proof_url": signed_gcs_read_url(order.rider_deposit_proof_url),
