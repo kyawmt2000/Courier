@@ -3596,18 +3596,19 @@ async def expand_location_text(text: str) -> str:
     ]
 
     redirected_url = await expand_google_maps_redirect_url(url_text, user_agents)
-    if redirected_url:
+    if redirected_url and parse_coordinate(redirected_url):
         return redirected_url
+    fetch_url = redirected_url or url_text
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=12) as client:
         for user_agent in user_agents:
             try:
                 response = await client.get(
-                    url_text,
+                    fetch_url,
                     headers=google_maps_request_headers(user_agent),
                 )
             except httpx.HTTPError as error:
-                logger.warning("Google Maps short link expansion failed for %s: %s", url_text, error)
+                logger.warning("Google Maps short link expansion failed for %s: %s", fetch_url, error)
                 continue
             expanded_url = str(response.url)
             decoded_html = decoded_google_maps_text(response.text)
@@ -3615,11 +3616,17 @@ async def expand_location_text(text: str) -> str:
                 return decoded_html
 
             html_url = google_maps_url_text(decoded_html)
+            if html_url and parse_coordinate(html_url):
+                return html_url
+
             if html_url and not is_google_maps_short_link(html_url):
                 return html_url
 
             if not is_google_maps_short_link(expanded_url):
                 return expanded_url
+
+        if redirected_url:
+            return redirected_url
 
         return text
 
