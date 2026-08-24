@@ -882,7 +882,7 @@ async def send_sms_code(phone: str, code: str) -> None:
 
 
 def estimate_price(distance_km: float, weight_kg: float) -> float:
-    return round(distance_km * 1000, 2)
+    return round(distance_km * 1055, 2)
 
 
 def parse_config_datetime(value: str) -> datetime | None:
