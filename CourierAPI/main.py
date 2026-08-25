@@ -41,6 +41,7 @@ except ImportError:
 app = FastAPI(title="Courier API", version="1.0.0")
 CURRENT_TERMS_VERSION = "2026-08-24-off-platform"
 RIDER_CANCEL_DELIVERY_PENALTY_MMK = float(os.getenv("RIDER_CANCEL_DELIVERY_PENALTY_MMK", "1000") or 1000)
+USER_CANCEL_DELIVERY_PENALTY_MMK = float(os.getenv("USER_CANCEL_DELIVERY_PENALTY_MMK", "1000") or 1000)
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
 ACCEPTED_PICKUP_START_TIMEOUT = timedelta(
     minutes=int(os.getenv("ACCEPTED_PICKUP_START_TIMEOUT_MINUTES", "30") or 30)
@@ -137,6 +138,7 @@ class PlatformPaymentConfigResponse(BaseModel):
     order_hours_available: bool = True
     order_hours_message: str | None = None
     rider_cancel_delivery_penalty_mmk: float = 1000
+    user_cancel_delivery_penalty_mmk: float = 1000
     delivery_weight_fee_threshold_kg: float = 7
     delivery_weight_extra_fee_mmk: float = 1000
 
@@ -4600,6 +4602,7 @@ def get_platform_payment_config() -> PlatformPaymentConfigResponse:
         order_hours_available=bool(hours["available"]),
         order_hours_message=clean_optional_text(str(hours["message"])) if hours["message"] else None,
         rider_cancel_delivery_penalty_mmk=RIDER_CANCEL_DELIVERY_PENALTY_MMK,
+        user_cancel_delivery_penalty_mmk=USER_CANCEL_DELIVERY_PENALTY_MMK,
         delivery_weight_fee_threshold_kg=DELIVERY_WEIGHT_FEE_THRESHOLD_KG,
         delivery_weight_extra_fee_mmk=DELIVERY_WEIGHT_EXTRA_FEE_MMK,
     )
@@ -5720,8 +5723,8 @@ def cancel_order(
         order, stored_user_phone, rider_phone = record
         if stored_user_phone != user_phone:
             raise HTTPException(status_code=403, detail="不能取消其他账号的订单")
-        if order.status in ("delivering", "completed"):
-            raise HTTPException(status_code=400, detail="订单已经开始配送，不能取消")
+        if order.status in ("completed", "cancelled"):
+            raise HTTPException(status_code=400, detail="订单已经完成或取消，不能取消")
         now = datetime.now(timezone.utc)
         accepted_at = order.accepted_at or order.created_at
         if accepted_at.tzinfo is None:
@@ -5731,12 +5734,13 @@ def cancel_order(
             and order.status in ("accepted", "picking_up")
             and (now - accepted_at).total_seconds() >= 5 * 60
         )
+        has_user_cancel_penalty = order.status == "delivering" or is_late_confirmed_rider_deposit
         updated = order.model_copy(
             update={
                 "status": "cancelled",
                 "cancellation_actor": "user",
                 "cancellation_reason": "用户取消订单",
-                "cancellation_compensation_amount": 1000 if is_late_confirmed_rider_deposit else 0,
+                "cancellation_compensation_amount": USER_CANCEL_DELIVERY_PENALTY_MMK if has_user_cancel_penalty else 0,
                 "cancelled_at": now,
             }
         )
