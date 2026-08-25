@@ -7,7 +7,9 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
@@ -84,6 +86,10 @@ IOS_RIDER_APP_STORE_URL = os.getenv("IOS_RIDER_APP_STORE_URL", "").strip()
 IOS_RIDER_FORCE_UPDATE = os.getenv("IOS_RIDER_FORCE_UPDATE", "false").lower() in {"1", "true", "yes", "on"}
 logger = logging.getLogger("courier-api")
 ADMIN_CHAT_SENDER_NAME = "Customer Service"
+ADMIN_DATA_ORDER_LIMIT = int(os.getenv("ADMIN_DATA_ORDER_LIMIT", "1000") or 1000)
+ADMIN_DATA_PAYMENT_LIMIT = int(os.getenv("ADMIN_DATA_PAYMENT_LIMIT", "500") or 500)
+SIGNED_GCS_READ_URL_CACHE_TTL_SECONDS = 25 * 60
+signed_gcs_read_url_cache: dict[str, tuple[float, str]] = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -567,6 +573,14 @@ def init_storage() -> None:
                 last_login_at TEXT NOT NULL
             )
             """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_last_login "
+            "ON accounts (last_login_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_sender_type_phone "
+            "ON chat_messages (sender_type, sender_phone)"
         )
         connection.execute(
             """
@@ -1212,6 +1226,7 @@ def gcs_credentials_info() -> dict | None:
     return None
 
 
+@lru_cache(maxsize=1)
 def gcs_client():
     if service_account is None:
         raise HTTPException(status_code=500, detail="服务器未安装 Google service account 依赖")
@@ -1252,14 +1267,24 @@ def signed_gcs_read_url(value: str | None) -> str | None:
     if not object_name or storage is None:
         return value
 
+    now = time.time()
+    cached = signed_gcs_read_url_cache.get(object_name)
+    if cached and cached[0] > now:
+        return cached[1]
+
     try:
         bucket = gcs_client().bucket(gcs_bucket_name())
         blob = bucket.blob(object_name)
-        return blob.generate_signed_url(
+        signed_url = blob.generate_signed_url(
             version="v4",
             expiration=timedelta(minutes=30),
             method="GET",
         )
+        signed_gcs_read_url_cache[object_name] = (
+            now + SIGNED_GCS_READ_URL_CACHE_TTL_SECONDS,
+            signed_url,
+        )
+        return signed_url
     except Exception:
         logger.exception("GCS signed read URL creation failed")
         return value
@@ -1371,14 +1396,16 @@ def load_prepaid_payment(payment_id: str) -> PrepaidPaymentResponse | None:
     return prepaid_payment_from_row(row)
 
 
-def load_admin_prepaid_payments() -> list[dict]:
+def load_admin_prepaid_payments(limit: int = ADMIN_DATA_PAYMENT_LIMIT) -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
             """
             SELECT payload
             FROM prepaid_payments
             ORDER BY created_at DESC
-            """
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
     result: list[dict] = []
     for row in rows:
@@ -2112,7 +2139,7 @@ def require_admin_key(key: str | None) -> None:
         raise HTTPException(status_code=401, detail="后台密码不正确")
 
 
-def load_admin_orders() -> list[dict]:
+def load_admin_orders(limit: int = ADMIN_DATA_ORDER_LIMIT) -> list[dict]:
     process_order_timeouts()
     with connect_db() as connection:
         rows = connection.execute(
@@ -2131,7 +2158,9 @@ def load_admin_orders() -> list[dict]:
             LEFT JOIN accounts AS rider_account
                 ON rider_account.phone = orders.rider_phone
             ORDER BY created_at DESC
-            """
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
 
     result: list[dict] = []
@@ -2156,24 +2185,46 @@ def load_admin_accounts() -> list[dict]:
             ORDER BY last_login_at DESC
             """
         ).fetchall()
+        order_rows = connection.execute(
+            """
+            SELECT user_phone, rider_phone
+            FROM orders
+            """
+        ).fetchall()
+        message_rows = connection.execute(
+            """
+            SELECT sender_phone, sender_type
+            FROM chat_messages
+            WHERE sender_phone IS NOT NULL
+              AND sender_type IN ('rider', 'user')
+            """
+        ).fetchall()
+
+    rider_scores: dict[str, int] = {}
+    user_scores: dict[str, int] = {}
+    for row in order_rows:
+        user_phone = row["user_phone"]
+        rider_phone = row["rider_phone"]
+        if user_phone:
+            user_scores[user_phone] = user_scores.get(user_phone, 0) + 1
+        if rider_phone:
+            rider_scores[rider_phone] = rider_scores.get(rider_phone, 0) + 1
+    for row in message_rows:
+        sender_phone = row["sender_phone"]
+        if not sender_phone:
+            continue
+        if row["sender_type"] == "rider":
+            rider_scores[sender_phone] = rider_scores.get(sender_phone, 0) + 1
+        elif row["sender_type"] == "user":
+            user_scores[sender_phone] = user_scores.get(sender_phone, 0) + 1
+
     result: list[dict] = []
     for row in rows:
         account = dict(row)
         phone = account.get("phone")
         if not normalize_app_role(account.get("app_role")) and phone:
-            with connect_db() as connection:
-                inferred = connection.execute(
-                    """
-                    SELECT
-                        (SELECT COUNT(*) FROM orders WHERE rider_phone = ?) AS rider_orders,
-                        (SELECT COUNT(*) FROM orders WHERE user_phone = ?) AS user_orders,
-                        (SELECT COUNT(*) FROM chat_messages WHERE sender_phone = ? AND sender_type = 'rider') AS rider_messages,
-                        (SELECT COUNT(*) FROM chat_messages WHERE sender_phone = ? AND sender_type = 'user') AS user_messages
-                    """,
-                    (phone, phone, phone, phone),
-                ).fetchone()
-            rider_score = int(inferred["rider_orders"] or 0) + int(inferred["rider_messages"] or 0)
-            user_score = int(inferred["user_orders"] or 0) + int(inferred["user_messages"] or 0)
+            rider_score = rider_scores.get(phone, 0)
+            user_score = user_scores.get(phone, 0)
             if rider_score or user_score:
                 account["app_role"] = "rider" if rider_score >= user_score else "user"
         if not normalize_app_role(account.get("app_role")):
