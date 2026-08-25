@@ -1167,6 +1167,52 @@ def account_conversation_id(conversation_id: str, authorization: str | None, fal
     return f"account:{phone}"
 
 
+def order_chat_conversation_id(order_id: str) -> str:
+    return f"order:{order_id.strip().lower()}"
+
+
+def order_chat_id_from_conversation(conversation_id: str) -> str | None:
+    normalized = conversation_id.strip().lower()
+    if normalized.startswith("order:"):
+        order_id = normalized.removeprefix("order:").strip()
+        return order_id or None
+    if load_order_record(normalized):
+        return normalized
+    return None
+
+
+def order_chat_conversation_aliases(conversation_id: str) -> list[str]:
+    order_id = order_chat_id_from_conversation(conversation_id)
+    if not order_id:
+        return [conversation_id.strip().lower()]
+    canonical = order_chat_conversation_id(order_id)
+    return list(dict.fromkeys([canonical, canonical.upper(), order_id, order_id.upper()]))
+
+
+def require_order_chat_conversation_id(
+    conversation_id: str,
+    account_phone: str,
+    sender_type: ChatSenderType | None = None,
+) -> str:
+    order_id = order_chat_id_from_conversation(conversation_id)
+    if not order_id:
+        return account_conversation_id(conversation_id, None, account_phone)
+
+    record = load_order_record(order_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="订单不存在")
+
+    _, user_phone, rider_phone = record
+    if account_phone not in {user_phone, rider_phone}:
+        raise HTTPException(status_code=403, detail="不能查看这个订单聊天")
+    if sender_type == "user" and account_phone != user_phone:
+        raise HTTPException(status_code=403, detail="用户只能用用户身份发送订单消息")
+    if sender_type == "rider" and account_phone != rider_phone:
+        raise HTTPException(status_code=403, detail="骑手只能用骑手身份发送订单消息")
+
+    return order_chat_conversation_id(order_id)
+
+
 def upload_folder(value: str) -> str:
     normalized = value.strip().lower().replace("_", " ")
     folders = {
@@ -3106,16 +3152,41 @@ ADMIN_HTML = r'''
       return raw;
     }
 
+    function orderConversationIdSet() {
+      const ids = new Set();
+      (state.orders || []).forEach(order => {
+        const id = String(order.id || "").toLowerCase();
+        if (!id) return;
+        ids.add(id);
+        ids.add(`order:${id}`);
+      });
+      return ids;
+    }
+
+    function canonicalConversationId(conversationId) {
+      const raw = String(conversationId || "").toLowerCase();
+      const orderIds = orderConversationIdSet();
+      if (raw.startsWith("order:")) return raw;
+      return orderIds.has(raw) ? `order:${raw}` : raw;
+    }
+
+    function isOrderConversation(conversationId) {
+      return orderConversationIdSet().has(String(conversationId || "").toLowerCase());
+    }
+
     function accountChatThreads(phone, relatedOrders) {
       const conversationIds = new Set([`account:${phone}`.toLowerCase()]);
-      relatedOrders.forEach(order => conversationIds.add(`order:${order.id}`.toLowerCase()));
+      relatedOrders.forEach(order => {
+        conversationIds.add(String(order.id || "").toLowerCase());
+        conversationIds.add(`order:${order.id}`.toLowerCase());
+      });
       const relatedMessages = (state.messages || []).filter(message => {
         const conversationId = String(message.conversation_id || "").toLowerCase();
         return message.sender_phone === phone || conversationIds.has(conversationId);
       });
       const grouped = new Map();
       relatedMessages.forEach(message => {
-        const conversationId = String(message.conversation_id || "").toLowerCase();
+        const conversationId = canonicalConversationId(message.conversation_id);
         if (!grouped.has(conversationId)) grouped.set(conversationId, []);
         grouped.get(conversationId).push(message);
       });
@@ -3196,14 +3267,9 @@ ADMIN_HTML = r'''
     }
 
     function serviceConversations() {
-      const adminConversationIds = new Set(
-        (state.messages || [])
-          .filter(message => message.sender_type === "admin")
-          .map(message => String(message.conversation_id || "").toLowerCase())
-      );
       const serviceMessages = (state.messages || []).filter(message => {
         const conversationId = String(message.conversation_id || "").toLowerCase();
-        return !conversationId.startsWith("order:") || adminConversationIds.has(conversationId);
+        return !isOrderConversation(conversationId);
       });
       const grouped = new Map();
       serviceMessages.forEach(message => {
@@ -3248,16 +3314,11 @@ ADMIN_HTML = r'''
         return;
       }
 
-      const adminConversationIds = new Set(
-        (state.messages || [])
-          .filter(message => message.sender_type === "admin")
-          .map(message => String(message.conversation_id || "").toLowerCase())
-      );
       const messages = state.messages
         .filter(message => message.conversation_id === selectedServiceConversationId)
         .filter(message => {
           const conversationId = String(message.conversation_id || "").toLowerCase();
-          return !conversationId.startsWith("order:") || adminConversationIds.has(conversationId);
+          return !isOrderConversation(conversationId);
         })
         .sort((a, b) => dateMs(a.created_at) - dateMs(b.created_at));
       title.textContent = selectedServiceConversationId ? serviceConversationTitle(selectedServiceConversationId) : "聊天记录";
@@ -4972,9 +5033,7 @@ def list_chat_messages(
             if main_conversation_id != "main":
                 conversation_ids.append("main")
             for row in order_rows:
-                order_conversation_id = f"order:{row['id']}"
-                conversation_ids.append(order_conversation_id.lower())
-                conversation_ids.append(order_conversation_id.upper())
+                conversation_ids.extend(order_chat_conversation_aliases(f"order:{row['id']}"))
 
             if hidden_before:
                 message_rows = connection.execute(
@@ -5016,32 +5075,34 @@ def list_chat_messages(
 
         return [chat_message_from_row(row) for row in reversed(rows)]
 
-    conversation_id = account_conversation_id(conversation_id, authorization)
     phone = require_account_phone(authorization)
+    conversation_id = require_order_chat_conversation_id(conversation_id, phone)
     hidden_before = account_data_hidden_before(phone)
+    conversation_ids = order_chat_conversation_aliases(conversation_id)
+    placeholders = ",".join("?" for _ in conversation_ids)
     with connect_db() as connection:
         if hidden_before:
             rows = connection.execute(
-                """
+                f"""
                 SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
                 FROM chat_messages
-                WHERE conversation_id = ?
+                WHERE conversation_id IN ({placeholders})
                   AND created_at > ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (conversation_id, hidden_before, limit),
+                (*conversation_ids, hidden_before, limit),
             ).fetchall()
         else:
             rows = connection.execute(
-                """
+                f"""
                 SELECT id, conversation_id, text, sender_type, sender_name, sender_phone, image_url, created_at
                 FROM chat_messages
-                WHERE conversation_id = ?
+                WHERE conversation_id IN ({placeholders})
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (conversation_id, limit),
+                (*conversation_ids, limit),
             ).fetchall()
 
     return [chat_message_from_row(row) for row in reversed(rows)]
@@ -5052,16 +5113,21 @@ def create_chat_message(
     request: CreateChatMessageRequest,
     authorization: str | None = Header(default=None),
 ) -> ChatMessageResponse:
+    if request.sender_type == "admin":
+        raise HTTPException(status_code=403, detail="后台消息只能从后台发送")
+
     message_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
     sender_phone = phone_from_authorization(authorization)
     if not sender_phone and request.sender_phone:
         sender_phone = normalize_chat_sender_account(request.sender_phone)
+    if not sender_phone:
+        raise HTTPException(status_code=401, detail="请先登录")
     mark_account_app_role(sender_phone, request.sender_type)
     text = request.text.strip()
     image_url = request.image_url.strip() if request.image_url else None
     sender_name = account_nickname(sender_phone) or request.sender_name.strip() or ("骑手" if request.sender_type == "rider" else "用户")
-    conversation_id = account_conversation_id(request.conversation_id, authorization, sender_phone)
+    conversation_id = require_order_chat_conversation_id(request.conversation_id, sender_phone, request.sender_type)
 
     if not text and not image_url:
         raise HTTPException(status_code=400, detail="消息不能为空")
