@@ -3120,9 +3120,13 @@ ADMIN_HTML = r'''
         const photos = (application.photo_urls || []).slice(0, 10).map(url =>
           `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="店铺照片"></a>`
         ).join("");
-        const nrc = application.owner_nrc_back_url
-          ? `<a href="${escapeHtml(application.owner_nrc_back_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.owner_nrc_back_url)}" alt="负责人NRC"></a>`
-          : `<span class="muted">未上传NRC</span>`;
+        const nrcFront = application.owner_nrc_front_url
+          ? `<a href="${escapeHtml(application.owner_nrc_front_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.owner_nrc_front_url)}" alt="负责人NRC正面"></a>`
+          : `<span class="muted">未上传正面</span>`;
+        const nrcBack = application.owner_nrc_back_url
+          ? `<a href="${escapeHtml(application.owner_nrc_back_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.owner_nrc_back_url)}" alt="负责人NRC反面"></a>`
+          : `<span class="muted">未上传反面</span>`;
+        const nrc = `<div><span class="muted">正面</span><br>${nrcFront}</div><div style="margin-top:4px;"><span class="muted">反面</span><br>${nrcBack}</div>`;
         const payment = application.payment_qr_url
           ? `<a href="${escapeHtml(application.payment_qr_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.payment_qr_url)}" alt="收款码"></a>`
           : `<span class="muted">${escapeHtml(application.bank_account_name || "未填写名字")}<br>${escapeHtml(application.bank_account_number || application.bank_account || "未填写账号")}</span>`;
