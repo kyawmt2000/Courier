@@ -26,6 +26,8 @@ from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padd
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from pydantic import BaseModel, ConfigDict, Field
 
+from food import create_food_router, init_food_storage
+
 try:
     from google.cloud import storage
     from google.oauth2 import id_token as google_id_token
@@ -664,6 +666,7 @@ def init_storage() -> None:
         add_column_if_missing(connection, "delivery_promotion_redemptions", "original_delivery_fee", "REAL NOT NULL DEFAULT 0")
         add_column_if_missing(connection, "delivery_promotion_redemptions", "discounted_delivery_fee", "REAL NOT NULL DEFAULT 0")
         add_column_if_missing(connection, "delivery_promotion_redemptions", "created_at", "TEXT NOT NULL DEFAULT ''")
+        init_food_storage(connection)
 
 
 init_storage()
@@ -1150,6 +1153,9 @@ def require_account_phone(authorization: str | None) -> str:
     if not phone:
         raise HTTPException(status_code=401, detail="请先登录")
     return phone
+
+
+app.include_router(create_food_router(db_path, require_account_phone))
 
 
 def account_conversation_id(conversation_id: str, authorization: str | None, fallback_phone: str | None = None) -> str:
