@@ -56,9 +56,14 @@ class FoodOrderResponse(BaseModel):
 class FoodStoreApplicationRequest(BaseModel):
     store_name: str = Field(min_length=1)
     owner_name: str = Field(min_length=1)
+    owner_nrc_back_url: str = Field(min_length=1)
     primary_phone: str = Field(min_length=6)
     secondary_phone: str = Field(min_length=6)
+    payment_qr_url: str | None = None
+    bank_account: str = ""
+    store_address: str = Field(min_length=1)
     service_types: list[str] = Field(min_length=1)
+    license_urls: list[str] = Field(default_factory=list, max_length=3)
     photo_urls: list[str] = Field(min_length=5, max_length=10)
 
 
@@ -67,9 +72,14 @@ class FoodStoreApplicationResponse(BaseModel):
     user_phone: str
     store_name: str
     owner_name: str
+    owner_nrc_back_url: str = ""
     primary_phone: str
     secondary_phone: str
+    payment_qr_url: str | None = None
+    bank_account: str = ""
+    store_address: str = ""
     service_types: list[str]
+    license_urls: list[str] = Field(default_factory=list)
     photo_urls: list[str]
     status: str
     rejection_reason: str | None = None
@@ -169,6 +179,11 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
 
 def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
     payload = json.loads(row["payload"])
+    payload.setdefault("owner_nrc_back_url", "")
+    payload.setdefault("payment_qr_url", None)
+    payload.setdefault("bank_account", "")
+    payload.setdefault("store_address", "")
+    payload.setdefault("license_urls", [])
     payload["status"] = row["status"]
     payload["rejection_reason"] = row["rejection_reason"]
     payload["reviewed_at"] = row["reviewed_at"]
@@ -250,7 +265,7 @@ def update_admin_store_application(
                 (
                     restaurant_id,
                     application.store_name,
-                    " / ".join(application.service_types),
+                    " / ".join([*application.service_types, application.store_address]),
                     application.photo_urls[0] if application.photo_urls else None,
                     json.dumps(application.model_dump(mode="json"), ensure_ascii=False),
                     application.created_at,
@@ -397,6 +412,12 @@ def create_food_router(
         ]
         if not service_types:
             raise HTTPException(status_code=400, detail="请选择经营方式")
+        bank_account = request.bank_account.strip()
+        payment_qr_url = request.payment_qr_url.strip() if request.payment_qr_url else None
+        if not payment_qr_url and not bank_account:
+            raise HTTPException(status_code=400, detail="请上传收款码或填写银行账号")
+        if len(request.license_urls) > 3:
+            raise HTTPException(status_code=400, detail="营业执照最多上传 3 张")
 
         created_at = datetime.now(timezone.utc).isoformat()
         application = FoodStoreApplicationResponse(
@@ -404,9 +425,14 @@ def create_food_router(
             user_phone=user_phone,
             store_name=request.store_name.strip(),
             owner_name=request.owner_name.strip(),
+            owner_nrc_back_url=request.owner_nrc_back_url.strip(),
             primary_phone=request.primary_phone.strip(),
             secondary_phone=request.secondary_phone.strip(),
+            payment_qr_url=payment_qr_url,
+            bank_account=bank_account,
+            store_address=request.store_address.strip(),
             service_types=service_types,
+            license_urls=request.license_urls,
             photo_urls=request.photo_urls,
             status="pending",
             created_at=created_at,
