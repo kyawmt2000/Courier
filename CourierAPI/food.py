@@ -61,9 +61,12 @@ class FoodStoreApplicationRequest(BaseModel):
     secondary_phone: str = Field(min_length=6)
     payment_qr_url: str | None = None
     bank_account: str = ""
+    bank_account_name: str = ""
+    bank_account_number: str = ""
     store_address: str = Field(min_length=1)
     service_types: list[str] = Field(min_length=1)
     license_urls: list[str] = Field(default_factory=list, max_length=3)
+    menu_urls: list[str] = Field(default_factory=list, max_length=10)
     photo_urls: list[str] = Field(min_length=5, max_length=10)
 
 
@@ -77,9 +80,12 @@ class FoodStoreApplicationResponse(BaseModel):
     secondary_phone: str
     payment_qr_url: str | None = None
     bank_account: str = ""
+    bank_account_name: str = ""
+    bank_account_number: str = ""
     store_address: str = ""
     service_types: list[str]
     license_urls: list[str] = Field(default_factory=list)
+    menu_urls: list[str] = Field(default_factory=list)
     photo_urls: list[str]
     status: str
     rejection_reason: str | None = None
@@ -182,8 +188,11 @@ def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
     payload.setdefault("owner_nrc_back_url", "")
     payload.setdefault("payment_qr_url", None)
     payload.setdefault("bank_account", "")
+    payload.setdefault("bank_account_name", "")
+    payload.setdefault("bank_account_number", "")
     payload.setdefault("store_address", "")
     payload.setdefault("license_urls", [])
+    payload.setdefault("menu_urls", [])
     payload["status"] = row["status"]
     payload["rejection_reason"] = row["rejection_reason"]
     payload["reviewed_at"] = row["reviewed_at"]
@@ -412,12 +421,20 @@ def create_food_router(
         ]
         if not service_types:
             raise HTTPException(status_code=400, detail="请选择经营方式")
-        bank_account = request.bank_account.strip()
+        bank_account_name = request.bank_account_name.strip()
+        bank_account_number = request.bank_account_number.strip()
+        bank_account = request.bank_account.strip() or " / ".join(
+            value for value in [bank_account_name, bank_account_number] if value
+        )
         payment_qr_url = request.payment_qr_url.strip() if request.payment_qr_url else None
+        if (bank_account_name and not bank_account_number) or (bank_account_number and not bank_account_name):
+            raise HTTPException(status_code=400, detail="请填写银行名字和账号")
         if not payment_qr_url and not bank_account:
             raise HTTPException(status_code=400, detail="请上传收款码或填写银行账号")
         if len(request.license_urls) > 3:
             raise HTTPException(status_code=400, detail="营业执照最多上传 3 张")
+        if len(request.menu_urls) > 10:
+            raise HTTPException(status_code=400, detail="菜单最多上传 10 张")
 
         created_at = datetime.now(timezone.utc).isoformat()
         application = FoodStoreApplicationResponse(
@@ -430,9 +447,12 @@ def create_food_router(
             secondary_phone=request.secondary_phone.strip(),
             payment_qr_url=payment_qr_url,
             bank_account=bank_account,
+            bank_account_name=bank_account_name,
+            bank_account_number=bank_account_number,
             store_address=request.store_address.strip(),
             service_types=service_types,
             license_urls=request.license_urls,
+            menu_urls=request.menu_urls,
             photo_urls=request.photo_urls,
             status="pending",
             created_at=created_at,
