@@ -3114,6 +3114,9 @@ ADMIN_HTML = r'''
         const licenses = (application.license_urls || []).slice(0, 3).map(url =>
           `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="营业执照"></a>`
         ).join("");
+        const menus = (application.menu_urls || []).slice(0, 10).map(url =>
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="菜单"></a>`
+        ).join("");
         const photos = (application.photo_urls || []).slice(0, 10).map(url =>
           `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="店铺照片"></a>`
         ).join("");
@@ -3122,7 +3125,7 @@ ADMIN_HTML = r'''
           : `<span class="muted">未上传NRC</span>`;
         const payment = application.payment_qr_url
           ? `<a href="${escapeHtml(application.payment_qr_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.payment_qr_url)}" alt="收款码"></a>`
-          : `<span class="muted">${escapeHtml(application.bank_account || "未填写收款资料")}</span>`;
+          : `<span class="muted">${escapeHtml(application.bank_account_name || "未填写名字")}<br>${escapeHtml(application.bank_account_number || application.bank_account || "未填写账号")}</span>`;
         return `
           <tr>
             <td><strong>${escapeHtml(application.store_name)}</strong><br><span class="muted">#${escapeHtml(application.id.slice(0, 6).toUpperCase())}</span><br><span class="muted">${escapeHtml(new Date(application.created_at).toLocaleString())}</span></td>
@@ -3132,6 +3135,7 @@ ADMIN_HTML = r'''
               <div><span class="muted">营业执照</span><br>${licenses || `<span class="muted">未上传</span>`}</div>
               <div style="margin-top:6px;"><span class="muted">负责人NRC</span><br>${nrc}</div>
               <div style="margin-top:6px;"><span class="muted">收款资料</span><br>${payment}</div>
+              <div style="margin-top:6px;"><span class="muted">菜单</span><br>${menus || `<span class="muted">未上传</span>`}</div>
             </td>
             <td>${photos || `<span class="muted">无照片</span>`}</td>
             <td><span class="pill">${label(application.status)}</span>${application.rejection_reason ? `<br><span class="muted">原因：${escapeHtml(application.rejection_reason)}</span>` : ""}${application.reviewed_at ? `<br><span class="muted">${escapeHtml(new Date(application.reviewed_at).toLocaleString())}</span>` : ""}</td>
