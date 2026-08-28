@@ -53,6 +53,28 @@ class FoodOrderResponse(BaseModel):
     created_at: str
 
 
+class FoodStoreApplicationRequest(BaseModel):
+    store_name: str = Field(min_length=1)
+    owner_name: str = Field(min_length=1)
+    primary_phone: str = Field(min_length=6)
+    secondary_phone: str = Field(min_length=6)
+    service_types: list[str] = Field(min_length=1)
+    photo_urls: list[str] = Field(min_length=5, max_length=10)
+
+
+class FoodStoreApplicationResponse(BaseModel):
+    id: str
+    user_phone: str
+    store_name: str
+    owner_name: str
+    primary_phone: str
+    secondary_phone: str
+    service_types: list[str]
+    photo_urls: list[str]
+    status: str
+    created_at: str
+
+
 def init_food_storage(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
@@ -95,6 +117,21 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
         """
     )
     connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS food_store_applications (
+            id TEXT PRIMARY KEY,
+            user_phone TEXT NOT NULL,
+            store_name TEXT NOT NULL,
+            owner_name TEXT NOT NULL,
+            primary_phone TEXT NOT NULL,
+            secondary_phone TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_food_menu_restaurant "
         "ON food_menu_items (restaurant_id, is_available)"
     )
@@ -105,6 +142,14 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_food_orders_status_created "
         "ON food_orders (status, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_food_store_applications_user_created "
+        "ON food_store_applications (user_phone, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_food_store_applications_status_created "
+        "ON food_store_applications (status, created_at)"
     )
 
 
@@ -216,5 +261,55 @@ def create_food_router(
                 ),
             )
         return order
+
+    @router.post("/stores/register", response_model=FoodStoreApplicationResponse)
+    def register_store(
+        request: FoodStoreApplicationRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodStoreApplicationResponse:
+        user_phone = require_account_phone(authorization)
+        service_types = [
+            value.strip()
+            for value in request.service_types
+            if value.strip() in {"外卖", "堂食"}
+        ]
+        if not service_types:
+            raise HTTPException(status_code=400, detail="请选择经营方式")
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        application = FoodStoreApplicationResponse(
+            id=str(uuid4()),
+            user_phone=user_phone,
+            store_name=request.store_name.strip(),
+            owner_name=request.owner_name.strip(),
+            primary_phone=request.primary_phone.strip(),
+            secondary_phone=request.secondary_phone.strip(),
+            service_types=service_types,
+            photo_urls=request.photo_urls,
+            status="pending",
+            created_at=created_at,
+        )
+        with connect_db() as connection:
+            connection.execute(
+                """
+                INSERT INTO food_store_applications (
+                    id, user_phone, store_name, owner_name, primary_phone,
+                    secondary_phone, status, created_at, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    application.id,
+                    user_phone,
+                    application.store_name,
+                    application.owner_name,
+                    application.primary_phone,
+                    application.secondary_phone,
+                    application.status,
+                    created_at,
+                    json.dumps(application.model_dump(mode="json"), ensure_ascii=False),
+                ),
+            )
+        return application
 
     return router
