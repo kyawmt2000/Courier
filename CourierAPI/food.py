@@ -72,7 +72,14 @@ class FoodStoreApplicationResponse(BaseModel):
     service_types: list[str]
     photo_urls: list[str]
     status: str
+    rejection_reason: str | None = None
+    reviewed_at: str | None = None
     created_at: str
+
+
+class AdminUpdateFoodStoreApplicationRequest(BaseModel):
+    status: str
+    rejection_reason: str | None = None
 
 
 def init_food_storage(connection: sqlite3.Connection) -> None:
@@ -126,6 +133,8 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
             primary_phone TEXT NOT NULL,
             secondary_phone TEXT NOT NULL,
             status TEXT NOT NULL,
+            rejection_reason TEXT,
+            reviewed_at TEXT,
             created_at TEXT NOT NULL,
             payload TEXT NOT NULL
         )
@@ -151,6 +160,103 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_food_store_applications_status_created "
         "ON food_store_applications (status, created_at)"
     )
+    food_columns = {row["name"] for row in connection.execute("PRAGMA table_info(food_store_applications)").fetchall()}
+    if "rejection_reason" not in food_columns:
+        connection.execute("ALTER TABLE food_store_applications ADD COLUMN rejection_reason TEXT")
+    if "reviewed_at" not in food_columns:
+        connection.execute("ALTER TABLE food_store_applications ADD COLUMN reviewed_at TEXT")
+
+
+def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
+    payload = json.loads(row["payload"])
+    payload["status"] = row["status"]
+    payload["rejection_reason"] = row["rejection_reason"]
+    payload["reviewed_at"] = row["reviewed_at"]
+    return FoodStoreApplicationResponse(**payload)
+
+
+def load_admin_store_applications(db_path: Path) -> list[dict]:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT payload, status, rejection_reason, reviewed_at
+            FROM food_store_applications
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    return [_application_from_row(row).model_dump(mode="json") for row in rows]
+
+
+def update_admin_store_application(
+    db_path: Path,
+    application_id: str,
+    request: AdminUpdateFoodStoreApplicationRequest,
+) -> FoodStoreApplicationResponse:
+    if request.status not in {"pending", "confirmed", "rejected"}:
+        raise HTTPException(status_code=400, detail="店铺状态不正确")
+    reason = (request.rejection_reason or "").strip()
+    if request.status == "rejected" and not reason:
+        raise HTTPException(status_code=400, detail="请填写拒绝原因")
+
+    reviewed_at = datetime.now(timezone.utc).isoformat() if request.status in {"confirmed", "rejected"} else None
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            """
+            SELECT id, payload, status, rejection_reason, reviewed_at
+            FROM food_store_applications
+            WHERE id = ?
+            """,
+            (application_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="店铺注册不存在")
+
+        application = _application_from_row(row).model_copy(
+            update={
+                "status": request.status,
+                "rejection_reason": reason if request.status == "rejected" else None,
+                "reviewed_at": reviewed_at,
+            }
+        )
+        connection.execute(
+            """
+            UPDATE food_store_applications
+            SET status = ?, rejection_reason = ?, reviewed_at = ?, payload = ?
+            WHERE id = ?
+            """,
+            (
+                application.status,
+                application.rejection_reason,
+                application.reviewed_at,
+                json.dumps(application.model_dump(mode="json"), ensure_ascii=False),
+                application.id,
+            ),
+        )
+        if application.status == "confirmed":
+            restaurant_id = application.id
+            connection.execute(
+                """
+                INSERT INTO food_restaurants (id, name, description, image_url, is_open, payload, created_at)
+                VALUES (?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    image_url = excluded.image_url,
+                    is_open = 1,
+                    payload = excluded.payload
+                """,
+                (
+                    restaurant_id,
+                    application.store_name,
+                    " / ".join(application.service_types),
+                    application.photo_urls[0] if application.photo_urls else None,
+                    json.dumps(application.model_dump(mode="json"), ensure_ascii=False),
+                    application.created_at,
+                ),
+            )
+    return application
 
 
 def create_food_router(
@@ -224,6 +330,22 @@ def create_food_router(
                 (user_phone,),
             ).fetchall()
         return [FoodOrderResponse(**json.loads(row["payload"])) for row in rows]
+
+    @router.get("/stores/my-application", response_model=FoodStoreApplicationResponse | None)
+    def my_store_application(authorization: str | None = Header(default=None)) -> FoodStoreApplicationResponse | None:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            row = connection.execute(
+                """
+                SELECT payload, status, rejection_reason, reviewed_at
+                FROM food_store_applications
+                WHERE user_phone = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_phone,),
+            ).fetchone()
+        return _application_from_row(row) if row else None
 
     @router.post("/orders", response_model=FoodOrderResponse)
     def create_food_order(
