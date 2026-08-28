@@ -56,6 +56,7 @@ class FoodOrderResponse(BaseModel):
 class FoodStoreApplicationRequest(BaseModel):
     store_name: str = Field(min_length=1)
     owner_name: str = Field(min_length=1)
+    owner_nrc_front_url: str = Field(min_length=1)
     owner_nrc_back_url: str = Field(min_length=1)
     primary_phone: str = Field(min_length=6)
     secondary_phone: str = Field(min_length=6)
@@ -75,6 +76,7 @@ class FoodStoreApplicationResponse(BaseModel):
     user_phone: str
     store_name: str
     owner_name: str
+    owner_nrc_front_url: str = ""
     owner_nrc_back_url: str = ""
     primary_phone: str
     secondary_phone: str
@@ -185,6 +187,7 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
 
 def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
     payload = json.loads(row["payload"])
+    payload.setdefault("owner_nrc_front_url", "")
     payload.setdefault("owner_nrc_back_url", "")
     payload.setdefault("payment_qr_url", None)
     payload.setdefault("bank_account", "")
@@ -442,6 +445,7 @@ def create_food_router(
             user_phone=user_phone,
             store_name=request.store_name.strip(),
             owner_name=request.owner_name.strip(),
+            owner_nrc_front_url=request.owner_nrc_front_url.strip(),
             owner_nrc_back_url=request.owner_nrc_back_url.strip(),
             primary_phone=request.primary_phone.strip(),
             secondary_phone=request.secondary_phone.strip(),
