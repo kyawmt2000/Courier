@@ -20,11 +20,19 @@ class FoodRestaurantResponse(BaseModel):
 class FoodMenuItemResponse(BaseModel):
     id: str
     restaurant_id: str
+    category: str = ""
     name: str
     description: str = ""
     price_mmk: float
     image_url: str | None = None
     is_available: bool = True
+
+
+class CreateFoodMenuItemRequest(BaseModel):
+    category: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str = ""
+    image_url: str = Field(min_length=1)
 
 
 class FoodOrderItemRequest(BaseModel):
@@ -334,6 +342,7 @@ def create_food_router(
             FoodMenuItemResponse(
                 id=row["id"],
                 restaurant_id=row["restaurant_id"],
+                category=json.loads(row["payload"]).get("category", ""),
                 name=row["name"],
                 description=row["description"],
                 price_mmk=row["price_mmk"],
@@ -342,6 +351,70 @@ def create_food_router(
             )
             for row in rows
         ]
+
+    @router.post("/stores/menu-items", response_model=FoodMenuItemResponse)
+    def create_store_menu_item(
+        request: CreateFoodMenuItemRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodMenuItemResponse:
+        user_phone = require_account_phone(authorization)
+        category = request.category.strip()
+        title = request.title.strip()
+        description = request.description.strip()
+        image_url = request.image_url.strip()
+        if not category:
+            raise HTTPException(status_code=400, detail="请填写菜品类型")
+        if not title:
+            raise HTTPException(status_code=400, detail="请填写菜品标题")
+        if not image_url:
+            raise HTTPException(status_code=400, detail="请上传菜品图片")
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        with connect_db() as connection:
+            application_row = connection.execute(
+                """
+                SELECT id
+                FROM food_store_applications
+                WHERE user_phone = ? AND status = 'confirmed'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_phone,),
+            ).fetchone()
+            if not application_row:
+                raise HTTPException(status_code=403, detail="店铺审核确认后才能上传菜品")
+
+            restaurant_id = application_row["id"]
+            menu_item = FoodMenuItemResponse(
+                id=str(uuid4()),
+                restaurant_id=restaurant_id,
+                category=category,
+                name=title,
+                description=description,
+                price_mmk=0,
+                image_url=image_url,
+                is_available=True,
+            )
+            connection.execute(
+                """
+                INSERT INTO food_menu_items (
+                    id, restaurant_id, name, description, price_mmk,
+                    image_url, is_available, payload, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    menu_item.id,
+                    restaurant_id,
+                    menu_item.name,
+                    menu_item.description,
+                    menu_item.price_mmk,
+                    menu_item.image_url,
+                    json.dumps(menu_item.model_dump(mode="json"), ensure_ascii=False),
+                    created_at,
+                ),
+            )
+        return menu_item
 
     @router.get("/orders", response_model=list[FoodOrderResponse])
     def list_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
