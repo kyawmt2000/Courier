@@ -2517,7 +2517,7 @@ ADMIN_HTML = r'''
     <section id="page-stores" class="page">
       <h2>店铺注册</h2>
       <table>
-        <thead><tr><th>店铺</th><th>负责人</th><th>经营方式</th><th>照片</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th>店铺</th><th>负责人</th><th>经营/地址</th><th>证件/收款</th><th>照片</th><th>状态</th><th>操作</th></tr></thead>
         <tbody id="storeApplications"></tbody>
       </table>
     </section>
@@ -3111,14 +3111,28 @@ ADMIN_HTML = r'''
       const q = document.getElementById("q").value.toLowerCase();
       const applications = sortByDateDesc((state.store_applications || []).filter(item => JSON.stringify(item).toLowerCase().includes(q)));
       table.innerHTML = applications.map(application => {
+        const licenses = (application.license_urls || []).slice(0, 3).map(url =>
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="营业执照"></a>`
+        ).join("");
         const photos = (application.photo_urls || []).slice(0, 10).map(url =>
           `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="店铺照片"></a>`
         ).join("");
+        const nrc = application.owner_nrc_back_url
+          ? `<a href="${escapeHtml(application.owner_nrc_back_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.owner_nrc_back_url)}" alt="负责人NRC"></a>`
+          : `<span class="muted">未上传NRC</span>`;
+        const payment = application.payment_qr_url
+          ? `<a href="${escapeHtml(application.payment_qr_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.payment_qr_url)}" alt="收款码"></a>`
+          : `<span class="muted">${escapeHtml(application.bank_account || "未填写收款资料")}</span>`;
         return `
           <tr>
             <td><strong>${escapeHtml(application.store_name)}</strong><br><span class="muted">#${escapeHtml(application.id.slice(0, 6).toUpperCase())}</span><br><span class="muted">${escapeHtml(new Date(application.created_at).toLocaleString())}</span></td>
             <td>${escapeHtml(application.owner_name)}<br><span class="muted">${escapeHtml(application.primary_phone)} / ${escapeHtml(application.secondary_phone)}</span><br>${displayAccount(application.user_phone)}</td>
-            <td>${escapeHtml((application.service_types || []).join(" / "))}</td>
+            <td>${escapeHtml((application.service_types || []).join(" / "))}<br><span class="muted">${escapeHtml(application.store_address || "未填写地址")}</span></td>
+            <td>
+              <div><span class="muted">营业执照</span><br>${licenses || `<span class="muted">未上传</span>`}</div>
+              <div style="margin-top:6px;"><span class="muted">负责人NRC</span><br>${nrc}</div>
+              <div style="margin-top:6px;"><span class="muted">收款资料</span><br>${payment}</div>
+            </td>
             <td>${photos || `<span class="muted">无照片</span>`}</td>
             <td><span class="pill">${label(application.status)}</span>${application.rejection_reason ? `<br><span class="muted">原因：${escapeHtml(application.rejection_reason)}</span>` : ""}${application.reviewed_at ? `<br><span class="muted">${escapeHtml(new Date(application.reviewed_at).toLocaleString())}</span>` : ""}</td>
             <td class="actions-cell">
@@ -3128,7 +3142,7 @@ ADMIN_HTML = r'''
           </tr>`;
       }).join("");
       if (!applications.length) {
-        table.innerHTML = `<tr><td colspan="6" class="muted">暂无店铺注册</td></tr>`;
+        table.innerHTML = `<tr><td colspan="7" class="muted">暂无店铺注册</td></tr>`;
       }
     }
 
