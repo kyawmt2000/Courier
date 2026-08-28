@@ -26,7 +26,13 @@ from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padd
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from pydantic import BaseModel, ConfigDict, Field
 
-from food import create_food_router, init_food_storage
+from food import (
+    AdminUpdateFoodStoreApplicationRequest,
+    create_food_router,
+    init_food_storage,
+    load_admin_store_applications,
+    update_admin_store_application,
+)
 
 try:
     from google.cloud import storage
@@ -2462,8 +2468,9 @@ ADMIN_HTML = r'''
       <button id="refreshButton" onclick="loadData()">刷新</button>
       <button id="tab-payments" class="tab active" onclick="showPage('payments')">订单</button>
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
-      <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
       <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
+      <button id="tab-stores" class="tab" onclick="showPage('stores')">店铺注册</button>
+      <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
     </div>
   </header>
   <main>
@@ -2507,6 +2514,13 @@ ADMIN_HTML = r'''
         <tbody id="settlements"></tbody>
       </table>
     </section>
+    <section id="page-stores" class="page">
+      <h2>店铺注册</h2>
+      <table>
+        <thead><tr><th>店铺</th><th>负责人</th><th>经营方式</th><th>照片</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="storeApplications"></tbody>
+      </table>
+    </section>
     <section id="page-service" class="page">
       <h2>Customer Service</h2>
       <div class="grid">
@@ -2537,9 +2551,9 @@ ADMIN_HTML = r'''
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    let state = { orders: [], accounts: [], messages: [], payments: [], order_hours: null };
+    let state = { orders: [], accounts: [], messages: [], payments: [], store_applications: [], order_hours: null };
     let currentPage = "payments";
-    let tabBadges = { payments: 0, orders: 0, accounts: 0, settlements: 0, service: 0 };
+    let tabBadges = { payments: 0, orders: 0, accounts: 0, service: 0, stores: 0, settlements: 0 };
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
@@ -2552,12 +2566,13 @@ ADMIN_HTML = r'''
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
-    const pages = ["payments","accounts","settlements","service"];
+    const pages = ["payments","accounts","service","stores","settlements"];
     const pageTitles = {
       payments: "订单",
       accounts: "账号资料",
+      service: "Customer Service",
+      stores: "店铺注册",
       settlements: "结算",
-      service: "Customer Service"
     };
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
@@ -2660,6 +2675,7 @@ ADMIN_HTML = r'''
         payments: new Set((data.payments || []).map(item => item.id).filter(Boolean)),
         accounts: new Set((data.accounts || []).map(item => item.phone).filter(Boolean)),
         messages: new Set((data.messages || []).map(item => item.id).filter(Boolean)),
+        stores: new Set((data.store_applications || []).map(item => `${item.id}:${item.status}:${item.rejection_reason || ""}`).filter(Boolean)),
         settlements: new Set(settlementEvents)
       };
     }
@@ -2670,6 +2686,7 @@ ADMIN_HTML = r'''
       const freshPayments = (nextState.payments || []).filter(item => item.id && !previous.payments.has(item.id));
       const freshAccounts = (nextState.accounts || []).filter(item => item.phone && !previous.accounts.has(item.phone));
       const freshMessages = (nextState.messages || []).filter(item => item.id && !previous.messages.has(item.id));
+      const freshStores = Array.from(identitySets(nextState).stores).filter(item => !previous.stores.has(item));
       const nextSettlementEvents = Array.from(identitySets(nextState).settlements);
       const freshSettlements = nextSettlementEvents.filter(item => !previous.settlements.has(item));
       freshOrders.forEach(() => incrementTabBadge("payments"));
@@ -2677,6 +2694,7 @@ ADMIN_HTML = r'''
       if (freshAccounts.length) incrementTabBadge("accounts", freshAccounts.length);
       if (freshSettlements.length) incrementTabBadge("settlements", freshSettlements.length);
       if (freshMessages.length) incrementTabBadge("service", freshMessages.length);
+      if (freshStores.length) incrementTabBadge("stores", freshStores.length);
       highlightedIds = new Set([
         ...freshOrders.map(item => `order:${item.id}`),
         ...freshPayments.map(item => `payment:${item.id}`),
@@ -2694,7 +2712,8 @@ ADMIN_HTML = r'''
         payments: freshPayments.length,
         accounts: freshAccounts.length,
         settlements: freshSettlements.length,
-        messages: freshMessages.length
+        messages: freshMessages.length,
+        stores: freshStores.length
       };
     }
     function rowClass(kind, id) {
@@ -2905,12 +2924,13 @@ ADMIN_HTML = r'''
         if (activeDetailId && state.orders.some(order => order.id === activeDetailId)) {
           showDetail(activeDetailId);
         }
-        const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.settlements + fresh.messages;
+        const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.settlements + fresh.messages + fresh.stores;
         if (freshCount) {
           const parts = [];
           if (fresh.orders) parts.push(`${fresh.orders} 个新订单`);
           if (fresh.payments) parts.push(`${fresh.payments} 个新付款`);
           if (fresh.accounts) parts.push(`${fresh.accounts} 个新账号`);
+          if (fresh.stores) parts.push(`${fresh.stores} 条店铺注册`);
           if (fresh.settlements) parts.push(`${fresh.settlements} 条新结算`);
           if (fresh.messages) parts.push(`${fresh.messages} 条新消息`);
           showToast(parts.join(" / "));
@@ -3081,7 +3101,35 @@ ADMIN_HTML = r'''
       if (!settlementRows.length) {
         document.getElementById("settlements").innerHTML = `<tr><td colspan="7" class="muted">暂无结算记录</td></tr>`;
       }
+      renderStoreApplications();
       renderServiceChat();
+    }
+
+    function renderStoreApplications() {
+      const table = document.getElementById("storeApplications");
+      if (!table) return;
+      const q = document.getElementById("q").value.toLowerCase();
+      const applications = sortByDateDesc((state.store_applications || []).filter(item => JSON.stringify(item).toLowerCase().includes(q)));
+      table.innerHTML = applications.map(application => {
+        const photos = (application.photo_urls || []).slice(0, 10).map(url =>
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="店铺照片"></a>`
+        ).join("");
+        return `
+          <tr>
+            <td><strong>${escapeHtml(application.store_name)}</strong><br><span class="muted">#${escapeHtml(application.id.slice(0, 6).toUpperCase())}</span><br><span class="muted">${escapeHtml(new Date(application.created_at).toLocaleString())}</span></td>
+            <td>${escapeHtml(application.owner_name)}<br><span class="muted">${escapeHtml(application.primary_phone)} / ${escapeHtml(application.secondary_phone)}</span><br>${displayAccount(application.user_phone)}</td>
+            <td>${escapeHtml((application.service_types || []).join(" / "))}</td>
+            <td>${photos || `<span class="muted">无照片</span>`}</td>
+            <td><span class="pill">${label(application.status)}</span>${application.rejection_reason ? `<br><span class="muted">原因：${escapeHtml(application.rejection_reason)}</span>` : ""}${application.reviewed_at ? `<br><span class="muted">${escapeHtml(new Date(application.reviewed_at).toLocaleString())}</span>` : ""}</td>
+            <td class="actions-cell">
+              ${application.status !== "confirmed" ? `<button onclick="confirmStoreApplication('${application.id}', this)">确认店铺</button>` : ""}
+              ${application.status !== "rejected" ? `<button onclick="rejectStoreApplication('${application.id}', this)">拒绝</button>` : ""}
+            </td>
+          </tr>`;
+      }).join("");
+      if (!applications.length) {
+        table.innerHTML = `<tr><td colspan="6" class="muted">暂无店铺注册</td></tr>`;
+      }
     }
 
     function selectAccount(phone) {
@@ -3503,6 +3551,48 @@ ADMIN_HTML = r'''
       } finally {
         setButtonBusy(button, false);
       }
+    }
+
+    async function patchStoreApplication(id, body, button, successMessage) {
+      setButtonBusy(button, true);
+      try {
+        const response = await fetch(`/admin/food/store-applications/${id}?key=${keyParam()}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        const updated = await response.json();
+        const index = state.store_applications.findIndex(item => item.id === updated.id);
+        if (index >= 0) {
+          state.store_applications[index] = updated;
+        } else {
+          state.store_applications.unshift(updated);
+        }
+        render();
+        showToast(successMessage);
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "Request failed", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function confirmStoreApplication(id, button = null) {
+      await patchStoreApplication(id, { status: "confirmed" }, button, "店铺已确认");
+    }
+
+    async function rejectStoreApplication(id, button = null) {
+      const reason = prompt("请输入拒绝原因");
+      if (reason === null) return;
+      if (!reason.trim()) {
+        showToast("拒绝原因不能为空", "error");
+        return;
+      }
+      await patchStoreApplication(id, { status: "rejected", rejection_reason: reason.trim() }, button, "店铺已拒绝");
     }
 
     async function confirmUserPayment(id, button = null) {
@@ -4690,11 +4780,13 @@ def admin_data(key: str = Query(default="")) -> dict:
     accounts_data = load_admin_accounts()
     messages_data = load_admin_chat_messages()
     payments_data = load_admin_prepaid_payments()
+    store_applications_data = load_admin_store_applications(db_path)
     return {
         "orders": orders_data,
         "accounts": accounts_data,
         "messages": messages_data,
         "payments": payments_data,
+        "store_applications": store_applications_data,
         "order_hours": order_hours_status(),
     }
 
@@ -4717,6 +4809,16 @@ def admin_update_order_hours(
     save_platform_setting("order_hours_end", end)
     save_platform_setting("order_hours_timezone", zone_name)
     return {"order_hours": order_hours_status()}
+
+
+@app.patch("/admin/food/store-applications/{application_id}")
+def admin_update_food_store_application(
+    application_id: str,
+    request: AdminUpdateFoodStoreApplicationRequest,
+    key: str = Query(default=""),
+) -> dict:
+    require_admin_key(key)
+    return update_admin_store_application(db_path, application_id, request).model_dump(mode="json")
 
 
 @app.post("/admin/chat/messages", response_model=ChatMessageResponse)
