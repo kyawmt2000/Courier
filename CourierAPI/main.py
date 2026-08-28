@@ -1243,6 +1243,7 @@ def upload_folder(value: str) -> str:
         "food store nrc": "food store nrc",
         "food store license": "food store license",
         "food store menu": "food store menu",
+        "food menu item": "food menu item",
         "food store payment": "food store payment",
         "rider deposit": "rider deposit",
         "rider deposit proof": "rider deposit",
