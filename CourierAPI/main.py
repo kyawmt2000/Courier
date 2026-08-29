@@ -2431,6 +2431,9 @@ ADMIN_HTML = r'''
     .modal-head h3 { margin: 0; font-size: 16px; }
     .modal-close { width: auto; min-width: 44px; padding: 8px 12px; background: #fff; color: #111827; border-color: #d1d5db; }
     .modal-body { padding: 18px; display: grid; gap: 14px; }
+    .confirm-card { width: min(360px, 100%); }
+    .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
+    .confirm-actions .secondary { background: #fff; color: #111827; border-color: #d1d5db; }
     .settings-panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; margin-bottom: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .settings-panel h2 { margin: 0 10px 0 0; }
     .settings-panel label { font-size: 13px; color: #4b5563; display: inline-flex; align-items: center; gap: 6px; }
@@ -2566,6 +2569,20 @@ ADMIN_HTML = r'''
       <div id="accountDetail" class="modal-body account-detail"></div>
     </div>
   </div>
+  <div id="rejectConfirmModal" class="modal-backdrop" onclick="resolveRejectConfirmation(false)">
+    <div class="modal-card confirm-card" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <h3>确认拒绝？</h3>
+      </div>
+      <div class="modal-body">
+        <div class="muted" id="rejectConfirmText">确定要拒绝吗？</div>
+        <div class="confirm-actions">
+          <button class="secondary" onclick="resolveRejectConfirmation(false)">考虑</button>
+          <button onclick="resolveRejectConfirmation(true)">确认</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="toast" class="toast"></div>
   <script>
     let state = { orders: [], accounts: [], messages: [], payments: [], store_applications: [], food_menu_items: [], order_hours: null };
@@ -2575,6 +2592,7 @@ ADMIN_HTML = r'''
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
     let activeDetailId = null;
+    let rejectConfirmResolve = null;
     let lastLoadStartedAt = 0;
     let searchTimer = null;
     let keyTimer = null;
@@ -2791,6 +2809,26 @@ ADMIN_HTML = r'''
       toast.classList.add("show");
       clearTimeout(showToast.timer);
       showToast.timer = setTimeout(() => toast.classList.remove("show"), 2600);
+    }
+
+    function askRejectConfirmation(message = "确定要拒绝吗？") {
+      const modal = document.getElementById("rejectConfirmModal");
+      const text = document.getElementById("rejectConfirmText");
+      if (!modal) return Promise.resolve(false);
+      if (text) text.textContent = message;
+      modal.classList.add("show");
+      return new Promise(resolve => {
+        rejectConfirmResolve = resolve;
+      });
+    }
+
+    function resolveRejectConfirmation(confirmed) {
+      const modal = document.getElementById("rejectConfirmModal");
+      if (modal) modal.classList.remove("show");
+      if (rejectConfirmResolve) {
+        rejectConfirmResolve(Boolean(confirmed));
+        rejectConfirmResolve = null;
+      }
     }
 
     function setLoading(isLoading, text = "") {
@@ -3154,6 +3192,9 @@ ADMIN_HTML = r'''
         const payment = application.payment_qr_url
           ? `<a href="${escapeHtml(application.payment_qr_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.payment_qr_url)}" alt="收款码"></a>`
           : `<span class="muted">${escapeHtml(application.bank_account_name || "未填写名字")}<br>${escapeHtml(application.bank_account_number || application.bank_account || "未填写账号")}</span>`;
+        const signatureDishImage = application.signature_dish_image_url
+          ? `<a href="${escapeHtml(application.signature_dish_image_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.signature_dish_image_url)}" alt="招牌菜图片"></a>`
+          : `<span class="muted">未上传</span>`;
         return `
           <tr>
             <td><strong>${escapeHtml(application.store_name)}</strong><br><span class="muted">#${escapeHtml(application.id.slice(0, 6).toUpperCase())}</span><br><span class="muted">${escapeHtml(new Date(application.created_at).toLocaleString())}</span></td>
@@ -3163,6 +3204,7 @@ ADMIN_HTML = r'''
               <div><span class="muted">营业执照</span><br>${licenses || `<span class="muted">未上传</span>`}</div>
               <div style="margin-top:6px;"><span class="muted">负责人NRC</span><br>${nrc}</div>
               <div style="margin-top:6px;"><span class="muted">收款资料</span><br>${payment}</div>
+              <div style="margin-top:6px;"><span class="muted">招牌菜图片</span><br>${signatureDishImage}</div>
               <div style="margin-top:6px;"><span class="muted">菜单</span><br>${menus || `<span class="muted">未上传</span>`}</div>
             </td>
             <td>${photos || `<span class="muted">无照片</span>`}</td>
@@ -3665,6 +3707,8 @@ ADMIN_HTML = r'''
         showToast("拒绝原因不能为空", "error");
         return;
       }
+      const confirmed = await askRejectConfirmation("确认拒绝这个店铺申请吗？");
+      if (!confirmed) return;
       await patchStoreApplication(id, { status: "rejected", rejection_reason: reason.trim() }, button, "店铺已拒绝");
     }
 
@@ -3707,6 +3751,8 @@ ADMIN_HTML = r'''
         showToast("拒绝原因不能为空", "error");
         return;
       }
+      const confirmed = await askRejectConfirmation("确认拒绝这个菜品吗？");
+      if (!confirmed) return;
       await patchFoodMenuItem(id, { status: "rejected", rejection_reason: reason.trim() }, button, "菜品已拒绝");
     }
 
