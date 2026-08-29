@@ -27,10 +27,13 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from pydantic import BaseModel, ConfigDict, Field
 
 from food import (
+    AdminUpdateFoodMenuItemRequest,
     AdminUpdateFoodStoreApplicationRequest,
     create_food_router,
     init_food_storage,
+    load_admin_menu_items,
     load_admin_store_applications,
+    update_admin_menu_item,
     update_admin_store_application,
 )
 
@@ -1161,7 +1164,7 @@ def require_account_phone(authorization: str | None) -> str:
     return phone
 
 
-app.include_router(create_food_router(db_path, require_account_phone))
+app.include_router(create_food_router(db_path, require_account_phone, lambda url: signed_gcs_read_url(url)))
 
 
 def account_conversation_id(conversation_id: str, authorization: str | None, fallback_phone: str | None = None) -> str:
@@ -2476,6 +2479,7 @@ ADMIN_HTML = r'''
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
       <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
       <button id="tab-stores" class="tab" onclick="showPage('stores')">店铺注册</button>
+      <button id="tab-menu-items" class="tab" onclick="showPage('menu-items')">菜品审核</button>
       <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
     </div>
   </header>
@@ -2527,6 +2531,13 @@ ADMIN_HTML = r'''
         <tbody id="storeApplications"></tbody>
       </table>
     </section>
+    <section id="page-menu-items" class="page">
+      <h2>菜品审核</h2>
+      <table>
+        <thead><tr><th>菜品</th><th>店铺</th><th>类型/描述</th><th>图片</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="foodMenuItems"></tbody>
+      </table>
+    </section>
     <section id="page-service" class="page">
       <h2>Customer Service</h2>
       <div class="grid">
@@ -2557,9 +2568,9 @@ ADMIN_HTML = r'''
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    let state = { orders: [], accounts: [], messages: [], payments: [], store_applications: [], order_hours: null };
+    let state = { orders: [], accounts: [], messages: [], payments: [], store_applications: [], food_menu_items: [], order_hours: null };
     let currentPage = "payments";
-    let tabBadges = { payments: 0, orders: 0, accounts: 0, service: 0, stores: 0, settlements: 0 };
+    let tabBadges = { payments: 0, orders: 0, accounts: 0, service: 0, stores: 0, "menu-items": 0, settlements: 0 };
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
@@ -2572,12 +2583,13 @@ ADMIN_HTML = r'''
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
-    const pages = ["payments","accounts","service","stores","settlements"];
+    const pages = ["payments","accounts","service","stores","menu-items","settlements"];
     const pageTitles = {
       payments: "订单",
       accounts: "账号资料",
       service: "Customer Service",
       stores: "店铺注册",
+      "menu-items": "菜品审核",
       settlements: "结算",
     };
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
@@ -2682,17 +2694,19 @@ ADMIN_HTML = r'''
         accounts: new Set((data.accounts || []).map(item => item.phone).filter(Boolean)),
         messages: new Set((data.messages || []).map(item => item.id).filter(Boolean)),
         stores: new Set((data.store_applications || []).map(item => `${item.id}:${item.status}:${item.rejection_reason || ""}`).filter(Boolean)),
+        menuItems: new Set((data.food_menu_items || []).map(item => `${item.id}:${item.status}:${item.rejection_reason || ""}`).filter(Boolean)),
         settlements: new Set(settlementEvents)
       };
     }
     function rememberNewItems(nextState) {
-      if (!hasLoadedOnce) return { orders: 0, payments: 0, accounts: 0, settlements: 0, messages: 0 };
+      if (!hasLoadedOnce) return { orders: 0, payments: 0, accounts: 0, settlements: 0, messages: 0, stores: 0, menuItems: 0 };
       const previous = identitySets();
       const freshOrders = (nextState.orders || []).filter(item => item.id && !previous.orders.has(item.id));
       const freshPayments = (nextState.payments || []).filter(item => item.id && !previous.payments.has(item.id));
       const freshAccounts = (nextState.accounts || []).filter(item => item.phone && !previous.accounts.has(item.phone));
       const freshMessages = (nextState.messages || []).filter(item => item.id && !previous.messages.has(item.id));
       const freshStores = Array.from(identitySets(nextState).stores).filter(item => !previous.stores.has(item));
+      const freshMenuItems = Array.from(identitySets(nextState).menuItems).filter(item => !previous.menuItems.has(item));
       const nextSettlementEvents = Array.from(identitySets(nextState).settlements);
       const freshSettlements = nextSettlementEvents.filter(item => !previous.settlements.has(item));
       freshOrders.forEach(() => incrementTabBadge("payments"));
@@ -2701,6 +2715,7 @@ ADMIN_HTML = r'''
       if (freshSettlements.length) incrementTabBadge("settlements", freshSettlements.length);
       if (freshMessages.length) incrementTabBadge("service", freshMessages.length);
       if (freshStores.length) incrementTabBadge("stores", freshStores.length);
+      if (freshMenuItems.length) incrementTabBadge("menu-items", freshMenuItems.length);
       highlightedIds = new Set([
         ...freshOrders.map(item => `order:${item.id}`),
         ...freshPayments.map(item => `payment:${item.id}`),
@@ -2719,7 +2734,8 @@ ADMIN_HTML = r'''
         accounts: freshAccounts.length,
         settlements: freshSettlements.length,
         messages: freshMessages.length,
-        stores: freshStores.length
+        stores: freshStores.length,
+        menuItems: freshMenuItems.length
       };
     }
     function rowClass(kind, id) {
@@ -2930,13 +2946,14 @@ ADMIN_HTML = r'''
         if (activeDetailId && state.orders.some(order => order.id === activeDetailId)) {
           showDetail(activeDetailId);
         }
-        const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.settlements + fresh.messages + fresh.stores;
+        const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.settlements + fresh.messages + fresh.stores + fresh.menuItems;
         if (freshCount) {
           const parts = [];
           if (fresh.orders) parts.push(`${fresh.orders} 个新订单`);
           if (fresh.payments) parts.push(`${fresh.payments} 个新付款`);
           if (fresh.accounts) parts.push(`${fresh.accounts} 个新账号`);
           if (fresh.stores) parts.push(`${fresh.stores} 条店铺注册`);
+          if (fresh.menuItems) parts.push(`${fresh.menuItems} 个菜品`);
           if (fresh.settlements) parts.push(`${fresh.settlements} 条新结算`);
           if (fresh.messages) parts.push(`${fresh.messages} 条新消息`);
           showToast(parts.join(" / "));
@@ -3108,6 +3125,7 @@ ADMIN_HTML = r'''
         document.getElementById("settlements").innerHTML = `<tr><td colspan="7" class="muted">暂无结算记录</td></tr>`;
       }
       renderStoreApplications();
+      renderFoodMenuItems();
       renderServiceChat();
     }
 
@@ -3157,6 +3175,33 @@ ADMIN_HTML = r'''
       }).join("");
       if (!applications.length) {
         table.innerHTML = `<tr><td colspan="7" class="muted">暂无店铺注册</td></tr>`;
+      }
+    }
+
+    function renderFoodMenuItems() {
+      const table = document.getElementById("foodMenuItems");
+      if (!table) return;
+      const q = document.getElementById("q").value.toLowerCase();
+      const menuItems = sortByDateDesc((state.food_menu_items || []).filter(item => JSON.stringify(item).toLowerCase().includes(q)));
+      table.innerHTML = menuItems.map(item => {
+        const image = item.image_url
+          ? `<a href="${escapeHtml(item.image_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(item.image_url)}" alt="菜品图片"></a>`
+          : `<span class="muted">未上传</span>`;
+        return `
+          <tr>
+            <td><strong>${escapeHtml(item.name || "")}</strong><br><span class="muted">#${escapeHtml((item.id || "").slice(0, 6).toUpperCase())}</span><br><span class="muted">${escapeHtml(new Date(item.created_at).toLocaleString())}</span></td>
+            <td>${escapeHtml(item.store_name || item.restaurant_id || "")}<br><span class="muted">${escapeHtml(item.owner_name || "")} ${escapeHtml(item.primary_phone || "")}</span><br>${displayAccount(item.user_phone || "")}</td>
+            <td>${escapeHtml(item.category || "")}<br><span class="muted">${escapeHtml(item.description || "未填写描述")}</span></td>
+            <td>${image}</td>
+            <td><span class="pill">${label(item.status)}</span>${item.rejection_reason ? `<br><span class="muted">原因：${escapeHtml(item.rejection_reason)}</span>` : ""}${item.reviewed_at ? `<br><span class="muted">${escapeHtml(new Date(item.reviewed_at).toLocaleString())}</span>` : ""}</td>
+            <td class="actions-cell">
+              ${item.status !== "confirmed" ? `<button onclick="confirmFoodMenuItem('${item.id}', this)">确认菜品</button>` : ""}
+              ${item.status !== "rejected" ? `<button onclick="rejectFoodMenuItem('${item.id}', this)">拒绝</button>` : ""}
+            </td>
+          </tr>`;
+      }).join("");
+      if (!menuItems.length) {
+        table.innerHTML = `<tr><td colspan="6" class="muted">暂无菜品</td></tr>`;
       }
     }
 
@@ -3621,6 +3666,48 @@ ADMIN_HTML = r'''
         return;
       }
       await patchStoreApplication(id, { status: "rejected", rejection_reason: reason.trim() }, button, "店铺已拒绝");
+    }
+
+    async function patchFoodMenuItem(id, body, button, successMessage) {
+      setButtonBusy(button, true);
+      try {
+        const response = await fetch(`/admin/food/menu-items/${id}?key=${keyParam()}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        const updated = await response.json();
+        const index = state.food_menu_items.findIndex(item => item.id === updated.id);
+        if (index >= 0) {
+          state.food_menu_items[index] = { ...state.food_menu_items[index], ...updated };
+        } else {
+          state.food_menu_items.unshift(updated);
+        }
+        render();
+        showToast(successMessage);
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "Request failed", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function confirmFoodMenuItem(id, button = null) {
+      await patchFoodMenuItem(id, { status: "confirmed" }, button, "菜品已确认");
+    }
+
+    async function rejectFoodMenuItem(id, button = null) {
+      const reason = prompt("请输入拒绝原因");
+      if (reason === null) return;
+      if (!reason.trim()) {
+        showToast("拒绝原因不能为空", "error");
+        return;
+      }
+      await patchFoodMenuItem(id, { status: "rejected", rejection_reason: reason.trim() }, button, "菜品已拒绝");
     }
 
     async function confirmUserPayment(id, button = null) {
@@ -4808,13 +4895,15 @@ def admin_data(key: str = Query(default="")) -> dict:
     accounts_data = load_admin_accounts()
     messages_data = load_admin_chat_messages()
     payments_data = load_admin_prepaid_payments()
-    store_applications_data = load_admin_store_applications(db_path)
+    store_applications_data = load_admin_store_applications(db_path, signed_gcs_read_url)
+    food_menu_items_data = load_admin_menu_items(db_path, signed_gcs_read_url)
     return {
         "orders": orders_data,
         "accounts": accounts_data,
         "messages": messages_data,
         "payments": payments_data,
         "store_applications": store_applications_data,
+        "food_menu_items": food_menu_items_data,
         "order_hours": order_hours_status(),
     }
 
@@ -4846,7 +4935,17 @@ def admin_update_food_store_application(
     key: str = Query(default=""),
 ) -> dict:
     require_admin_key(key)
-    return update_admin_store_application(db_path, application_id, request).model_dump(mode="json")
+    return update_admin_store_application(db_path, application_id, request, signed_gcs_read_url).model_dump(mode="json")
+
+
+@app.patch("/admin/food/menu-items/{menu_item_id}")
+def admin_update_food_menu_item(
+    menu_item_id: str,
+    request: AdminUpdateFoodMenuItemRequest,
+    key: str = Query(default=""),
+) -> dict:
+    require_admin_key(key)
+    return update_admin_menu_item(db_path, menu_item_id, request, signed_gcs_read_url).model_dump(mode="json")
 
 
 @app.post("/admin/chat/messages", response_model=ChatMessageResponse)
