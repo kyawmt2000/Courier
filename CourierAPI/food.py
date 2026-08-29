@@ -36,6 +36,15 @@ class CreateFoodMenuItemRequest(BaseModel):
     category: str = Field(min_length=1)
     title: str = Field(min_length=1)
     description: str = ""
+    price_mmk: float = Field(ge=0)
+    image_url: str = Field(min_length=1)
+
+
+class UpdateFoodMenuItemRequest(BaseModel):
+    category: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str = ""
+    price_mmk: float = Field(ge=0)
     image_url: str = Field(min_length=1)
 
 
@@ -512,6 +521,7 @@ def create_food_router(
         category = request.category.strip()
         title = request.title.strip()
         description = request.description.strip()
+        price_mmk = request.price_mmk
         image_url = request.image_url.strip()
         if not category:
             raise HTTPException(status_code=400, detail="请填写菜品类型")
@@ -542,7 +552,7 @@ def create_food_router(
                 category=category,
                 name=title,
                 description=description,
-                price_mmk=0,
+                price_mmk=price_mmk,
                 image_url=image_url,
                 is_available=False,
                 status="pending",
@@ -569,6 +579,78 @@ def create_food_router(
                 ),
             )
         return menu_item
+
+    @router.patch("/stores/menu-items/{menu_item_id}", response_model=FoodMenuItemResponse)
+    def update_store_menu_item(
+        menu_item_id: str,
+        request: UpdateFoodMenuItemRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodMenuItemResponse:
+        user_phone = require_account_phone(authorization)
+        category = request.category.strip()
+        title = request.title.strip()
+        description = request.description.strip()
+        image_url = request.image_url.strip()
+        if not category:
+            raise HTTPException(status_code=400, detail="请填写菜品类型")
+        if not title:
+            raise HTTPException(status_code=400, detail="请填写菜品标题")
+        if not image_url:
+            raise HTTPException(status_code=400, detail="请上传菜品图片")
+
+        with connect_db() as connection:
+            application_row = connection.execute(
+                """
+                SELECT id
+                FROM food_store_applications
+                WHERE user_phone = ? AND status = 'confirmed'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_phone,),
+            ).fetchone()
+            if not application_row:
+                raise HTTPException(status_code=403, detail="店铺审核确认后才能编辑菜品")
+
+            row = connection.execute(
+                """
+                SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
+                       status, rejection_reason, reviewed_at, created_at, payload
+                FROM food_menu_items
+                WHERE id = ? AND restaurant_id = ?
+                """,
+                (menu_item_id, application_row["id"]),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="菜品不存在")
+
+            item = _menu_item_from_row(row).model_copy(
+                update={
+                    "category": category,
+                    "name": title,
+                    "description": description,
+                    "price_mmk": request.price_mmk,
+                    "image_url": image_url,
+                }
+            )
+            connection.execute(
+                """
+                UPDATE food_menu_items
+                SET name = ?, description = ?, price_mmk = ?, image_url = ?, payload = ?
+                WHERE id = ?
+                """,
+                (
+                    item.name,
+                    item.description,
+                    item.price_mmk,
+                    item.image_url,
+                    json.dumps(item.model_dump(mode="json"), ensure_ascii=False),
+                    item.id,
+                ),
+            )
+        if sign_url and item.image_url:
+            item = item.model_copy(update={"image_url": sign_url(item.image_url)})
+        return item
 
     @router.get("/stores/menu-items", response_model=list[FoodMenuItemResponse])
     def list_my_store_menu_items(authorization: str | None = Header(default=None)) -> list[FoodMenuItemResponse]:
