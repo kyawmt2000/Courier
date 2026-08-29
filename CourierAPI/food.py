@@ -24,6 +24,8 @@ class FoodMenuItemResponse(BaseModel):
     name: str
     description: str = ""
     price_mmk: float
+    original_price_mmk: float | None = None
+    click_count: int = 0
     image_url: str | None = None
     is_available: bool = True
     status: str = "confirmed"
@@ -52,6 +54,10 @@ class FoodOrderItemRequest(BaseModel):
     menu_item_id: str
     quantity: int = Field(ge=1, le=99)
     note: str = ""
+
+
+class FoodMenuItemClickRequest(BaseModel):
+    amount: int = Field(default=1, ge=1, le=99)
 
 
 class CreateFoodOrderRequest(BaseModel):
@@ -127,6 +133,7 @@ class AdminUpdateFoodMenuItemRequest(BaseModel):
 
 
 SignUrl = Callable[[str | None], str | None]
+PROMOTIONAL_MENU_CATEGORIES = {"热门推荐", "优惠专区"}
 
 
 def init_food_storage(connection: sqlite3.Connection) -> None:
@@ -259,6 +266,7 @@ def _signed_application(application: FoodStoreApplicationResponse, sign_url: Sig
 def _menu_item_from_row(row: sqlite3.Row, sign_url: SignUrl | None = None) -> FoodMenuItemResponse:
     payload = json.loads(row["payload"] or "{}")
     image_url = row["image_url"]
+    original_price_mmk = payload.get("original_price_mmk")
     return FoodMenuItemResponse(
         id=row["id"],
         restaurant_id=row["restaurant_id"],
@@ -266,6 +274,8 @@ def _menu_item_from_row(row: sqlite3.Row, sign_url: SignUrl | None = None) -> Fo
         name=row["name"],
         description=row["description"],
         price_mmk=row["price_mmk"],
+        original_price_mmk=original_price_mmk if original_price_mmk is not None else row["price_mmk"],
+        click_count=int(payload.get("click_count", 0) or 0),
         image_url=sign_url(image_url) if sign_url else image_url,
         is_available=bool(row["is_available"]),
         status=row["status"],
@@ -525,6 +535,8 @@ def create_food_router(
         image_url = request.image_url.strip()
         if not category:
             raise HTTPException(status_code=400, detail="请填写菜品类型")
+        if category in PROMOTIONAL_MENU_CATEGORIES:
+            raise HTTPException(status_code=400, detail="请选择普通菜品类型")
         if not title:
             raise HTTPException(status_code=400, detail="请填写菜品标题")
         if not image_url:
@@ -553,6 +565,8 @@ def create_food_router(
                 name=title,
                 description=description,
                 price_mmk=price_mmk,
+                original_price_mmk=price_mmk,
+                click_count=0,
                 image_url=image_url,
                 is_available=False,
                 status="pending",
@@ -593,6 +607,8 @@ def create_food_router(
         image_url = request.image_url.strip()
         if not category:
             raise HTTPException(status_code=400, detail="请填写菜品类型")
+        if category in PROMOTIONAL_MENU_CATEGORIES:
+            raise HTTPException(status_code=400, detail="请选择普通菜品类型")
         if not title:
             raise HTTPException(status_code=400, detail="请填写菜品标题")
         if not image_url:
@@ -624,12 +640,20 @@ def create_food_router(
             if not row:
                 raise HTTPException(status_code=404, detail="菜品不存在")
 
-            item = _menu_item_from_row(row).model_copy(
+            existing_item = _menu_item_from_row(row)
+            original_price_mmk = existing_item.original_price_mmk or existing_item.price_mmk
+            if request.price_mmk < existing_item.price_mmk:
+                original_price_mmk = max(original_price_mmk, existing_item.price_mmk)
+            elif request.price_mmk >= original_price_mmk:
+                original_price_mmk = request.price_mmk
+
+            item = existing_item.model_copy(
                 update={
                     "category": category,
                     "name": title,
                     "description": description,
                     "price_mmk": request.price_mmk,
+                    "original_price_mmk": original_price_mmk,
                     "image_url": image_url,
                 }
             )
@@ -679,6 +703,44 @@ def create_food_router(
                 (application_row["id"],),
             ).fetchall()
         return [_menu_item_from_row(row, sign_url) for row in rows]
+
+    @router.post("/menu-items/{menu_item_id}/click", response_model=FoodMenuItemResponse)
+    def record_menu_item_click(
+        menu_item_id: str,
+        request: FoodMenuItemClickRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodMenuItemResponse:
+        require_account_phone(authorization)
+        with connect_db() as connection:
+            row = connection.execute(
+                """
+                SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
+                       status, rejection_reason, reviewed_at, created_at, payload
+                FROM food_menu_items
+                WHERE id = ? AND status = 'confirmed' AND is_available = 1
+                """,
+                (menu_item_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="菜品不存在")
+            existing_item = _menu_item_from_row(row)
+            item = existing_item.model_copy(
+                update={"click_count": existing_item.click_count + request.amount}
+            )
+            connection.execute(
+                """
+                UPDATE food_menu_items
+                SET payload = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(item.model_dump(mode="json"), ensure_ascii=False),
+                    item.id,
+                ),
+            )
+        if sign_url and item.image_url:
+            item = item.model_copy(update={"image_url": sign_url(item.image_url)})
+        return item
 
     @router.get("/orders", response_model=list[FoodOrderResponse])
     def list_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
@@ -746,6 +808,33 @@ def create_food_router(
                     json.dumps(order.model_dump(mode="json"), ensure_ascii=False),
                 ),
             )
+            for order_item in request.items:
+                row = connection.execute(
+                    """
+                    SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
+                           status, rejection_reason, reviewed_at, created_at, payload
+                    FROM food_menu_items
+                    WHERE id = ? AND restaurant_id = ?
+                    """,
+                    (order_item.menu_item_id, request.restaurant_id),
+                ).fetchone()
+                if not row:
+                    continue
+                existing_menu_item = _menu_item_from_row(row)
+                menu_item = existing_menu_item.model_copy(
+                    update={"click_count": existing_menu_item.click_count + order_item.quantity}
+                )
+                connection.execute(
+                    """
+                    UPDATE food_menu_items
+                    SET payload = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(menu_item.model_dump(mode="json"), ensure_ascii=False),
+                        menu_item.id,
+                    ),
+                )
         return order
 
     @router.post("/stores/register", response_model=FoodStoreApplicationResponse)
