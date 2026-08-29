@@ -448,21 +448,45 @@ def create_food_router(
         with connect_db() as connection:
             rows = connection.execute(
                 """
-                SELECT id, name, description, image_url, is_open
-                FROM food_restaurants
-                ORDER BY name COLLATE NOCASE
+                SELECT store.id, store.payload,
+                       (
+                           SELECT item.image_url
+                           FROM food_menu_items item
+                           WHERE item.restaurant_id = store.id
+                             AND item.status = 'confirmed'
+                             AND item.is_available = 1
+                           ORDER BY item.created_at DESC
+                           LIMIT 1
+                       ) AS preview_image_url
+                FROM food_store_applications store
+                WHERE store.status = 'confirmed'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM food_menu_items item
+                      WHERE item.restaurant_id = store.id
+                        AND item.status = 'confirmed'
+                        AND item.is_available = 1
+                  )
+                ORDER BY store.store_name COLLATE NOCASE
                 """
             ).fetchall()
-        return [
-            FoodRestaurantResponse(
-                id=row["id"],
-                name=row["name"],
-                description=row["description"],
-                image_url=sign_url(row["image_url"]) if sign_url else row["image_url"],
-                is_open=bool(row["is_open"]),
+        restaurants: list[FoodRestaurantResponse] = []
+        for row in rows:
+            payload = json.loads(row["payload"] or "{}")
+            service_types = payload.get("service_types") or []
+            store_address = payload.get("store_address") or ""
+            description = " / ".join([*service_types, store_address]).strip(" /")
+            image_url = row["preview_image_url"] or (payload.get("photo_urls") or [None])[0]
+            restaurants.append(
+                FoodRestaurantResponse(
+                    id=row["id"],
+                    name=payload.get("store_name") or "",
+                    description=description,
+                    image_url=sign_url(image_url) if sign_url else image_url,
+                    is_open=True,
+                )
             )
-            for row in rows
-        ]
+        return restaurants
 
     @router.get("/restaurants/{restaurant_id}/menu", response_model=list[FoodMenuItemResponse])
     def list_menu_items(restaurant_id: str) -> list[FoodMenuItemResponse]:
