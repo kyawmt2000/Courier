@@ -39,6 +39,7 @@ class CreateFoodMenuItemRequest(BaseModel):
     title: str = Field(min_length=1)
     description: str = ""
     price_mmk: float = Field(ge=0)
+    original_price_mmk: float | None = Field(default=None, ge=0)
     image_url: str = Field(min_length=1)
 
 
@@ -47,6 +48,7 @@ class UpdateFoodMenuItemRequest(BaseModel):
     title: str = Field(min_length=1)
     description: str = ""
     price_mmk: float = Field(ge=0)
+    original_price_mmk: float | None = Field(default=None, ge=0)
     image_url: str = Field(min_length=1)
 
 
@@ -532,6 +534,7 @@ def create_food_router(
         title = request.title.strip()
         description = request.description.strip()
         price_mmk = request.price_mmk
+        original_price_mmk = request.original_price_mmk if request.original_price_mmk is not None else price_mmk
         image_url = request.image_url.strip()
         if not category:
             raise HTTPException(status_code=400, detail="请填写菜品类型")
@@ -541,6 +544,8 @@ def create_food_router(
             raise HTTPException(status_code=400, detail="请填写菜品标题")
         if not image_url:
             raise HTTPException(status_code=400, detail="请上传菜品图片")
+        if price_mmk > original_price_mmk:
+            raise HTTPException(status_code=400, detail="优惠价格不能高于原价")
 
         created_at = datetime.now(timezone.utc).isoformat()
         with connect_db() as connection:
@@ -565,7 +570,7 @@ def create_food_router(
                 name=title,
                 description=description,
                 price_mmk=price_mmk,
-                original_price_mmk=price_mmk,
+                original_price_mmk=original_price_mmk,
                 click_count=0,
                 image_url=image_url,
                 is_available=False,
@@ -641,11 +646,16 @@ def create_food_router(
                 raise HTTPException(status_code=404, detail="菜品不存在")
 
             existing_item = _menu_item_from_row(row)
-            original_price_mmk = existing_item.original_price_mmk or existing_item.price_mmk
-            if request.price_mmk < existing_item.price_mmk:
-                original_price_mmk = max(original_price_mmk, existing_item.price_mmk)
-            elif request.price_mmk >= original_price_mmk:
-                original_price_mmk = request.price_mmk
+            if request.original_price_mmk is not None:
+                original_price_mmk = request.original_price_mmk
+                if request.price_mmk > original_price_mmk:
+                    raise HTTPException(status_code=400, detail="优惠价格不能高于原价")
+            else:
+                original_price_mmk = existing_item.original_price_mmk or existing_item.price_mmk
+                if request.price_mmk < existing_item.price_mmk:
+                    original_price_mmk = max(original_price_mmk, existing_item.price_mmk)
+                elif request.price_mmk >= original_price_mmk:
+                    original_price_mmk = request.price_mmk
 
             item = existing_item.model_copy(
                 update={
