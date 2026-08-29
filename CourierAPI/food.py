@@ -26,6 +26,10 @@ class FoodMenuItemResponse(BaseModel):
     price_mmk: float
     image_url: str | None = None
     is_available: bool = True
+    status: str = "confirmed"
+    rejection_reason: str | None = None
+    reviewed_at: str | None = None
+    created_at: str | None = None
 
 
 class CreateFoodMenuItemRequest(BaseModel):
@@ -108,6 +112,14 @@ class AdminUpdateFoodStoreApplicationRequest(BaseModel):
     rejection_reason: str | None = None
 
 
+class AdminUpdateFoodMenuItemRequest(BaseModel):
+    status: str
+    rejection_reason: str | None = None
+
+
+SignUrl = Callable[[str | None], str | None]
+
+
 def init_food_storage(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
@@ -132,6 +144,9 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
             price_mmk REAL NOT NULL,
             image_url TEXT,
             is_available INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'confirmed',
+            rejection_reason TEXT,
+            reviewed_at TEXT,
             payload TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL
         )
@@ -191,6 +206,13 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE food_store_applications ADD COLUMN rejection_reason TEXT")
     if "reviewed_at" not in food_columns:
         connection.execute("ALTER TABLE food_store_applications ADD COLUMN reviewed_at TEXT")
+    menu_columns = {row["name"] for row in connection.execute("PRAGMA table_info(food_menu_items)").fetchall()}
+    if "status" not in menu_columns:
+        connection.execute("ALTER TABLE food_menu_items ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'")
+    if "rejection_reason" not in menu_columns:
+        connection.execute("ALTER TABLE food_menu_items ADD COLUMN rejection_reason TEXT")
+    if "reviewed_at" not in menu_columns:
+        connection.execute("ALTER TABLE food_menu_items ADD COLUMN reviewed_at TEXT")
 
 
 def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
@@ -210,7 +232,41 @@ def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
     return FoodStoreApplicationResponse(**payload)
 
 
-def load_admin_store_applications(db_path: Path) -> list[dict]:
+def _signed_application(application: FoodStoreApplicationResponse, sign_url: SignUrl | None) -> FoodStoreApplicationResponse:
+    if sign_url is None:
+        return application
+    return application.model_copy(
+        update={
+            "owner_nrc_front_url": sign_url(application.owner_nrc_front_url) or "",
+            "owner_nrc_back_url": sign_url(application.owner_nrc_back_url) or "",
+            "payment_qr_url": sign_url(application.payment_qr_url),
+            "license_urls": [sign_url(url) or url for url in application.license_urls],
+            "menu_urls": [sign_url(url) or url for url in application.menu_urls],
+            "photo_urls": [sign_url(url) or url for url in application.photo_urls],
+        }
+    )
+
+
+def _menu_item_from_row(row: sqlite3.Row, sign_url: SignUrl | None = None) -> FoodMenuItemResponse:
+    payload = json.loads(row["payload"] or "{}")
+    image_url = row["image_url"]
+    return FoodMenuItemResponse(
+        id=row["id"],
+        restaurant_id=row["restaurant_id"],
+        category=payload.get("category", ""),
+        name=row["name"],
+        description=row["description"],
+        price_mmk=row["price_mmk"],
+        image_url=sign_url(image_url) if sign_url else image_url,
+        is_available=bool(row["is_available"]),
+        status=row["status"],
+        rejection_reason=row["rejection_reason"],
+        reviewed_at=row["reviewed_at"],
+        created_at=row["created_at"],
+    )
+
+
+def load_admin_store_applications(db_path: Path, sign_url: SignUrl | None = None) -> list[dict]:
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
@@ -220,13 +276,39 @@ def load_admin_store_applications(db_path: Path) -> list[dict]:
             ORDER BY created_at DESC
             """
         ).fetchall()
-    return [_application_from_row(row).model_dump(mode="json") for row in rows]
+    return [_signed_application(_application_from_row(row), sign_url).model_dump(mode="json") for row in rows]
+
+
+def load_admin_menu_items(db_path: Path, sign_url: SignUrl | None = None) -> list[dict]:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT item.id, item.restaurant_id, item.name, item.description, item.price_mmk,
+                   item.image_url, item.is_available, item.status, item.rejection_reason,
+                   item.reviewed_at, item.created_at, item.payload,
+                   store.store_name, store.owner_name, store.primary_phone, store.user_phone
+            FROM food_menu_items item
+            LEFT JOIN food_store_applications store ON store.id = item.restaurant_id
+            ORDER BY item.created_at DESC
+            """
+        ).fetchall()
+    items: list[dict] = []
+    for row in rows:
+        data = _menu_item_from_row(row, sign_url).model_dump(mode="json")
+        data["store_name"] = row["store_name"] or ""
+        data["owner_name"] = row["owner_name"] or ""
+        data["primary_phone"] = row["primary_phone"] or ""
+        data["user_phone"] = row["user_phone"] or ""
+        items.append(data)
+    return items
 
 
 def update_admin_store_application(
     db_path: Path,
     application_id: str,
     request: AdminUpdateFoodStoreApplicationRequest,
+    sign_url: SignUrl | None = None,
 ) -> FoodStoreApplicationResponse:
     if request.status not in {"pending", "confirmed", "rejected"}:
         raise HTTPException(status_code=400, detail="店铺状态不正确")
@@ -291,12 +373,68 @@ def update_admin_store_application(
                     application.created_at,
                 ),
             )
-    return application
+    return _signed_application(application, sign_url)
+
+
+def update_admin_menu_item(
+    db_path: Path,
+    menu_item_id: str,
+    request: AdminUpdateFoodMenuItemRequest,
+    sign_url: SignUrl | None = None,
+) -> FoodMenuItemResponse:
+    if request.status not in {"pending", "confirmed", "rejected"}:
+        raise HTTPException(status_code=400, detail="菜品状态不正确")
+    reason = (request.rejection_reason or "").strip()
+    if request.status == "rejected" and not reason:
+        raise HTTPException(status_code=400, detail="请填写拒绝原因")
+
+    reviewed_at = datetime.now(timezone.utc).isoformat() if request.status in {"confirmed", "rejected"} else None
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            """
+            SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
+                   status, rejection_reason, reviewed_at, created_at, payload
+            FROM food_menu_items
+            WHERE id = ?
+            """,
+            (menu_item_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="菜品不存在")
+
+        item = _menu_item_from_row(row).model_copy(
+            update={
+                "status": request.status,
+                "rejection_reason": reason if request.status == "rejected" else None,
+                "reviewed_at": reviewed_at,
+                "is_available": request.status == "confirmed",
+            }
+        )
+        connection.execute(
+            """
+            UPDATE food_menu_items
+            SET status = ?, rejection_reason = ?, reviewed_at = ?, is_available = ?, payload = ?
+            WHERE id = ?
+            """,
+            (
+                item.status,
+                item.rejection_reason,
+                item.reviewed_at,
+                1 if item.is_available else 0,
+                json.dumps(item.model_dump(mode="json"), ensure_ascii=False),
+                item.id,
+            ),
+        )
+    if sign_url and item.image_url:
+        item = item.model_copy(update={"image_url": sign_url(item.image_url)})
+    return item
 
 
 def create_food_router(
     db_path: Path,
     require_account_phone: Callable[[str | None], str],
+    sign_url: SignUrl | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/food", tags=["food"])
 
@@ -320,7 +458,7 @@ def create_food_router(
                 id=row["id"],
                 name=row["name"],
                 description=row["description"],
-                image_url=row["image_url"],
+                image_url=sign_url(row["image_url"]) if sign_url else row["image_url"],
                 is_open=bool(row["is_open"]),
             )
             for row in rows
@@ -331,26 +469,15 @@ def create_food_router(
         with connect_db() as connection:
             rows = connection.execute(
                 """
-                SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available
+                SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
+                       status, rejection_reason, reviewed_at, created_at, payload
                 FROM food_menu_items
-                WHERE restaurant_id = ?
+                WHERE restaurant_id = ? AND status = 'confirmed' AND is_available = 1
                 ORDER BY name COLLATE NOCASE
                 """,
                 (restaurant_id,),
             ).fetchall()
-        return [
-            FoodMenuItemResponse(
-                id=row["id"],
-                restaurant_id=row["restaurant_id"],
-                category=json.loads(row["payload"]).get("category", ""),
-                name=row["name"],
-                description=row["description"],
-                price_mmk=row["price_mmk"],
-                image_url=row["image_url"],
-                is_available=bool(row["is_available"]),
-            )
-            for row in rows
-        ]
+        return [_menu_item_from_row(row, sign_url) for row in rows]
 
     @router.post("/stores/menu-items", response_model=FoodMenuItemResponse)
     def create_store_menu_item(
@@ -393,15 +520,17 @@ def create_food_router(
                 description=description,
                 price_mmk=0,
                 image_url=image_url,
-                is_available=True,
+                is_available=False,
+                status="pending",
+                created_at=created_at,
             )
             connection.execute(
                 """
                 INSERT INTO food_menu_items (
                     id, restaurant_id, name, description, price_mmk,
-                    image_url, is_available, payload, created_at
+                    image_url, is_available, status, payload, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                 """,
                 (
                     menu_item.id,
@@ -410,11 +539,40 @@ def create_food_router(
                     menu_item.description,
                     menu_item.price_mmk,
                     menu_item.image_url,
+                    menu_item.status,
                     json.dumps(menu_item.model_dump(mode="json"), ensure_ascii=False),
                     created_at,
                 ),
             )
         return menu_item
+
+    @router.get("/stores/menu-items", response_model=list[FoodMenuItemResponse])
+    def list_my_store_menu_items(authorization: str | None = Header(default=None)) -> list[FoodMenuItemResponse]:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            application_row = connection.execute(
+                """
+                SELECT id
+                FROM food_store_applications
+                WHERE user_phone = ? AND status = 'confirmed'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_phone,),
+            ).fetchone()
+            if not application_row:
+                return []
+            rows = connection.execute(
+                """
+                SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
+                       status, rejection_reason, reviewed_at, created_at, payload
+                FROM food_menu_items
+                WHERE restaurant_id = ? AND status = 'confirmed' AND is_available = 1
+                ORDER BY created_at DESC
+                """,
+                (application_row["id"],),
+            ).fetchall()
+        return [_menu_item_from_row(row, sign_url) for row in rows]
 
     @router.get("/orders", response_model=list[FoodOrderResponse])
     def list_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
@@ -445,7 +603,7 @@ def create_food_router(
                 """,
                 (user_phone,),
             ).fetchone()
-        return _application_from_row(row) if row else None
+        return _signed_application(_application_from_row(row), sign_url) if row else None
 
     @router.post("/orders", response_model=FoodOrderResponse)
     def create_food_order(
