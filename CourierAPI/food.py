@@ -95,6 +95,7 @@ class FoodStoreApplicationRequest(BaseModel):
     bank_account_number: str = ""
     store_address: str = Field(min_length=1)
     service_types: list[str] = Field(min_length=1)
+    restaurant_types: list[str] = Field(default_factory=list, max_length=2)
     signature_dish_image_url: str = Field(min_length=1)
     license_urls: list[str] = Field(default_factory=list, max_length=3)
     menu_urls: list[str] = Field(default_factory=list, max_length=10)
@@ -116,6 +117,7 @@ class FoodStoreApplicationResponse(BaseModel):
     bank_account_number: str = ""
     store_address: str = ""
     service_types: list[str]
+    restaurant_types: list[str] = Field(default_factory=list)
     signature_dish_image_url: str = ""
     license_urls: list[str] = Field(default_factory=list)
     menu_urls: list[str] = Field(default_factory=list)
@@ -137,7 +139,20 @@ class AdminUpdateFoodMenuItemRequest(BaseModel):
 
 
 SignUrl = Callable[[str | None], str | None]
+DeleteUrl = Callable[[str | None], None]
 PROMOTIONAL_MENU_CATEGORIES = {"热门推荐", "优惠专区"}
+RESTAURANT_TYPES = {
+    "Burmese",
+    "Tea Shop",
+    "Chinese",
+    "Thai",
+    "Korean",
+    "Japanese",
+    "Western",
+    "Milk Tea",
+    "Coffee",
+    "Fast Food",
+}
 
 
 def init_food_storage(connection: sqlite3.Connection) -> None:
@@ -392,8 +407,8 @@ def update_admin_store_application(
                 (
                     restaurant_id,
                     application.store_name,
-                    " / ".join([*application.service_types, application.store_address]),
-                    application.photo_urls[0] if application.photo_urls else None,
+                    " / ".join([*application.service_types, *application.restaurant_types, application.store_address]),
+                    application.signature_dish_image_url or (application.photo_urls[0] if application.photo_urls else None),
                     json.dumps(application.model_dump(mode="json"), ensure_ascii=False),
                     application.created_at,
                 ),
@@ -456,6 +471,83 @@ def update_admin_menu_item(
     return item
 
 
+def delete_admin_store_application(
+    db_path: Path,
+    application_id: str,
+    delete_url: DeleteUrl | None = None,
+) -> dict:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            """
+            SELECT id, payload, status, rejection_reason, reviewed_at
+            FROM food_store_applications
+            WHERE id = ?
+            """,
+            (application_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="店铺注册不存在")
+
+        application = _application_from_row(row)
+        rows = connection.execute(
+            """
+            SELECT image_url
+            FROM food_menu_items
+            WHERE restaurant_id = ?
+            """,
+            (application_id,),
+        ).fetchall()
+        menu_image_urls = [item["image_url"] for item in rows]
+
+        connection.execute("DELETE FROM food_menu_items WHERE restaurant_id = ?", (application_id,))
+        connection.execute("DELETE FROM food_restaurants WHERE id = ?", (application_id,))
+        connection.execute("DELETE FROM food_store_applications WHERE id = ?", (application_id,))
+
+    image_urls = [
+        application.owner_nrc_front_url,
+        application.owner_nrc_back_url,
+        application.payment_qr_url,
+        application.signature_dish_image_url,
+        *application.license_urls,
+        *application.menu_urls,
+        *application.photo_urls,
+        *menu_image_urls,
+    ]
+    if delete_url:
+        for image_url in image_urls:
+            delete_url(image_url)
+
+    return {"status": "deleted", "id": application_id}
+
+
+def delete_admin_menu_item(
+    db_path: Path,
+    menu_item_id: str,
+    delete_url: DeleteUrl | None = None,
+) -> dict:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            """
+            SELECT id, image_url
+            FROM food_menu_items
+            WHERE id = ?
+            """,
+            (menu_item_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="菜品不存在")
+
+        image_url = row["image_url"]
+        connection.execute("DELETE FROM food_menu_items WHERE id = ?", (menu_item_id,))
+
+    if delete_url:
+        delete_url(image_url)
+
+    return {"status": "deleted", "id": menu_item_id}
+
+
 def create_food_router(
     db_path: Path,
     require_account_phone: Callable[[str | None], str],
@@ -490,8 +582,9 @@ def create_food_router(
         for row in rows:
             payload = json.loads(row["payload"] or "{}")
             service_types = payload.get("service_types") or []
+            restaurant_types = payload.get("restaurant_types") or []
             store_address = payload.get("store_address") or ""
-            description = " / ".join([*service_types, store_address]).strip(" /")
+            description = " / ".join([*service_types, *restaurant_types, store_address]).strip(" /")
             image_url = payload.get("signature_dish_image_url") or (payload.get("photo_urls") or [None])[0]
             restaurants.append(
                 FoodRestaurantResponse(
@@ -855,6 +948,13 @@ def create_food_router(
         ]
         if not service_types:
             raise HTTPException(status_code=400, detail="请选择经营方式")
+        restaurant_types = []
+        for value in request.restaurant_types:
+            cleaned = value.strip()
+            if cleaned in RESTAURANT_TYPES and cleaned not in restaurant_types:
+                restaurant_types.append(cleaned)
+        if len(restaurant_types) > 2:
+            raise HTTPException(status_code=400, detail="餐厅类型最多选择 2 个")
         bank_account_name = request.bank_account_name.strip()
         bank_account_number = request.bank_account_number.strip()
         bank_account = request.bank_account.strip() or " / ".join(
@@ -886,6 +986,7 @@ def create_food_router(
             bank_account_number=bank_account_number,
             store_address=request.store_address.strip(),
             service_types=service_types,
+            restaurant_types=restaurant_types,
             signature_dish_image_url=request.signature_dish_image_url.strip(),
             license_urls=request.license_urls,
             menu_urls=request.menu_urls,
