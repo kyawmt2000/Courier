@@ -473,16 +473,7 @@ def create_food_router(
         with connect_db() as connection:
             rows = connection.execute(
                 """
-                SELECT store.id, store.payload,
-                       (
-                           SELECT item.image_url
-                           FROM food_menu_items item
-                           WHERE item.restaurant_id = store.id
-                             AND item.status = 'confirmed'
-                             AND item.is_available = 1
-                           ORDER BY item.created_at DESC
-                           LIMIT 1
-                       ) AS preview_image_url
+                SELECT store.id, store.payload
                 FROM food_store_applications store
                 WHERE store.status = 'confirmed'
                   AND EXISTS (
@@ -501,7 +492,7 @@ def create_food_router(
             service_types = payload.get("service_types") or []
             store_address = payload.get("store_address") or ""
             description = " / ".join([*service_types, store_address]).strip(" /")
-            image_url = row["preview_image_url"] or (payload.get("photo_urls") or [None])[0]
+            image_url = payload.get("signature_dish_image_url") or (payload.get("photo_urls") or [None])[0]
             restaurants.append(
                 FoodRestaurantResponse(
                     id=row["id"],
