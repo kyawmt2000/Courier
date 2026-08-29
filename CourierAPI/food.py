@@ -95,6 +95,7 @@ class FoodStoreApplicationRequest(BaseModel):
     bank_account_number: str = ""
     store_address: str = Field(min_length=1)
     service_types: list[str] = Field(min_length=1)
+    signature_dish_image_url: str = Field(min_length=1)
     license_urls: list[str] = Field(default_factory=list, max_length=3)
     menu_urls: list[str] = Field(default_factory=list, max_length=10)
     photo_urls: list[str] = Field(min_length=5, max_length=10)
@@ -115,6 +116,7 @@ class FoodStoreApplicationResponse(BaseModel):
     bank_account_number: str = ""
     store_address: str = ""
     service_types: list[str]
+    signature_dish_image_url: str = ""
     license_urls: list[str] = Field(default_factory=list)
     menu_urls: list[str] = Field(default_factory=list)
     photo_urls: list[str]
@@ -242,6 +244,7 @@ def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
     payload.setdefault("bank_account_name", "")
     payload.setdefault("bank_account_number", "")
     payload.setdefault("store_address", "")
+    payload.setdefault("signature_dish_image_url", "")
     payload.setdefault("license_urls", [])
     payload.setdefault("menu_urls", [])
     payload["status"] = row["status"]
@@ -258,6 +261,7 @@ def _signed_application(application: FoodStoreApplicationResponse, sign_url: Sig
             "owner_nrc_front_url": sign_url(application.owner_nrc_front_url) or "",
             "owner_nrc_back_url": sign_url(application.owner_nrc_back_url) or "",
             "payment_qr_url": sign_url(application.payment_qr_url),
+            "signature_dish_image_url": sign_url(application.signature_dish_image_url) or "",
             "license_urls": [sign_url(url) or url for url in application.license_urls],
             "menu_urls": [sign_url(url) or url for url in application.menu_urls],
             "photo_urls": [sign_url(url) or url for url in application.photo_urls],
@@ -891,6 +895,7 @@ def create_food_router(
             bank_account_number=bank_account_number,
             store_address=request.store_address.strip(),
             service_types=service_types,
+            signature_dish_image_url=request.signature_dish_image_url.strip(),
             license_urls=request.license_urls,
             menu_urls=request.menu_urls,
             photo_urls=request.photo_urls,
