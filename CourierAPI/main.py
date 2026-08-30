@@ -30,6 +30,8 @@ from food import (
     AdminUpdateFoodMenuItemRequest,
     AdminUpdateFoodStoreApplicationRequest,
     create_food_router,
+    delete_admin_menu_item,
+    delete_admin_store_application,
     init_food_storage,
     load_admin_menu_items,
     load_admin_store_applications,
@@ -1358,6 +1360,19 @@ def signed_gcs_read_url(value: str | None) -> str | None:
     except Exception:
         logger.exception("GCS signed read URL creation failed")
         return value
+
+
+def delete_gcs_url(value: str | None) -> None:
+    object_name = gcs_object_name_from_url(value)
+    if not object_name or storage is None:
+        return
+
+    try:
+        bucket = gcs_client().bucket(gcs_bucket_name())
+        bucket.blob(object_name).delete()
+        signed_gcs_read_url_cache.pop(object_name, None)
+    except Exception:
+        logger.exception("GCS delete failed for %s", object_name)
 
 
 def upload_base64_image(image_data: str, content_type: str | None, file_name: str | None, folder: str = "chat") -> str:
@@ -3196,11 +3211,12 @@ ADMIN_HTML = r'''
         const signatureDishImage = application.signature_dish_image_url
           ? `<a href="${escapeHtml(application.signature_dish_image_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.signature_dish_image_url)}" alt="招牌菜图片"></a>`
           : `<span class="muted">未上传</span>`;
+        const restaurantTypes = (application.restaurant_types || []).join(" / ");
         return `
           <tr>
             <td><strong>${escapeHtml(application.store_name)}</strong><br><span class="muted">#${escapeHtml(application.id.slice(0, 6).toUpperCase())}</span><br><span class="muted">${escapeHtml(new Date(application.created_at).toLocaleString())}</span></td>
             <td>${escapeHtml(application.owner_name)}<br><span class="muted">${escapeHtml(application.primary_phone)} / ${escapeHtml(application.secondary_phone)}</span><br>${displayAccount(application.user_phone)}</td>
-            <td>${escapeHtml((application.service_types || []).join(" / "))}<br><span class="muted">${escapeHtml(application.store_address || "未填写地址")}</span></td>
+            <td>${escapeHtml((application.service_types || []).join(" / "))}${restaurantTypes ? `<br><span class="muted">${escapeHtml(restaurantTypes)}</span>` : ""}<br><span class="muted">${escapeHtml(application.store_address || "未填写地址")}</span></td>
             <td>
               <div><span class="muted">营业执照</span><br>${licenses || `<span class="muted">未上传</span>`}</div>
               <div style="margin-top:6px;"><span class="muted">负责人NRC</span><br>${nrc}</div>
@@ -3213,6 +3229,7 @@ ADMIN_HTML = r'''
             <td class="actions-cell">
               ${application.status !== "confirmed" ? `<button onclick="confirmStoreApplication('${application.id}', this)">确认店铺</button>` : ""}
               ${application.status !== "rejected" ? `<button onclick="rejectStoreApplication('${application.id}', this)">拒绝</button>` : ""}
+              <button onclick="cancelStoreApplication('${application.id}', this)">取消</button>
             </td>
           </tr>`;
       }).join("");
@@ -3240,6 +3257,7 @@ ADMIN_HTML = r'''
             <td class="actions-cell">
               ${item.status !== "confirmed" ? `<button onclick="confirmFoodMenuItem('${item.id}', this)">确认菜品</button>` : ""}
               ${item.status !== "rejected" ? `<button onclick="rejectFoodMenuItem('${item.id}', this)">拒绝</button>` : ""}
+              <button onclick="cancelFoodMenuItem('${item.id}', this)">取消</button>
             </td>
           </tr>`;
       }).join("");
@@ -3713,6 +3731,29 @@ ADMIN_HTML = r'''
       await patchStoreApplication(id, { status: "rejected", rejection_reason: reason.trim() }, button, "店铺已拒绝");
     }
 
+    async function deleteAdminResource(path, stateKey, id, button, successMessage) {
+      setButtonBusy(button, true);
+      try {
+        const response = await fetch(`${path}?key=${keyParam()}`, { method: "DELETE" });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        state[stateKey] = (state[stateKey] || []).filter(item => item.id !== id);
+        render();
+        showToast(successMessage);
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "Request failed", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function cancelStoreApplication(id, button = null) {
+      if (!confirm("确认取消并删除这个店铺申请吗？图片也会从 GCS 删除。")) return;
+      await deleteAdminResource(`/admin/food/store-applications/${id}`, "store_applications", id, button, "店铺申请已取消");
+    }
+
     async function patchFoodMenuItem(id, body, button, successMessage) {
       setButtonBusy(button, true);
       try {
@@ -3755,6 +3796,11 @@ ADMIN_HTML = r'''
       const confirmed = await askRejectConfirmation("确认拒绝这个菜品吗？");
       if (!confirmed) return;
       await patchFoodMenuItem(id, { status: "rejected", rejection_reason: reason.trim() }, button, "菜品已拒绝");
+    }
+
+    async function cancelFoodMenuItem(id, button = null) {
+      if (!confirm("确认取消并删除这个菜品吗？图片也会从 GCS 删除。")) return;
+      await deleteAdminResource(`/admin/food/menu-items/${id}`, "food_menu_items", id, button, "菜品已取消");
     }
 
     async function confirmUserPayment(id, button = null) {
@@ -4985,6 +5031,12 @@ def admin_update_food_store_application(
     return update_admin_store_application(db_path, application_id, request, signed_gcs_read_url).model_dump(mode="json")
 
 
+@app.delete("/admin/food/store-applications/{application_id}")
+def admin_delete_food_store_application(application_id: str, key: str = Query(default="")) -> dict:
+    require_admin_key(key)
+    return delete_admin_store_application(db_path, application_id, delete_gcs_url)
+
+
 @app.patch("/admin/food/menu-items/{menu_item_id}")
 def admin_update_food_menu_item(
     menu_item_id: str,
@@ -4993,6 +5045,12 @@ def admin_update_food_menu_item(
 ) -> dict:
     require_admin_key(key)
     return update_admin_menu_item(db_path, menu_item_id, request, signed_gcs_read_url).model_dump(mode="json")
+
+
+@app.delete("/admin/food/menu-items/{menu_item_id}")
+def admin_delete_food_menu_item(menu_item_id: str, key: str = Query(default="")) -> dict:
+    require_admin_key(key)
+    return delete_admin_menu_item(db_path, menu_item_id, delete_gcs_url)
 
 
 @app.post("/admin/chat/messages", response_model=ChatMessageResponse)
