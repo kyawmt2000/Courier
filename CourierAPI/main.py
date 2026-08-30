@@ -128,6 +128,8 @@ PaymentMode = Literal["cod", "prepaid"]
 PaymentStatus = Literal["not_required", "unpaid", "pending", "confirmed", "rejected"]
 SettlementStatus = Literal["pending", "paid_to_user", "paid_to_rider", "completed"]
 CouponScope = Literal["food", "parcel", "both"]
+CouponTargetType = Literal["all", "account"]
+CouponDiscountType = Literal["amount", "percent"]
 
 
 class HealthResponse(BaseModel):
@@ -469,7 +471,12 @@ class CouponResponse(BaseModel):
     end_date: str
     min_cart_mmk: float
     discount_mmk: float = 1000
+    discount_type: CouponDiscountType = "amount"
+    discount_percent: float | None = None
     scope: CouponScope
+    target_type: CouponTargetType = "all"
+    target_user_phone: str | None = None
+    target_email: str | None = None
     is_active: bool = True
     created_at: str
 
@@ -480,7 +487,11 @@ class AdminCreateCouponRequest(BaseModel):
     end_date: str = Field(min_length=1, max_length=32)
     min_cart_mmk: float = Field(ge=0)
     scope: CouponScope = "food"
-    discount_mmk: float = Field(default=1000, ge=0)
+    discount_type: CouponDiscountType = "amount"
+    discount_mmk: float | None = Field(default=1000, ge=0)
+    discount_percent: float | None = Field(default=None, gt=0, le=100)
+    target_type: CouponTargetType = "all"
+    target_email: str | None = None
 
 
 sms_codes: dict[str, tuple[str, datetime]] = {}
@@ -723,7 +734,12 @@ def init_storage() -> None:
         add_column_if_missing(connection, "coupons", "end_date", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "coupons", "min_cart_mmk", "REAL NOT NULL DEFAULT 0")
         add_column_if_missing(connection, "coupons", "discount_mmk", "REAL NOT NULL DEFAULT 1000")
+        add_column_if_missing(connection, "coupons", "discount_type", "TEXT NOT NULL DEFAULT 'amount'")
+        add_column_if_missing(connection, "coupons", "discount_percent", "REAL")
         add_column_if_missing(connection, "coupons", "scope", "TEXT NOT NULL DEFAULT 'food'")
+        add_column_if_missing(connection, "coupons", "target_type", "TEXT NOT NULL DEFAULT 'all'")
+        add_column_if_missing(connection, "coupons", "target_user_phone", "TEXT")
+        add_column_if_missing(connection, "coupons", "target_email", "TEXT")
         add_column_if_missing(connection, "coupons", "is_active", "INTEGER NOT NULL DEFAULT 1")
         add_column_if_missing(connection, "coupons", "created_at", "TEXT NOT NULL DEFAULT ''")
         init_food_storage(connection)
@@ -812,6 +828,8 @@ def normalize_coupon_date(value: str) -> str:
 
 
 def coupon_from_row(row: sqlite3.Row) -> CouponResponse:
+    discount_type = row["discount_type"] if row["discount_type"] in {"amount", "percent"} else "amount"
+    target_type = row["target_type"] if row["target_type"] in {"all", "account"} else "all"
     return CouponResponse(
         id=row["id"],
         name=row["name"],
@@ -819,13 +837,18 @@ def coupon_from_row(row: sqlite3.Row) -> CouponResponse:
         end_date=row["end_date"],
         min_cart_mmk=float(row["min_cart_mmk"] or 0),
         discount_mmk=float(row["discount_mmk"] or 0),
+        discount_type=discount_type,
+        discount_percent=float(row["discount_percent"]) if row["discount_percent"] is not None else None,
         scope=row["scope"],
+        target_type=target_type,
+        target_user_phone=row["target_user_phone"],
+        target_email=row["target_email"],
         is_active=bool(row["is_active"]),
         created_at=row["created_at"],
     )
 
 
-def load_coupons(active_only: bool = False, scope: str | None = None) -> list[CouponResponse]:
+def load_coupons(active_only: bool = False, scope: str | None = None, user_phone: str | None = None) -> list[CouponResponse]:
     today = datetime.now(ZoneInfo("Asia/Yangon")).date().isoformat()
     query = "SELECT * FROM coupons"
     params: list[object] = []
@@ -836,6 +859,9 @@ def load_coupons(active_only: bool = False, scope: str | None = None) -> list[Co
     if scope in {"food", "parcel"}:
         clauses.append("(scope = ? OR scope = 'both')")
         params.append(scope)
+    if user_phone:
+        clauses.append("(target_type = 'all' OR target_user_phone = ?)")
+        params.append(user_phone)
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY created_at DESC"
@@ -849,22 +875,56 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
     end_date = normalize_coupon_date(request.end_date)
     if end_date < start_date:
         raise HTTPException(status_code=400, detail="End Date 不能早于 Start Date")
+    discount_mmk = float(request.discount_mmk or 0)
+    discount_percent = request.discount_percent
+    if request.discount_type == "amount":
+        if discount_mmk <= 0:
+            raise HTTPException(status_code=400, detail="请填写折扣金额")
+        discount_percent = None
+    else:
+        if discount_percent is None or discount_percent <= 0 or discount_percent > 100:
+            raise HTTPException(status_code=400, detail="请填写 1-100 的折扣百分比")
+        discount_mmk = 0
+    target_email = (request.target_email or "").strip().lower()
+    target_user_phone: str | None = None
+    if request.target_type == "account":
+        if not target_email:
+            raise HTTPException(status_code=400, detail="请填写指定账号邮箱")
+        with connect_db() as connection:
+            row = connection.execute(
+                "SELECT phone, email FROM accounts WHERE lower(email) = ? LIMIT 1",
+                (target_email,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="没有找到这个邮箱账号")
+        target_user_phone = row["phone"]
+        target_email = row["email"] or target_email
+    else:
+        target_email = ""
     coupon = CouponResponse(
         id=str(uuid4()),
         name=request.name.strip(),
         start_date=start_date,
         end_date=end_date,
         min_cart_mmk=request.min_cart_mmk,
-        discount_mmk=request.discount_mmk,
+        discount_mmk=discount_mmk,
+        discount_type=request.discount_type,
+        discount_percent=discount_percent,
         scope=request.scope,
+        target_type=request.target_type,
+        target_user_phone=target_user_phone,
+        target_email=target_email or None,
         is_active=True,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     with connect_db() as connection:
         connection.execute(
             """
-            INSERT INTO coupons (id, name, start_date, end_date, min_cart_mmk, discount_mmk, scope, is_active, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO coupons (
+                id, name, start_date, end_date, min_cart_mmk, discount_mmk, discount_type, discount_percent,
+                scope, target_type, target_user_phone, target_email, is_active, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 coupon.id,
@@ -873,7 +933,12 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
                 coupon.end_date,
                 coupon.min_cart_mmk,
                 coupon.discount_mmk,
+                coupon.discount_type,
+                coupon.discount_percent,
                 coupon.scope,
+                coupon.target_type,
+                coupon.target_user_phone,
+                coupon.target_email,
                 1 if coupon.is_active else 0,
                 coupon.created_at,
             ),
@@ -2677,6 +2742,14 @@ ADMIN_HTML = r'''
         <label>Start Date <input id="couponStartDate" type="date"></label>
         <label>End Date <input id="couponEndDate" type="date"></label>
         <label>Cart 满 <input id="couponMinCart" type="number" min="0" step="100" placeholder="MMK"></label>
+        <label>折扣
+          <select id="couponDiscountType" onchange="toggleCouponInputs()">
+            <option value="amount">折扣金额</option>
+            <option value="percent">百分比</option>
+          </select>
+        </label>
+        <label id="couponAmountWrap">折扣金额 <input id="couponDiscountMmk" type="number" min="0" step="100" placeholder="MMK"></label>
+        <label id="couponPercentWrap">百分比 <input id="couponDiscountPercent" type="number" min="1" max="100" step="1" placeholder="%"></label>
         <label>类型
           <select id="couponScope">
             <option value="food">For Food</option>
@@ -2684,10 +2757,18 @@ ADMIN_HTML = r'''
             <option value="both">Both</option>
           </select>
         </label>
+        <label>发到账号
+          <select id="couponTargetType" onchange="toggleCouponInputs()">
+            <option value="all">所有</option>
+            <option value="account">指定账号</option>
+          </select>
+        </label>
+        <label id="couponTargetEmailWrap">账号邮箱 <input id="couponTargetEmail" type="email" list="couponAccountEmails" placeholder="用邮箱搜索账号"></label>
+        <datalist id="couponAccountEmails"></datalist>
         <button onclick="createCoupon(this)">创建 Coupon</button>
       </div>
       <table>
-        <thead><tr><th>Coupon name</th><th>Start Date</th><th>End Date</th><th>Cart 满多少</th><th>类型</th><th>折扣</th><th>状态</th></tr></thead>
+        <thead><tr><th>Coupon name</th><th>Start Date</th><th>End Date</th><th>Cart 满多少</th><th>类型</th><th>折扣</th><th>状态</th><th>发到账号</th></tr></thead>
         <tbody id="coupons"></tbody>
       </table>
     </section>
@@ -5154,9 +5235,9 @@ def list_user_coupons(
     scope: str | None = Query(default=None),
     authorization: str | None = Header(default=None),
 ) -> list[CouponResponse]:
-    require_account_phone(authorization)
+    user_phone = require_account_phone(authorization)
     normalized_scope = scope if scope in {"food", "parcel"} else None
-    return load_coupons(active_only=True, scope=normalized_scope)
+    return load_coupons(active_only=True, scope=normalized_scope, user_phone=user_phone)
 
 
 @app.get("/privacy", response_class=HTMLResponse)
