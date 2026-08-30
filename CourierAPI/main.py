@@ -127,6 +127,7 @@ ChatSenderType = Literal["user", "rider", "admin"]
 PaymentMode = Literal["cod", "prepaid"]
 PaymentStatus = Literal["not_required", "unpaid", "pending", "confirmed", "rejected"]
 SettlementStatus = Literal["pending", "paid_to_user", "paid_to_rider", "completed"]
+CouponScope = Literal["food", "parcel", "both"]
 
 
 class HealthResponse(BaseModel):
@@ -461,6 +462,27 @@ class AdminOrderHoursRequest(BaseModel):
     timezone: str = "Asia/Yangon"
 
 
+class CouponResponse(BaseModel):
+    id: str
+    name: str
+    start_date: str
+    end_date: str
+    min_cart_mmk: float
+    discount_mmk: float = 1000
+    scope: CouponScope
+    is_active: bool = True
+    created_at: str
+
+
+class AdminCreateCouponRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    start_date: str = Field(min_length=1, max_length=32)
+    end_date: str = Field(min_length=1, max_length=32)
+    min_cart_mmk: float = Field(ge=0)
+    scope: CouponScope = "food"
+    discount_mmk: float = Field(default=1000, ge=0)
+
+
 sms_codes: dict[str, tuple[str, datetime]] = {}
 
 
@@ -647,6 +669,25 @@ def init_storage() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS coupons (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                min_cart_mmk REAL NOT NULL,
+                discount_mmk REAL NOT NULL DEFAULT 1000,
+                scope TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coupons_active_dates "
+            "ON coupons (is_active, start_date, end_date)"
+        )
         add_column_if_missing(connection, "chat_messages", "conversation_id", "TEXT NOT NULL DEFAULT 'main'")
         add_column_if_missing(connection, "chat_messages", "sender_phone", "TEXT")
         add_column_if_missing(connection, "chat_messages", "image_url", "TEXT")
@@ -677,6 +718,14 @@ def init_storage() -> None:
         add_column_if_missing(connection, "delivery_promotion_redemptions", "original_delivery_fee", "REAL NOT NULL DEFAULT 0")
         add_column_if_missing(connection, "delivery_promotion_redemptions", "discounted_delivery_fee", "REAL NOT NULL DEFAULT 0")
         add_column_if_missing(connection, "delivery_promotion_redemptions", "created_at", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "coupons", "name", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "coupons", "start_date", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "coupons", "end_date", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "coupons", "min_cart_mmk", "REAL NOT NULL DEFAULT 0")
+        add_column_if_missing(connection, "coupons", "discount_mmk", "REAL NOT NULL DEFAULT 1000")
+        add_column_if_missing(connection, "coupons", "scope", "TEXT NOT NULL DEFAULT 'food'")
+        add_column_if_missing(connection, "coupons", "is_active", "INTEGER NOT NULL DEFAULT 1")
+        add_column_if_missing(connection, "coupons", "created_at", "TEXT NOT NULL DEFAULT ''")
         init_food_storage(connection)
 
 
@@ -753,6 +802,83 @@ def require_order_hours_available() -> None:
     status = order_hours_status()
     if not status["available"]:
         raise HTTPException(status_code=403, detail=status["message"] or "现在不能下单。")
+
+
+def normalize_coupon_date(value: str) -> str:
+    cleaned = (value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
+        raise HTTPException(status_code=400, detail="日期格式必须是 YYYY-MM-DD")
+    return cleaned
+
+
+def coupon_from_row(row: sqlite3.Row) -> CouponResponse:
+    return CouponResponse(
+        id=row["id"],
+        name=row["name"],
+        start_date=row["start_date"],
+        end_date=row["end_date"],
+        min_cart_mmk=float(row["min_cart_mmk"] or 0),
+        discount_mmk=float(row["discount_mmk"] or 0),
+        scope=row["scope"],
+        is_active=bool(row["is_active"]),
+        created_at=row["created_at"],
+    )
+
+
+def load_coupons(active_only: bool = False, scope: str | None = None) -> list[CouponResponse]:
+    today = datetime.now(ZoneInfo("Asia/Yangon")).date().isoformat()
+    query = "SELECT * FROM coupons"
+    params: list[object] = []
+    clauses: list[str] = []
+    if active_only:
+        clauses.append("is_active = 1 AND start_date <= ? AND end_date >= ?")
+        params.extend([today, today])
+    if scope in {"food", "parcel"}:
+        clauses.append("(scope = ? OR scope = 'both')")
+        params.append(scope)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY created_at DESC"
+    with connect_db() as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [coupon_from_row(row) for row in rows]
+
+
+def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
+    start_date = normalize_coupon_date(request.start_date)
+    end_date = normalize_coupon_date(request.end_date)
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="End Date 不能早于 Start Date")
+    coupon = CouponResponse(
+        id=str(uuid4()),
+        name=request.name.strip(),
+        start_date=start_date,
+        end_date=end_date,
+        min_cart_mmk=request.min_cart_mmk,
+        discount_mmk=request.discount_mmk,
+        scope=request.scope,
+        is_active=True,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    with connect_db() as connection:
+        connection.execute(
+            """
+            INSERT INTO coupons (id, name, start_date, end_date, min_cart_mmk, discount_mmk, scope, is_active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                coupon.id,
+                coupon.name,
+                coupon.start_date,
+                coupon.end_date,
+                coupon.min_cart_mmk,
+                coupon.discount_mmk,
+                coupon.scope,
+                1 if coupon.is_active else 0,
+                coupon.created_at,
+            ),
+        )
+    return coupon
 
 
 def normalize_myanmar_phone(phone: str) -> str:
@@ -2500,6 +2626,7 @@ ADMIN_HTML = r'''
       <button id="tab-stores" class="tab" onclick="showPage('stores')">店铺注册</button>
       <button id="tab-menu-items" class="tab" onclick="showPage('menu-items')">菜品审核</button>
       <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
+      <button id="tab-coupons" class="tab" onclick="showPage('coupons')">Coupons</button>
     </div>
   </header>
   <main>
@@ -2541,6 +2668,27 @@ ADMIN_HTML = r'''
       <table>
         <thead><tr><th>订单</th><th>用户/骑手</th><th>金额</th><th>收款资料</th><th>二维码</th><th>结算状态</th><th>操作</th></tr></thead>
         <tbody id="settlements"></tbody>
+      </table>
+    </section>
+    <section id="page-coupons" class="page">
+      <h2>Coupons</h2>
+      <div class="settings-panel">
+        <label>Coupon name <input id="couponName" type="text" placeholder="Coupon name"></label>
+        <label>Start Date <input id="couponStartDate" type="date"></label>
+        <label>End Date <input id="couponEndDate" type="date"></label>
+        <label>Cart 满 <input id="couponMinCart" type="number" min="0" step="100" placeholder="MMK"></label>
+        <label>类型
+          <select id="couponScope">
+            <option value="food">For Food</option>
+            <option value="parcel">For Parcel</option>
+            <option value="both">Both</option>
+          </select>
+        </label>
+        <button onclick="createCoupon(this)">创建 Coupon</button>
+      </div>
+      <table>
+        <thead><tr><th>Coupon name</th><th>Start Date</th><th>End Date</th><th>Cart 满多少</th><th>类型</th><th>折扣</th><th>状态</th></tr></thead>
+        <tbody id="coupons"></tbody>
       </table>
     </section>
     <section id="page-stores" class="page">
@@ -2601,9 +2749,9 @@ ADMIN_HTML = r'''
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    let state = { orders: [], accounts: [], messages: [], payments: [], store_applications: [], food_menu_items: [], order_hours: null };
+    let state = { orders: [], accounts: [], messages: [], payments: [], store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
     let currentPage = "payments";
-    let tabBadges = { payments: 0, orders: 0, accounts: 0, service: 0, stores: 0, "menu-items": 0, settlements: 0 };
+    let tabBadges = { payments: 0, orders: 0, accounts: 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
@@ -2617,7 +2765,7 @@ ADMIN_HTML = r'''
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
-    const pages = ["payments","accounts","service","stores","menu-items","settlements"];
+    const pages = ["payments","accounts","service","stores","menu-items","settlements","coupons"];
     const pageTitles = {
       payments: "订单",
       accounts: "账号资料",
@@ -2625,6 +2773,7 @@ ADMIN_HTML = r'''
       stores: "店铺注册",
       "menu-items": "菜品审核",
       settlements: "结算",
+      coupons: "Coupons",
     };
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
     const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
@@ -2633,7 +2782,8 @@ ADMIN_HTML = r'''
       matching: "待接单", accepted: "已接单", picking_up: "取件中", delivering: "配送中", completed: "已完成", cancelled: "已取消",
       cod: "货到付款", prepaid: "货费已付款",
       not_required: "无需", unpaid: "未付", pending: "待确认", confirmed: "已确认", rejected: "已拒绝",
-      paid_to_user: "已付用户", paid_to_rider: "已付骑手"
+      paid_to_user: "已付用户", paid_to_rider: "已付骑手",
+      food: "For Food", parcel: "For Parcel", both: "Both"
     };
 
     function keyParam() { return encodeURIComponent(document.getElementById("key").value); }
@@ -3180,6 +3330,7 @@ ADMIN_HTML = r'''
       }
       renderStoreApplications();
       renderFoodMenuItems();
+      renderCoupons();
       renderServiceChat();
     }
 
@@ -3214,7 +3365,7 @@ ADMIN_HTML = r'''
         const restaurantTypes = (application.restaurant_types || []).join(" / ");
         return `
           <tr>
-            <td><strong>${escapeHtml(application.store_name)}</strong><br><span class="muted">#${escapeHtml(application.id.slice(0, 6).toUpperCase())}</span><br><span class="muted">${escapeHtml(new Date(application.created_at).toLocaleString())}</span></td>
+            <td><strong>${escapeHtml(application.store_name)}</strong><br><span class="muted">${escapeHtml(new Date(application.created_at).toLocaleString())}</span></td>
             <td>${escapeHtml(application.owner_name)}<br><span class="muted">${escapeHtml(application.primary_phone)} / ${escapeHtml(application.secondary_phone)}</span><br>${displayAccount(application.user_phone)}</td>
             <td>${escapeHtml((application.service_types || []).join(" / "))}${restaurantTypes ? `<br><span class="muted">${escapeHtml(restaurantTypes)}</span>` : ""}<br><span class="muted">${escapeHtml(application.store_address || "未填写地址")}</span>${application.store_location ? `<br><span class="muted">Location: ${escapeHtml(application.store_location)}</span>` : ""}</td>
             <td>
@@ -3263,6 +3414,58 @@ ADMIN_HTML = r'''
       }).join("");
       if (!menuItems.length) {
         table.innerHTML = `<tr><td colspan="6" class="muted">暂无菜品</td></tr>`;
+      }
+    }
+
+    function renderCoupons() {
+      const table = document.getElementById("coupons");
+      if (!table) return;
+      const q = document.getElementById("q").value.toLowerCase();
+      const coupons = sortByDateDesc((state.coupons || []).filter(item => JSON.stringify(item).toLowerCase().includes(q)));
+      table.innerHTML = coupons.map(coupon => `
+        <tr>
+          <td><strong>${escapeHtml(coupon.name)}</strong><br><span class="muted">${escapeHtml(new Date(coupon.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(coupon.start_date)}</td>
+          <td>${escapeHtml(coupon.end_date)}</td>
+          <td>${money(coupon.min_cart_mmk)}</td>
+          <td><span class="pill">${label(coupon.scope)}</span></td>
+          <td>${money(coupon.discount_mmk)}</td>
+          <td><span class="pill">${coupon.is_active ? "启用" : "停用"}</span></td>
+        </tr>`).join("");
+      if (!coupons.length) {
+        table.innerHTML = `<tr><td colspan="7" class="muted">暂无 Coupons</td></tr>`;
+      }
+    }
+
+    async function createCoupon(button = null) {
+      const name = document.getElementById("couponName").value.trim();
+      const startDate = document.getElementById("couponStartDate").value;
+      const endDate = document.getElementById("couponEndDate").value;
+      const minCartMmk = Number(document.getElementById("couponMinCart").value || 0);
+      const scope = document.getElementById("couponScope").value;
+      if (!name || !startDate || !endDate) {
+        showToast("请填写 Coupon name、Start Date 和 End Date", "error");
+        return;
+      }
+      setButtonBusy(button, true, "创建中...");
+      try {
+        const response = await fetch(`/admin/coupons?key=${keyParam()}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, start_date: startDate, end_date: endDate, min_cart_mmk: minCartMmk, scope })
+        });
+        if (!response.ok) throw new Error(await errorText(response));
+        const coupon = await response.json();
+        state.coupons.unshift(coupon);
+        document.getElementById("couponName").value = "";
+        document.getElementById("couponMinCart").value = "";
+        renderCoupons();
+        showToast("Coupon 已创建");
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "创建失败", "error");
+      } finally {
+        setButtonBusy(button, false);
       }
     }
 
@@ -4946,6 +5149,16 @@ def get_app_update_config(
     )
 
 
+@app.get("/coupons", response_model=list[CouponResponse])
+def list_user_coupons(
+    scope: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+) -> list[CouponResponse]:
+    require_account_phone(authorization)
+    normalized_scope = scope if scope in {"food", "parcel"} else None
+    return load_coupons(active_only=True, scope=normalized_scope)
+
+
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy_policy_page() -> HTMLResponse:
     return HTMLResponse(
@@ -4990,6 +5203,7 @@ def admin_data(key: str = Query(default="")) -> dict:
     payments_data = load_admin_prepaid_payments()
     store_applications_data = load_admin_store_applications(db_path, signed_gcs_read_url)
     food_menu_items_data = load_admin_menu_items(db_path, signed_gcs_read_url)
+    coupons_data = [coupon.model_dump(mode="json") for coupon in load_coupons()]
     return {
         "orders": orders_data,
         "accounts": accounts_data,
@@ -4997,6 +5211,7 @@ def admin_data(key: str = Query(default="")) -> dict:
         "payments": payments_data,
         "store_applications": store_applications_data,
         "food_menu_items": food_menu_items_data,
+        "coupons": coupons_data,
         "order_hours": order_hours_status(),
     }
 
@@ -5019,6 +5234,12 @@ def admin_update_order_hours(
     save_platform_setting("order_hours_end", end)
     save_platform_setting("order_hours_timezone", zone_name)
     return {"order_hours": order_hours_status()}
+
+
+@app.post("/admin/coupons", response_model=CouponResponse)
+def admin_create_coupon(request: AdminCreateCouponRequest, key: str = Query(default="")) -> CouponResponse:
+    require_admin_key(key)
+    return create_coupon(request)
 
 
 @app.patch("/admin/food/store-applications/{application_id}")
