@@ -1113,18 +1113,23 @@ def create_food_router(
                 today = datetime.now(ZoneInfo("Asia/Yangon")).date().isoformat()
                 coupon_row = connection.execute(
                     """
-                    SELECT name, min_cart_mmk, discount_mmk
+                    SELECT name, min_cart_mmk, discount_mmk, discount_type, discount_percent
                     FROM coupons
                     WHERE lower(name) = lower(?)
                       AND is_active = 1
                       AND start_date <= ?
                       AND end_date >= ?
                       AND (scope = 'food' OR scope = 'both')
+                      AND (target_type = 'all' OR target_user_phone = ?)
                     """,
-                    (voucher_code, today, today),
+                    (voucher_code, today, today, user_phone),
                 ).fetchone()
                 if coupon_row and request.subtotal_mmk >= float(coupon_row["min_cart_mmk"] or 0):
-                    discount_mmk = min(float(coupon_row["discount_mmk"] or 0), request.subtotal_mmk)
+                    if coupon_row["discount_type"] == "percent":
+                        discount_mmk = request.subtotal_mmk * float(coupon_row["discount_percent"] or 0) / 100
+                    else:
+                        discount_mmk = float(coupon_row["discount_mmk"] or 0)
+                    discount_mmk = min(discount_mmk, request.subtotal_mmk)
 
             order = FoodOrderResponse(
                 id=str(uuid4()),
