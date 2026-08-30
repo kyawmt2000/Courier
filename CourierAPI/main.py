@@ -3216,7 +3216,7 @@ ADMIN_HTML = r'''
           <tr>
             <td><strong>${escapeHtml(application.store_name)}</strong><br><span class="muted">#${escapeHtml(application.id.slice(0, 6).toUpperCase())}</span><br><span class="muted">${escapeHtml(new Date(application.created_at).toLocaleString())}</span></td>
             <td>${escapeHtml(application.owner_name)}<br><span class="muted">${escapeHtml(application.primary_phone)} / ${escapeHtml(application.secondary_phone)}</span><br>${displayAccount(application.user_phone)}</td>
-            <td>${escapeHtml((application.service_types || []).join(" / "))}${restaurantTypes ? `<br><span class="muted">${escapeHtml(restaurantTypes)}</span>` : ""}<br><span class="muted">${escapeHtml(application.store_address || "未填写地址")}</span></td>
+            <td>${escapeHtml((application.service_types || []).join(" / "))}${restaurantTypes ? `<br><span class="muted">${escapeHtml(restaurantTypes)}</span>` : ""}<br><span class="muted">${escapeHtml(application.store_address || "未填写地址")}</span>${application.store_location ? `<br><span class="muted">Location: ${escapeHtml(application.store_location)}</span>` : ""}</td>
             <td>
               <div><span class="muted">营业执照</span><br>${licenses || `<span class="muted">未上传</span>`}</div>
               <div style="margin-top:6px;"><span class="muted">负责人NRC</span><br>${nrc}</div>
