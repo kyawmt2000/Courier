@@ -1107,6 +1107,25 @@ def create_food_router(
             if not _is_restaurant_open(open_text, close_text):
                 raise HTTPException(status_code=400, detail="店铺已打烊，暂时不能下单")
 
+            discount_mmk = 0.0
+            voucher_code = request.voucher_code.strip()
+            if voucher_code:
+                today = datetime.now(ZoneInfo("Asia/Yangon")).date().isoformat()
+                coupon_row = connection.execute(
+                    """
+                    SELECT name, min_cart_mmk, discount_mmk
+                    FROM coupons
+                    WHERE lower(name) = lower(?)
+                      AND is_active = 1
+                      AND start_date <= ?
+                      AND end_date >= ?
+                      AND (scope = 'food' OR scope = 'both')
+                    """,
+                    (voucher_code, today, today),
+                ).fetchone()
+                if coupon_row and request.subtotal_mmk >= float(coupon_row["min_cart_mmk"] or 0):
+                    discount_mmk = min(float(coupon_row["discount_mmk"] or 0), request.subtotal_mmk)
+
             order = FoodOrderResponse(
                 id=str(uuid4()),
                 user_phone=user_phone,
@@ -1117,8 +1136,8 @@ def create_food_router(
                 phone_no=request.phone_no,
                 subtotal_mmk=request.subtotal_mmk,
                 delivery_fee_mmk=request.delivery_fee_mmk,
-                discount_mmk=request.discount_mmk,
-                voucher_code=request.voucher_code,
+                discount_mmk=discount_mmk,
+                voucher_code=voucher_code,
                 status="pending",
                 items=request.items,
                 note=request.note,
