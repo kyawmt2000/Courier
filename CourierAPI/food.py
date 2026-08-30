@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -15,6 +16,10 @@ class FoodRestaurantResponse(BaseModel):
     description: str = ""
     image_url: str | None = None
     is_open: bool = True
+    business_hours_open: str = "09:00"
+    business_hours_close: str = "21:00"
+    discount_percent: int = 0
+    rating: float = 5.0
 
 
 class FoodMenuItemResponse(BaseModel):
@@ -95,6 +100,8 @@ class FoodStoreApplicationRequest(BaseModel):
     bank_account_number: str = ""
     store_address: str = Field(min_length=1)
     store_location: str = ""
+    business_hours_open: str = "09:00"
+    business_hours_close: str = "21:00"
     service_types: list[str] = Field(min_length=1)
     restaurant_types: list[str] = Field(default_factory=list, max_length=2)
     signature_dish_image_url: str = Field(min_length=1)
@@ -118,6 +125,8 @@ class FoodStoreApplicationResponse(BaseModel):
     bank_account_number: str = ""
     store_address: str = ""
     store_location: str = ""
+    business_hours_open: str = "09:00"
+    business_hours_close: str = "21:00"
     service_types: list[str]
     restaurant_types: list[str] = Field(default_factory=list)
     signature_dish_image_url: str = ""
@@ -155,6 +164,38 @@ RESTAURANT_TYPES = {
     "Coffee",
     "Fast Food",
 }
+
+
+def _normalize_business_hour(value: str, default: str) -> str:
+    cleaned = (value or "").strip()
+    try:
+        parsed = datetime.strptime(cleaned, "%H:%M").time()
+    except ValueError:
+        return default
+    return f"{parsed.hour:02d}:{parsed.minute:02d}"
+
+
+def _business_hour_minutes(value: str) -> int:
+    parsed = datetime.strptime(_normalize_business_hour(value, "09:00"), "%H:%M").time()
+    return parsed.hour * 60 + parsed.minute
+
+
+def _is_restaurant_open(open_text: str, close_text: str, now: datetime | None = None) -> bool:
+    local_now = now or datetime.now(ZoneInfo("Asia/Yangon"))
+    current = local_now.hour * 60 + local_now.minute
+    start = _business_hour_minutes(open_text)
+    end = _business_hour_minutes(close_text)
+    if start == end:
+        return True
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
+
+
+def _discount_percent(original: float | None, current: float | None) -> int:
+    if not original or not current or original <= 0 or current >= original:
+        return 0
+    return round((original - current) / original * 100)
 
 
 def init_food_storage(connection: sqlite3.Connection) -> None:
@@ -262,6 +303,8 @@ def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
     payload.setdefault("bank_account_number", "")
     payload.setdefault("store_address", "")
     payload.setdefault("store_location", "")
+    payload.setdefault("business_hours_open", "09:00")
+    payload.setdefault("business_hours_close", "21:00")
     payload.setdefault("signature_dish_image_url", "")
     payload.setdefault("license_urls", [])
     payload.setdefault("menu_urls", [])
@@ -410,7 +453,7 @@ def update_admin_store_application(
                 (
                     restaurant_id,
                     application.store_name,
-                    " / ".join([*application.service_types, *application.restaurant_types, application.store_address, application.store_location]),
+                    " / ".join([*application.service_types, *application.restaurant_types]),
                     application.signature_dish_image_url or (application.photo_urls[0] if application.photo_urls else None),
                     json.dumps(application.model_dump(mode="json"), ensure_ascii=False),
                     application.created_at,
@@ -568,8 +611,23 @@ def create_food_router(
         with connect_db() as connection:
             rows = connection.execute(
                 """
-                SELECT store.id, store.payload
+                SELECT store.id, store.payload,
+                       COALESCE(MAX(
+                           CASE
+                               WHEN item.status = 'confirmed'
+                                AND item.is_available = 1
+                                AND json_extract(item.payload, '$.original_price_mmk') > item.price_mmk
+                               THEN CAST(
+                                   ROUND(
+                                       (json_extract(item.payload, '$.original_price_mmk') - item.price_mmk)
+                                       / json_extract(item.payload, '$.original_price_mmk') * 100
+                                   ) AS INTEGER
+                               )
+                               ELSE 0
+                           END
+                       ), 0) AS discount_percent
                 FROM food_store_applications store
+                LEFT JOIN food_menu_items item ON item.restaurant_id = store.id
                 WHERE store.status = 'confirmed'
                   AND EXISTS (
                       SELECT 1
@@ -578,6 +636,7 @@ def create_food_router(
                         AND item.status = 'confirmed'
                         AND item.is_available = 1
                   )
+                GROUP BY store.id, store.payload
                 ORDER BY store.store_name COLLATE NOCASE
                 """
             ).fetchall()
@@ -586,9 +645,9 @@ def create_food_router(
             payload = json.loads(row["payload"] or "{}")
             service_types = payload.get("service_types") or []
             restaurant_types = payload.get("restaurant_types") or []
-            store_address = payload.get("store_address") or ""
-            store_location = payload.get("store_location") or ""
-            description = " / ".join([*service_types, *restaurant_types, store_address, store_location]).strip(" /")
+            business_hours_open = _normalize_business_hour(payload.get("business_hours_open") or "09:00", "09:00")
+            business_hours_close = _normalize_business_hour(payload.get("business_hours_close") or "21:00", "21:00")
+            description = " / ".join([*service_types, *restaurant_types]).strip(" /")
             image_url = payload.get("signature_dish_image_url") or (payload.get("photo_urls") or [None])[0]
             restaurants.append(
                 FoodRestaurantResponse(
@@ -596,7 +655,11 @@ def create_food_router(
                     name=payload.get("store_name") or "",
                     description=description,
                     image_url=sign_url(image_url) if sign_url else image_url,
-                    is_open=True,
+                    is_open=_is_restaurant_open(business_hours_open, business_hours_close),
+                    business_hours_open=business_hours_open,
+                    business_hours_close=business_hours_close,
+                    discount_percent=int(row["discount_percent"] or 0),
+                    rating=float(payload.get("rating") or 5.0),
                 )
             )
         return restaurants
@@ -885,17 +948,33 @@ def create_food_router(
             raise HTTPException(status_code=400, detail="请选择餐品")
 
         created_at = datetime.now(timezone.utc).isoformat()
-        order = FoodOrderResponse(
-            id=str(uuid4()),
-            user_phone=user_phone,
-            restaurant_id=request.restaurant_id,
-            delivery_address=request.delivery_address,
-            status="pending",
-            items=request.items,
-            note=request.note,
-            created_at=created_at,
-        )
         with connect_db() as connection:
+            restaurant_row = connection.execute(
+                """
+                SELECT payload
+                FROM food_store_applications
+                WHERE id = ? AND status = 'confirmed'
+                """,
+                (request.restaurant_id,),
+            ).fetchone()
+            if not restaurant_row:
+                raise HTTPException(status_code=404, detail="餐厅不存在")
+            restaurant_payload = json.loads(restaurant_row["payload"] or "{}")
+            open_text = _normalize_business_hour(restaurant_payload.get("business_hours_open") or "09:00", "09:00")
+            close_text = _normalize_business_hour(restaurant_payload.get("business_hours_close") or "21:00", "21:00")
+            if not _is_restaurant_open(open_text, close_text):
+                raise HTTPException(status_code=400, detail="店铺已打烊，暂时不能下单")
+
+            order = FoodOrderResponse(
+                id=str(uuid4()),
+                user_phone=user_phone,
+                restaurant_id=request.restaurant_id,
+                delivery_address=request.delivery_address,
+                status="pending",
+                items=request.items,
+                note=request.note,
+                created_at=created_at,
+            )
             connection.execute(
                 """
                 INSERT INTO food_orders (id, user_phone, restaurant_id, status, created_at, payload)
@@ -964,6 +1043,10 @@ def create_food_router(
         bank_account = request.bank_account.strip() or " / ".join(
             value for value in [bank_account_name, bank_account_number] if value
         )
+        business_hours_open = _normalize_business_hour(request.business_hours_open, "")
+        business_hours_close = _normalize_business_hour(request.business_hours_close, "")
+        if not business_hours_open or not business_hours_close:
+            raise HTTPException(status_code=400, detail="请选择营业时间")
         payment_qr_url = request.payment_qr_url.strip() if request.payment_qr_url else None
         if (bank_account_name and not bank_account_number) or (bank_account_number and not bank_account_name):
             raise HTTPException(status_code=400, detail="请填写银行名字和账号")
@@ -990,6 +1073,8 @@ def create_food_router(
             bank_account_number=bank_account_number,
             store_address=request.store_address.strip(),
             store_location=request.store_location.strip(),
+            business_hours_open=business_hours_open,
+            business_hours_close=business_hours_close,
             service_types=service_types,
             restaurant_types=restaurant_types,
             signature_dish_image_url=request.signature_dish_image_url.strip(),
