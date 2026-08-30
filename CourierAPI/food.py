@@ -72,6 +72,13 @@ class CreateFoodOrderRequest(BaseModel):
     delivery_address: str
     delivery_lat: float | None = None
     delivery_lng: float | None = None
+    fulfillment_type: str = "delivery"
+    payment_method: str = ""
+    phone_no: str = ""
+    subtotal_mmk: float = 0
+    delivery_fee_mmk: float = 0
+    discount_mmk: float = 0
+    voucher_code: str = ""
     items: list[FoodOrderItemRequest] = Field(default_factory=list)
     note: str = ""
 
@@ -81,6 +88,13 @@ class FoodOrderResponse(BaseModel):
     user_phone: str
     restaurant_id: str
     delivery_address: str
+    fulfillment_type: str = "delivery"
+    payment_method: str = ""
+    phone_no: str = ""
+    subtotal_mmk: float = 0
+    delivery_fee_mmk: float = 0
+    discount_mmk: float = 0
+    voucher_code: str = ""
     status: str
     items: list[FoodOrderItemRequest]
     note: str = ""
@@ -970,6 +984,13 @@ def create_food_router(
                 user_phone=user_phone,
                 restaurant_id=request.restaurant_id,
                 delivery_address=request.delivery_address,
+                fulfillment_type=request.fulfillment_type,
+                payment_method=request.payment_method,
+                phone_no=request.phone_no,
+                subtotal_mmk=request.subtotal_mmk,
+                delivery_fee_mmk=request.delivery_fee_mmk,
+                discount_mmk=request.discount_mmk,
+                voucher_code=request.voucher_code,
                 status="pending",
                 items=request.items,
                 note=request.note,
