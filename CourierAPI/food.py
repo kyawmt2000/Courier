@@ -344,6 +344,85 @@ def _signed_application(application: FoodStoreApplicationResponse, sign_url: Sig
     )
 
 
+def _stored_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.strip().split("?", 1)[0]
+
+
+def _build_store_application(
+    request: FoodStoreApplicationRequest,
+    *,
+    application_id: str,
+    user_phone: str,
+    status: str,
+    created_at: str,
+    rejection_reason: str | None = None,
+    reviewed_at: str | None = None,
+) -> FoodStoreApplicationResponse:
+    service_types = [
+        value.strip()
+        for value in request.service_types
+        if value.strip() in {"外卖", "堂食"}
+    ]
+    if not service_types:
+        raise HTTPException(status_code=400, detail="请选择经营方式")
+    restaurant_types = []
+    for value in request.restaurant_types:
+        cleaned = value.strip()
+        if cleaned in RESTAURANT_TYPES and cleaned not in restaurant_types:
+            restaurant_types.append(cleaned)
+    if len(restaurant_types) > 2:
+        raise HTTPException(status_code=400, detail="餐厅类型最多选择 2 个")
+    bank_account_name = request.bank_account_name.strip()
+    bank_account_number = request.bank_account_number.strip()
+    bank_account = request.bank_account.strip() or " / ".join(
+        value for value in [bank_account_name, bank_account_number] if value
+    )
+    business_hours_open = _normalize_business_hour(request.business_hours_open, "")
+    business_hours_close = _normalize_business_hour(request.business_hours_close, "")
+    if not business_hours_open or not business_hours_close:
+        raise HTTPException(status_code=400, detail="请选择营业时间")
+    payment_qr_url = _stored_url(request.payment_qr_url) if request.payment_qr_url else None
+    if (bank_account_name and not bank_account_number) or (bank_account_number and not bank_account_name):
+        raise HTTPException(status_code=400, detail="请填写银行名字和账号")
+    if not payment_qr_url and not bank_account:
+        raise HTTPException(status_code=400, detail="请上传收款码或填写银行账号")
+    if len(request.license_urls) > 3:
+        raise HTTPException(status_code=400, detail="营业执照最多上传 3 张")
+    if len(request.menu_urls) > 10:
+        raise HTTPException(status_code=400, detail="菜单最多上传 10 张")
+
+    return FoodStoreApplicationResponse(
+        id=application_id,
+        user_phone=user_phone,
+        store_name=request.store_name.strip(),
+        owner_name=request.owner_name.strip(),
+        owner_nrc_front_url=_stored_url(request.owner_nrc_front_url) or "",
+        owner_nrc_back_url=_stored_url(request.owner_nrc_back_url) or "",
+        primary_phone=request.primary_phone.strip(),
+        secondary_phone=request.secondary_phone.strip(),
+        payment_qr_url=payment_qr_url,
+        bank_account=bank_account,
+        bank_account_name=bank_account_name,
+        bank_account_number=bank_account_number,
+        store_address=request.store_address.strip(),
+        store_location=request.store_location.strip(),
+        business_hours_open=business_hours_open,
+        business_hours_close=business_hours_close,
+        service_types=service_types,
+        restaurant_types=restaurant_types,
+        signature_dish_image_url=_stored_url(request.signature_dish_image_url) or "",
+        license_urls=[_stored_url(url) or url for url in request.license_urls],
+        menu_urls=[_stored_url(url) or url for url in request.menu_urls],
+        photo_urls=[_stored_url(url) or url for url in request.photo_urls],
+        status=status,
+        rejection_reason=rejection_reason,
+        reviewed_at=reviewed_at,
+        created_at=created_at,
+    )
+
+
 def _menu_item_from_row(row: sqlite3.Row, sign_url: SignUrl | None = None) -> FoodMenuItemResponse:
     payload = json.loads(row["payload"] or "{}")
     image_url = row["image_url"]
@@ -952,6 +1031,55 @@ def create_food_router(
             ).fetchone()
         return _signed_application(_application_from_row(row), sign_url) if row else None
 
+    @router.put("/stores/my-application", response_model=FoodStoreApplicationResponse)
+    def update_my_store_application(
+        request: FoodStoreApplicationRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodStoreApplicationResponse:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            row = connection.execute(
+                """
+                SELECT payload, status, rejection_reason, reviewed_at
+                FROM food_store_applications
+                WHERE user_phone = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_phone,),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="没有店铺资料")
+            existing = _application_from_row(row)
+            if existing.status not in {"confirmed", "rejected"}:
+                raise HTTPException(status_code=400, detail="店铺资料审核中，暂时不能修改")
+            application = _build_store_application(
+                request,
+                application_id=existing.id,
+                user_phone=user_phone,
+                status=existing.status,
+                rejection_reason=existing.rejection_reason,
+                reviewed_at=existing.reviewed_at,
+                created_at=existing.created_at,
+            )
+            connection.execute(
+                """
+                UPDATE food_store_applications
+                SET store_name = ?, owner_name = ?, primary_phone = ?,
+                    secondary_phone = ?, payload = ?
+                WHERE id = ?
+                """,
+                (
+                    application.store_name,
+                    application.owner_name,
+                    application.primary_phone,
+                    application.secondary_phone,
+                    json.dumps(application.model_dump(mode="json"), ensure_ascii=False),
+                    application.id,
+                ),
+            )
+        return _signed_application(application, sign_url)
+
     @router.post("/orders", response_model=FoodOrderResponse)
     def create_food_order(
         request: CreateFoodOrderRequest,
@@ -1045,63 +1173,11 @@ def create_food_router(
         authorization: str | None = Header(default=None),
     ) -> FoodStoreApplicationResponse:
         user_phone = require_account_phone(authorization)
-        service_types = [
-            value.strip()
-            for value in request.service_types
-            if value.strip() in {"外卖", "堂食"}
-        ]
-        if not service_types:
-            raise HTTPException(status_code=400, detail="请选择经营方式")
-        restaurant_types = []
-        for value in request.restaurant_types:
-            cleaned = value.strip()
-            if cleaned in RESTAURANT_TYPES and cleaned not in restaurant_types:
-                restaurant_types.append(cleaned)
-        if len(restaurant_types) > 2:
-            raise HTTPException(status_code=400, detail="餐厅类型最多选择 2 个")
-        bank_account_name = request.bank_account_name.strip()
-        bank_account_number = request.bank_account_number.strip()
-        bank_account = request.bank_account.strip() or " / ".join(
-            value for value in [bank_account_name, bank_account_number] if value
-        )
-        business_hours_open = _normalize_business_hour(request.business_hours_open, "")
-        business_hours_close = _normalize_business_hour(request.business_hours_close, "")
-        if not business_hours_open or not business_hours_close:
-            raise HTTPException(status_code=400, detail="请选择营业时间")
-        payment_qr_url = request.payment_qr_url.strip() if request.payment_qr_url else None
-        if (bank_account_name and not bank_account_number) or (bank_account_number and not bank_account_name):
-            raise HTTPException(status_code=400, detail="请填写银行名字和账号")
-        if not payment_qr_url and not bank_account:
-            raise HTTPException(status_code=400, detail="请上传收款码或填写银行账号")
-        if len(request.license_urls) > 3:
-            raise HTTPException(status_code=400, detail="营业执照最多上传 3 张")
-        if len(request.menu_urls) > 10:
-            raise HTTPException(status_code=400, detail="菜单最多上传 10 张")
-
         created_at = datetime.now(timezone.utc).isoformat()
-        application = FoodStoreApplicationResponse(
-            id=str(uuid4()),
+        application = _build_store_application(
+            request,
+            application_id=str(uuid4()),
             user_phone=user_phone,
-            store_name=request.store_name.strip(),
-            owner_name=request.owner_name.strip(),
-            owner_nrc_front_url=request.owner_nrc_front_url.strip(),
-            owner_nrc_back_url=request.owner_nrc_back_url.strip(),
-            primary_phone=request.primary_phone.strip(),
-            secondary_phone=request.secondary_phone.strip(),
-            payment_qr_url=payment_qr_url,
-            bank_account=bank_account,
-            bank_account_name=bank_account_name,
-            bank_account_number=bank_account_number,
-            store_address=request.store_address.strip(),
-            store_location=request.store_location.strip(),
-            business_hours_open=business_hours_open,
-            business_hours_close=business_hours_close,
-            service_types=service_types,
-            restaurant_types=restaurant_types,
-            signature_dish_image_url=request.signature_dish_image_url.strip(),
-            license_urls=request.license_urls,
-            menu_urls=request.menu_urls,
-            photo_urls=request.photo_urls,
             status="pending",
             created_at=created_at,
         )
