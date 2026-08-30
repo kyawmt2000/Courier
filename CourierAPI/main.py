@@ -128,7 +128,7 @@ PaymentMode = Literal["cod", "prepaid"]
 PaymentStatus = Literal["not_required", "unpaid", "pending", "confirmed", "rejected"]
 SettlementStatus = Literal["pending", "paid_to_user", "paid_to_rider", "completed"]
 CouponScope = Literal["food", "parcel", "both"]
-CouponTargetType = Literal["all", "account"]
+CouponTargetType = Literal["none", "all", "account"]
 CouponDiscountType = Literal["amount", "percent"]
 
 
@@ -487,10 +487,13 @@ class AdminCreateCouponRequest(BaseModel):
     end_date: str = Field(min_length=1, max_length=32)
     min_cart_mmk: float = Field(ge=0)
     scope: CouponScope = "food"
-    discount_type: CouponDiscountType = "amount"
-    discount_mmk: float | None = Field(default=1000, ge=0)
+    discount_type: CouponDiscountType
+    discount_mmk: float | None = Field(default=None, ge=0)
     discount_percent: float | None = Field(default=None, gt=0, le=100)
-    target_type: CouponTargetType = "all"
+
+
+class AdminIssueCouponRequest(BaseModel):
+    target_type: CouponTargetType
     target_email: str | None = None
 
 
@@ -829,7 +832,7 @@ def normalize_coupon_date(value: str) -> str:
 
 def coupon_from_row(row: sqlite3.Row) -> CouponResponse:
     discount_type = row["discount_type"] if row["discount_type"] in {"amount", "percent"} else "amount"
-    target_type = row["target_type"] if row["target_type"] in {"all", "account"} else "all"
+    target_type = row["target_type"] if row["target_type"] in {"none", "all", "account"} else "all"
     return CouponResponse(
         id=row["id"],
         name=row["name"],
@@ -860,7 +863,7 @@ def load_coupons(active_only: bool = False, scope: str | None = None, user_phone
         clauses.append("(scope = ? OR scope = 'both')")
         params.append(scope)
     if user_phone:
-        clauses.append("(target_type = 'all' OR target_user_phone = ?)")
+        clauses.append("(target_type = 'all' OR (target_type = 'account' AND target_user_phone = ?))")
         params.append(user_phone)
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
@@ -885,22 +888,6 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
         if discount_percent is None or discount_percent <= 0 or discount_percent > 100:
             raise HTTPException(status_code=400, detail="请填写 1-100 的折扣百分比")
         discount_mmk = 0
-    target_email = (request.target_email or "").strip().lower()
-    target_user_phone: str | None = None
-    if request.target_type == "account":
-        if not target_email:
-            raise HTTPException(status_code=400, detail="请填写指定账号邮箱")
-        with connect_db() as connection:
-            row = connection.execute(
-                "SELECT phone, email FROM accounts WHERE lower(email) = ? LIMIT 1",
-                (target_email,),
-            ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="没有找到这个邮箱账号")
-        target_user_phone = row["phone"]
-        target_email = row["email"] or target_email
-    else:
-        target_email = ""
     coupon = CouponResponse(
         id=str(uuid4()),
         name=request.name.strip(),
@@ -911,9 +898,9 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
         discount_type=request.discount_type,
         discount_percent=discount_percent,
         scope=request.scope,
-        target_type=request.target_type,
-        target_user_phone=target_user_phone,
-        target_email=target_email or None,
+        target_type="none",
+        target_user_phone=None,
+        target_email=None,
         is_active=True,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
@@ -944,6 +931,42 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
             ),
         )
     return coupon
+
+
+def issue_coupon(coupon_id: str, request: AdminIssueCouponRequest) -> CouponResponse:
+    target_email = (request.target_email or "").strip().lower()
+    target_user_phone: str | None = None
+    target_type = request.target_type
+    if target_type == "none":
+        raise HTTPException(status_code=400, detail="请选择发放目标")
+    if target_type == "account":
+        if not target_email:
+            raise HTTPException(status_code=400, detail="请填写账号邮箱")
+        with connect_db() as connection:
+            row = connection.execute(
+                "SELECT phone, email FROM accounts WHERE lower(email) = ? LIMIT 1",
+                (target_email,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="没有找到这个邮箱账号")
+        target_user_phone = row["phone"]
+        target_email = row["email"] or target_email
+    else:
+        target_email = ""
+    with connect_db() as connection:
+        existing = connection.execute("SELECT * FROM coupons WHERE id = ? LIMIT 1", (coupon_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Coupon 不存在")
+        connection.execute(
+            """
+            UPDATE coupons
+            SET target_type = ?, target_user_phone = ?, target_email = ?
+            WHERE id = ?
+            """,
+            (target_type, target_user_phone, target_email or None, coupon_id),
+        )
+        updated = connection.execute("SELECT * FROM coupons WHERE id = ? LIMIT 1", (coupon_id,)).fetchone()
+    return coupon_from_row(updated)
 
 
 def normalize_myanmar_phone(phone: str) -> str:
@@ -2744,12 +2767,13 @@ ADMIN_HTML = r'''
         <label>Cart 满 <input id="couponMinCart" type="number" min="0" step="100" placeholder="MMK"></label>
         <label>折扣
           <select id="couponDiscountType" onchange="toggleCouponInputs()">
+            <option value="">请选择折扣</option>
             <option value="amount">折扣金额</option>
             <option value="percent">百分比</option>
           </select>
         </label>
-        <label id="couponAmountWrap">折扣金额 <input id="couponDiscountMmk" type="number" min="0" step="100" placeholder="MMK"></label>
-        <label id="couponPercentWrap">百分比 <input id="couponDiscountPercent" type="number" min="1" max="100" step="1" placeholder="%"></label>
+        <label id="couponAmountWrap" class="hidden">折扣金额 <input id="couponDiscountMmk" type="number" min="0" step="100" placeholder="MMK"></label>
+        <label id="couponPercentWrap" class="hidden">百分比 <input id="couponDiscountPercent" type="number" min="1" max="100" step="1" placeholder="%"></label>
         <label>类型
           <select id="couponScope">
             <option value="food">For Food</option>
@@ -2757,18 +2781,12 @@ ADMIN_HTML = r'''
             <option value="both">Both</option>
           </select>
         </label>
-        <label>发到账号
-          <select id="couponTargetType" onchange="toggleCouponInputs()">
-            <option value="all">所有</option>
-            <option value="account">指定账号</option>
-          </select>
-        </label>
-        <label id="couponTargetEmailWrap">账号邮箱 <input id="couponTargetEmail" type="email" list="couponAccountEmails" placeholder="用邮箱搜索账号"></label>
         <datalist id="couponAccountEmails"></datalist>
         <button onclick="createCoupon(this)">创建 Coupon</button>
+        <span id="couponCreateStatus" class="muted"></span>
       </div>
       <table>
-        <thead><tr><th>Coupon name</th><th>Start Date</th><th>End Date</th><th>Cart 满多少</th><th>类型</th><th>折扣</th><th>状态</th><th>发到账号</th></tr></thead>
+        <thead><tr><th>Coupon name</th><th>Start Date</th><th>End Date</th><th>Cart 满多少</th><th>类型</th><th>折扣</th><th>创建状态</th><th>发到账号</th></tr></thead>
         <tbody id="coupons"></tbody>
       </table>
     </section>
@@ -2877,6 +2895,15 @@ ADMIN_HTML = r'''
       return label(value);
     }
     function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
+    function couponDiscountText(coupon) {
+      if (coupon.discount_type === "percent") return `${Number(coupon.discount_percent || 0).toLocaleString()}%`;
+      return money(coupon.discount_mmk);
+    }
+    function couponIssueStatus(coupon) {
+      if (coupon.target_type === "all") return "已发给所有账号";
+      if (coupon.target_type === "account") return `已发给：${accountLoginLabel(coupon.target_user_phone, coupon.target_email)}`;
+      return "已创建，未发放";
+    }
     function accountFor(phone) {
       return (state.accounts || []).find(item => item.phone === phone);
     }
@@ -3510,11 +3537,16 @@ ADMIN_HTML = r'''
           <td>${escapeHtml(coupon.end_date)}</td>
           <td>${money(coupon.min_cart_mmk)}</td>
           <td><span class="pill">${label(coupon.scope)}</span></td>
-          <td>${money(coupon.discount_mmk)}</td>
-          <td><span class="pill">${coupon.is_active ? "启用" : "停用"}</span></td>
+          <td>${escapeHtml(couponDiscountText(coupon))}</td>
+          <td><span class="pill">${coupon.is_active ? "启用" : "停用"}</span><br><span class="muted">${escapeHtml(couponIssueStatus(coupon))}</span></td>
+          <td class="actions-cell">
+            <button onclick="issueCouponToAll('${coupon.id}', this)">发给所有账号</button>
+            <input id="couponIssueEmail-${coupon.id}" type="email" list="couponAccountEmails" placeholder="账号邮箱" style="width:100%; box-sizing:border-box; margin-bottom:6px;">
+            <button onclick="issueCouponToEmail('${coupon.id}', this)">发给账号邮箱</button>
+          </td>
         </tr>`).join("");
       if (!coupons.length) {
-        table.innerHTML = `<tr><td colspan="7" class="muted">暂无 Coupons</td></tr>`;
+        table.innerHTML = `<tr><td colspan="8" class="muted">暂无 Coupons</td></tr>`;
       }
     }
 
@@ -3524,30 +3556,91 @@ ADMIN_HTML = r'''
       const endDate = document.getElementById("couponEndDate").value;
       const minCartMmk = Number(document.getElementById("couponMinCart").value || 0);
       const scope = document.getElementById("couponScope").value;
+      const discountType = document.getElementById("couponDiscountType").value;
+      const discountMmk = Number(document.getElementById("couponDiscountMmk").value || 0);
+      const discountPercent = Number(document.getElementById("couponDiscountPercent").value || 0);
+      const status = document.getElementById("couponCreateStatus");
       if (!name || !startDate || !endDate) {
         showToast("请填写 Coupon name、Start Date 和 End Date", "error");
         return;
       }
+      if (!discountType) {
+        showToast("请选择折扣类型", "error");
+        return;
+      }
+      if (discountType === "amount" && discountMmk <= 0) {
+        showToast("请填写折扣金额", "error");
+        return;
+      }
+      if (discountType === "percent" && (discountPercent <= 0 || discountPercent > 100)) {
+        showToast("请填写 1-100 的折扣百分比", "error");
+        return;
+      }
       setButtonBusy(button, true, "创建中...");
+      if (status) status.textContent = "创建中...";
       try {
+        const body = { name, start_date: startDate, end_date: endDate, min_cart_mmk: minCartMmk, scope, discount_type: discountType };
+        if (discountType === "amount") body.discount_mmk = discountMmk;
+        if (discountType === "percent") body.discount_percent = discountPercent;
         const response = await fetch(`/admin/coupons?key=${keyParam()}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, start_date: startDate, end_date: endDate, min_cart_mmk: minCartMmk, scope })
+          body: JSON.stringify(body)
         });
         if (!response.ok) throw new Error(await errorText(response));
         const coupon = await response.json();
         state.coupons.unshift(coupon);
         document.getElementById("couponName").value = "";
         document.getElementById("couponMinCart").value = "";
+        document.getElementById("couponDiscountMmk").value = "";
+        document.getElementById("couponDiscountPercent").value = "";
         renderCoupons();
-        showToast("Coupon 已创建");
+        if (status) status.textContent = "已创建，未发放";
+        showToast("Coupon 已创建，未发放");
         loadData({ silent: true });
       } catch (error) {
+        if (status) status.textContent = "创建失败";
         showToast(error.message || "创建失败", "error");
       } finally {
         setButtonBusy(button, false);
       }
+    }
+
+    async function issueCoupon(couponId, payload, button = null) {
+      setButtonBusy(button, true, "发放中...");
+      try {
+        const response = await fetch(`/admin/coupons/${encodeURIComponent(couponId)}/issue?key=${keyParam()}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error(await errorText(response));
+        const coupon = await response.json();
+        const index = state.coupons.findIndex(item => item.id === coupon.id);
+        if (index >= 0) state.coupons[index] = coupon;
+        renderCoupons();
+        showToast("Coupon 已发放");
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "发放失败", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    function issueCouponToAll(couponId, button = null) {
+      if (!confirm("确定发给所有账号？")) return;
+      issueCoupon(couponId, { target_type: "all" }, button);
+    }
+
+    function issueCouponToEmail(couponId, button = null) {
+      const input = document.getElementById(`couponIssueEmail-${couponId}`);
+      const email = (input?.value || "").trim();
+      if (!email) {
+        showToast("请填写账号邮箱", "error");
+        return;
+      }
+      issueCoupon(couponId, { target_type: "account", target_email: email }, button);
     }
 
     function selectAccount(phone) {
@@ -5321,6 +5414,16 @@ def admin_update_order_hours(
 def admin_create_coupon(request: AdminCreateCouponRequest, key: str = Query(default="")) -> CouponResponse:
     require_admin_key(key)
     return create_coupon(request)
+
+
+@app.post("/admin/coupons/{coupon_id}/issue", response_model=CouponResponse)
+def admin_issue_coupon(
+    coupon_id: str,
+    request: AdminIssueCouponRequest,
+    key: str = Query(default=""),
+) -> CouponResponse:
+    require_admin_key(key)
+    return issue_coupon(coupon_id, request)
 
 
 @app.patch("/admin/food/store-applications/{application_id}")
