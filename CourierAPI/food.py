@@ -94,6 +94,7 @@ class FoodStoreApplicationRequest(BaseModel):
     bank_account_name: str = ""
     bank_account_number: str = ""
     store_address: str = Field(min_length=1)
+    store_location: str = ""
     service_types: list[str] = Field(min_length=1)
     restaurant_types: list[str] = Field(default_factory=list, max_length=2)
     signature_dish_image_url: str = Field(min_length=1)
@@ -116,6 +117,7 @@ class FoodStoreApplicationResponse(BaseModel):
     bank_account_name: str = ""
     bank_account_number: str = ""
     store_address: str = ""
+    store_location: str = ""
     service_types: list[str]
     restaurant_types: list[str] = Field(default_factory=list)
     signature_dish_image_url: str = ""
@@ -259,6 +261,7 @@ def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
     payload.setdefault("bank_account_name", "")
     payload.setdefault("bank_account_number", "")
     payload.setdefault("store_address", "")
+    payload.setdefault("store_location", "")
     payload.setdefault("signature_dish_image_url", "")
     payload.setdefault("license_urls", [])
     payload.setdefault("menu_urls", [])
@@ -407,7 +410,7 @@ def update_admin_store_application(
                 (
                     restaurant_id,
                     application.store_name,
-                    " / ".join([*application.service_types, *application.restaurant_types, application.store_address]),
+                    " / ".join([*application.service_types, *application.restaurant_types, application.store_address, application.store_location]),
                     application.signature_dish_image_url or (application.photo_urls[0] if application.photo_urls else None),
                     json.dumps(application.model_dump(mode="json"), ensure_ascii=False),
                     application.created_at,
@@ -584,7 +587,8 @@ def create_food_router(
             service_types = payload.get("service_types") or []
             restaurant_types = payload.get("restaurant_types") or []
             store_address = payload.get("store_address") or ""
-            description = " / ".join([*service_types, *restaurant_types, store_address]).strip(" /")
+            store_location = payload.get("store_location") or ""
+            description = " / ".join([*service_types, *restaurant_types, store_address, store_location]).strip(" /")
             image_url = payload.get("signature_dish_image_url") or (payload.get("photo_urls") or [None])[0]
             restaurants.append(
                 FoodRestaurantResponse(
@@ -985,6 +989,7 @@ def create_food_router(
             bank_account_name=bank_account_name,
             bank_account_number=bank_account_number,
             store_address=request.store_address.strip(),
+            store_location=request.store_location.strip(),
             service_types=service_types,
             restaurant_types=restaurant_types,
             signature_dish_image_url=request.signature_dish_image_url.strip(),
