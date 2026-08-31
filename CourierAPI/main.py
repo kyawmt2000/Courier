@@ -3579,6 +3579,7 @@ ADMIN_HTML = r'''
       renderAccountRows(accounts);
       renderAccountDetail();
       renderCouponAccountEmails();
+      renderFoodOrders();
       const settlementRows = sortByDateDesc(orders, [
         "user_settlement_requested_at",
         "rider_settlement_requested_at",
@@ -3606,6 +3607,45 @@ ADMIN_HTML = r'''
       renderFoodMenuItems();
       renderCoupons();
       renderServiceChat();
+    }
+
+    function renderFoodOrders() {
+      const table = document.getElementById("foodOrders");
+      if (!table) return;
+      const q = document.getElementById("q").value.toLowerCase();
+      const orders = sortByDateDesc((state.food_orders || []).filter(order =>
+        JSON.stringify(order).toLowerCase().includes(q) &&
+        orderMatchesFilters({ ...order, user_payment_status: order.rider_deposit_status || "unpaid" })
+      ));
+      table.innerHTML = orders.map(order => foodOrderTableRow(order)).join("");
+      if (!orders.length) {
+        table.innerHTML = `<tr><td colspan="8" class="muted">暂无外卖订单</td></tr>`;
+      }
+    }
+
+    function foodOrderTableRow(order) {
+      const items = (order.items || []).map(item => {
+        const name = item.menu_item_name || (item.menu_item_id || "").slice(0, 6).toUpperCase();
+        const price = Number(item.price_mmk || 0);
+        return `${escapeHtml(name)} x${Number(item.quantity || 0)}${price ? ` (${price.toLocaleString()} MMK)` : ""}`;
+      }).join("<br>") || `<span class="muted">无菜品</span>`;
+      const proof = order.rider_deposit_proof_url
+        ? `<a href="${escapeHtml(order.rider_deposit_proof_url)}" target="_blank" rel="noopener"><img src="${escapeHtml(order.rider_deposit_proof_url)}" alt="骑手押金截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;"></a>`
+        : `<span class="muted">无截图</span>`;
+      return `
+        <tr>
+          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
+          <td><span class="pill">${label(order.status)}</span></td>
+          <td>外卖：${Number(order.goods_amount || 0).toLocaleString()} MMK<br><span class="muted">配送费：${Number(order.delivery_fee_mmk || 0).toLocaleString()} MMK</span></td>
+          <td>${items}</td>
+          <td>${proof}<br><span class="pill">${riderDepositLabel(order.rider_deposit_status)}</span><br><span class="muted">押金 ${Number(order.goods_amount || 0).toLocaleString()} MMK</span></td>
+          <td><b>${escapeHtml(order.restaurant_name || "餐厅")}</b><br>${escapeHtml(order.restaurant_location || "")}<br><span class="muted">送达：${escapeHtml(order.delivery_address || "")}</span></td>
+          <td>
+            ${order.rider_deposit_status === "pending" ? `<button onclick="confirmFoodRiderDeposit('${order.id}', this)">确认骑手押金</button>` : ""}
+            <button onclick="saveFoodOrder('${order.id}', this)">保存</button>
+          </td>
+        </tr>`;
     }
 
     function renderStoreApplications() {
@@ -4248,6 +4288,50 @@ ADMIN_HTML = r'''
       } finally {
         setButtonBusy(button, false);
       }
+    }
+
+    async function patchFoodOrder(id, body, button, successMessage) {
+      setButtonBusy(button, true);
+      try {
+        const response = await fetch(`/admin/food/orders/${id}?key=${keyParam()}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        const updated = await response.json();
+        const index = state.food_orders.findIndex(order => order.id === updated.id);
+        if (index >= 0) {
+          state.food_orders[index] = updated;
+        } else {
+          state.food_orders.unshift(updated);
+        }
+        render();
+        showToast(successMessage);
+        loadData({ silent: true });
+        return updated;
+      } catch (error) {
+        showToast(error.message || "Request failed", "error");
+        return null;
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function confirmFoodRiderDeposit(id, button) {
+      await patchFoodOrder(id, { rider_deposit_status: "confirmed" }, button, "外卖骑手押金已确认");
+    }
+
+    async function saveFoodOrder(id, button) {
+      const order = state.food_orders.find(item => item.id === id);
+      if (!order) return;
+      const status = prompt("订单状态", order.status || "pending");
+      if (status === null) return;
+      const riderDeposit = prompt("骑手押金状态", order.rider_deposit_status || "unpaid");
+      if (riderDeposit === null) return;
+      await patchFoodOrder(id, { status, rider_deposit_status: riderDeposit }, button, "外卖订单已保存");
     }
 
     async function patchStoreApplication(id, body, button, successMessage) {
@@ -5569,6 +5653,7 @@ def admin_data(key: str = Query(default="")) -> dict:
     payments_data = load_admin_prepaid_payments()
     store_applications_data = load_admin_store_applications(db_path, signed_gcs_read_url)
     food_menu_items_data = load_admin_menu_items(db_path, signed_gcs_read_url)
+    food_orders_data = load_admin_food_orders(db_path, signed_gcs_read_url)
     coupons_data = [coupon.model_dump(mode="json") for coupon in load_coupons()]
     return {
         "orders": orders_data,
@@ -5577,6 +5662,7 @@ def admin_data(key: str = Query(default="")) -> dict:
         "payments": payments_data,
         "store_applications": store_applications_data,
         "food_menu_items": food_menu_items_data,
+        "food_orders": food_orders_data,
         "coupons": coupons_data,
         "order_hours": order_hours_status(),
     }
@@ -5683,6 +5769,16 @@ def admin_update_food_menu_item(
             f"{store_name} has {'a discount' if has_discount else 'a new item'}: {item.name}.",
         )
     return item.model_dump(mode="json")
+
+
+@app.patch("/admin/food/orders/{order_id}")
+def admin_update_food_order(
+    order_id: str,
+    request: AdminUpdateFoodOrderRequest,
+    key: str = Query(default=""),
+) -> dict:
+    require_admin_key(key)
+    return update_admin_food_order(db_path, order_id, request, signed_gcs_read_url)
 
 
 @app.delete("/admin/food/menu-items/{menu_item_id}")
