@@ -2904,6 +2904,17 @@ ADMIN_HTML = r'''
       if (coupon.target_type === "account") return `已发给：${accountLoginLabel(coupon.target_user_phone, coupon.target_email)}`;
       return "已创建，未发放";
     }
+    function toggleCouponInputs() {
+      const discountType = document.getElementById("couponDiscountType")?.value || "";
+      document.getElementById("couponAmountWrap")?.classList.toggle("hidden", discountType !== "amount");
+      document.getElementById("couponPercentWrap")?.classList.toggle("hidden", discountType !== "percent");
+    }
+    function renderCouponAccountEmails() {
+      const list = document.getElementById("couponAccountEmails");
+      if (!list) return;
+      const emails = [...new Set((state.accounts || []).map(account => (account.email || "").trim()).filter(Boolean))].sort();
+      list.innerHTML = emails.map(email => `<option value="${escapeHtml(email)}"></option>`).join("");
+    }
     function accountFor(phone) {
       return (state.accounts || []).find(item => item.phone === phone);
     }
@@ -3413,6 +3424,7 @@ ADMIN_HTML = r'''
       }
       renderAccountRows(accounts);
       renderAccountDetail();
+      renderCouponAccountEmails();
       const settlementRows = sortByDateDesc(orders, [
         "user_settlement_requested_at",
         "rider_settlement_requested_at",
@@ -3592,8 +3604,10 @@ ADMIN_HTML = r'''
         state.coupons.unshift(coupon);
         document.getElementById("couponName").value = "";
         document.getElementById("couponMinCart").value = "";
+        document.getElementById("couponDiscountType").value = "";
         document.getElementById("couponDiscountMmk").value = "";
         document.getElementById("couponDiscountPercent").value = "";
+        toggleCouponInputs();
         renderCoupons();
         if (status) status.textContent = "已创建，未发放";
         showToast("Coupon 已创建，未发放");
