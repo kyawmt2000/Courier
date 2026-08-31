@@ -481,6 +481,14 @@ class CouponResponse(BaseModel):
     created_at: str
 
 
+class AppNotificationResponse(BaseModel):
+    id: str
+    key: str
+    title: str
+    message: str
+    created_at: str
+
+
 class AdminCreateCouponRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     start_date: str = Field(min_length=1, max_length=32)
@@ -702,6 +710,26 @@ def init_storage() -> None:
             "CREATE INDEX IF NOT EXISTS idx_coupons_active_dates "
             "ON coupons (is_active, start_date, end_date)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_notifications (
+                id TEXT PRIMARY KEY,
+                user_phone TEXT NOT NULL,
+                key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_app_notifications_user_key "
+            "ON app_notifications (user_phone, key)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_app_notifications_user_created "
+            "ON app_notifications (user_phone, created_at)"
+        )
         add_column_if_missing(connection, "chat_messages", "conversation_id", "TEXT NOT NULL DEFAULT 'main'")
         add_column_if_missing(connection, "chat_messages", "sender_phone", "TEXT")
         add_column_if_missing(connection, "chat_messages", "image_url", "TEXT")
@@ -745,6 +773,11 @@ def init_storage() -> None:
         add_column_if_missing(connection, "coupons", "target_email", "TEXT")
         add_column_if_missing(connection, "coupons", "is_active", "INTEGER NOT NULL DEFAULT 1")
         add_column_if_missing(connection, "coupons", "created_at", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "app_notifications", "user_phone", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "app_notifications", "key", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "app_notifications", "title", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "app_notifications", "message", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "app_notifications", "created_at", "TEXT NOT NULL DEFAULT ''")
         init_food_storage(connection)
 
 
@@ -966,7 +999,21 @@ def issue_coupon(coupon_id: str, request: AdminIssueCouponRequest) -> CouponResp
             (target_type, target_user_phone, target_email or None, coupon_id),
         )
         updated = connection.execute("SELECT * FROM coupons WHERE id = ? LIMIT 1", (coupon_id,)).fetchone()
-    return coupon_from_row(updated)
+    coupon = coupon_from_row(updated)
+    if target_type == "all":
+        create_app_notifications_for_all(
+            f"coupon-issued-{coupon.id}",
+            "New coupon",
+            f"You received coupon {coupon.name}.",
+        )
+    elif target_user_phone:
+        create_app_notification(
+            target_user_phone,
+            f"coupon-issued-{coupon.id}",
+            "New coupon",
+            f"You received coupon {coupon.name}.",
+        )
+    return coupon
 
 
 def delete_coupon(coupon_id: str) -> dict:
@@ -976,6 +1023,80 @@ def delete_coupon(coupon_id: str) -> dict:
             raise HTTPException(status_code=404, detail="Coupon 不存在")
         connection.execute("DELETE FROM coupons WHERE id = ?", (coupon_id,))
     return {"status": "deleted", "id": coupon_id}
+
+
+def create_app_notification(user_phone: str | None, key: str, title: str, message: str) -> None:
+    if not user_phone:
+        return
+    with connect_db() as connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO app_notifications (id, user_phone, key, title, message, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid4()), user_phone, key, title, message, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def create_app_notifications_for_all(key_prefix: str, title: str, message: str) -> None:
+    with connect_db() as connection:
+        rows = connection.execute(
+            "SELECT phone FROM accounts WHERE phone != '' AND app_deleted_at IS NULL"
+        ).fetchall()
+    for row in rows:
+        create_app_notification(row["phone"], f"{key_prefix}-{row['phone']}", title, message)
+
+
+def app_notification_from_row(row: sqlite3.Row) -> AppNotificationResponse:
+    return AppNotificationResponse(
+        id=row["id"],
+        key=row["key"],
+        title=row["title"],
+        message=row["message"],
+        created_at=row["created_at"],
+    )
+
+
+def ensure_coupon_expiry_notifications(user_phone: str) -> None:
+    tomorrow = (datetime.now(ZoneInfo("Asia/Yangon")).date() + timedelta(days=1)).isoformat()
+    for coupon in load_coupons(active_only=True, user_phone=user_phone):
+        if coupon.end_date == tomorrow:
+            create_app_notification(
+                user_phone,
+                f"coupon-expiring-{coupon.id}-{coupon.end_date}",
+                "Coupon expiring soon",
+                f"{coupon.name} will expire tomorrow.",
+            )
+
+
+def load_app_notifications(user_phone: str) -> list[AppNotificationResponse]:
+    ensure_coupon_expiry_notifications(user_phone)
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, key, title, message, created_at
+            FROM app_notifications
+            WHERE user_phone = ?
+            ORDER BY created_at DESC
+            LIMIT 100
+            """,
+            (user_phone,),
+        ).fetchall()
+    return [app_notification_from_row(row) for row in rows]
+
+
+def notify_restaurant_menu_update(item_id: str, restaurant_id: str, title: str, message: str) -> None:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT user_phone
+            FROM food_orders
+            WHERE restaurant_id = ? AND user_phone != ''
+            """,
+            (restaurant_id,),
+        ).fetchall()
+    for row in rows:
+        create_app_notification(row["user_phone"], f"restaurant-menu-{item_id}", title, message)
 
 
 def normalize_myanmar_phone(phone: str) -> str:
@@ -1389,7 +1510,7 @@ def require_account_phone(authorization: str | None) -> str:
     return phone
 
 
-app.include_router(create_food_router(db_path, require_account_phone, lambda url: signed_gcs_read_url(url)))
+app.include_router(create_food_router(db_path, require_account_phone, lambda url: signed_gcs_read_url(url), notify_restaurant_menu_update))
 
 
 def account_conversation_id(conversation_id: str, authorization: str | None, fallback_phone: str | None = None) -> str:
@@ -5374,6 +5495,12 @@ def list_user_coupons(
     return load_coupons(active_only=True, scope=normalized_scope, user_phone=user_phone)
 
 
+@app.get("/notifications", response_model=list[AppNotificationResponse])
+def list_app_notifications(authorization: str | None = Header(default=None)) -> list[AppNotificationResponse]:
+    user_phone = require_account_phone(authorization)
+    return load_app_notifications(user_phone)
+
+
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy_policy_page() -> HTMLResponse:
     return HTMLResponse(
@@ -5480,7 +5607,15 @@ def admin_update_food_store_application(
     key: str = Query(default=""),
 ) -> dict:
     require_admin_key(key)
-    return update_admin_store_application(db_path, application_id, request, signed_gcs_read_url).model_dump(mode="json")
+    application = update_admin_store_application(db_path, application_id, request, signed_gcs_read_url)
+    if request.status == "confirmed":
+        create_app_notification(
+            application.user_phone,
+            f"restaurant-confirmed-{application.id}-{application.reviewed_at or ''}",
+            "Restaurant approved",
+            f"{application.store_name} has been approved.",
+        )
+    return application.model_dump(mode="json")
 
 
 @app.delete("/admin/food/store-applications/{application_id}")
@@ -5496,7 +5631,34 @@ def admin_update_food_menu_item(
     key: str = Query(default=""),
 ) -> dict:
     require_admin_key(key)
-    return update_admin_menu_item(db_path, menu_item_id, request, signed_gcs_read_url).model_dump(mode="json")
+    item = update_admin_menu_item(db_path, menu_item_id, request, signed_gcs_read_url)
+    if request.status == "confirmed":
+        with connect_db() as connection:
+            row = connection.execute(
+                """
+                SELECT store_name, user_phone
+                FROM food_store_applications
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (item.restaurant_id,),
+            ).fetchone()
+        store_name = row["store_name"] if row else "Restaurant"
+        owner_phone = row["user_phone"] if row else None
+        create_app_notification(
+            owner_phone,
+            f"menu-item-confirmed-{item.id}-{item.reviewed_at or ''}",
+            "Menu item approved",
+            f"{item.name} has been approved.",
+        )
+        has_discount = item.original_price_mmk is not None and item.price_mmk < item.original_price_mmk
+        notify_restaurant_menu_update(
+            item.id,
+            item.restaurant_id,
+            "Restaurant update",
+            f"{store_name} has {'a discount' if has_discount else 'a new item'}: {item.name}.",
+        )
+    return item.model_dump(mode="json")
 
 
 @app.delete("/admin/food/menu-items/{menu_item_id}")
