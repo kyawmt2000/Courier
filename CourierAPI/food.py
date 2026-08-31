@@ -79,6 +79,7 @@ class CreateFoodOrderRequest(BaseModel):
     fulfillment_type: str = "delivery"
     payment_method: str = ""
     phone_no: str = ""
+    secondary_phone_no: str = ""
     subtotal_mmk: float = 0
     delivery_fee_mmk: float = 0
     discount_mmk: float = 0
@@ -95,6 +96,7 @@ class FoodOrderResponse(BaseModel):
     fulfillment_type: str = "delivery"
     payment_method: str = ""
     phone_no: str = ""
+    secondary_phone_no: str = ""
     subtotal_mmk: float = 0
     delivery_fee_mmk: float = 0
     discount_mmk: float = 0
@@ -542,6 +544,10 @@ def _food_order_from_payload(payload: str | None) -> FoodOrderResponse:
 
 def _food_order_payload(order: FoodOrderResponse) -> str:
     return json.dumps(order.model_dump(mode="json"), ensure_ascii=False)
+
+
+def _is_valid_food_order_phone(phone: str) -> bool:
+    return phone.isdigit() and len(phone) in (9, 11)
 
 
 def _enrich_food_order_items(connection: sqlite3.Connection, order: FoodOrderResponse) -> FoodOrderResponse:
@@ -1528,6 +1534,12 @@ def create_food_router(
         user_phone = require_account_phone(authorization)
         if not request.items:
             raise HTTPException(status_code=400, detail="请选择餐品")
+        phone_no = request.phone_no.strip()
+        secondary_phone_no = request.secondary_phone_no.strip()
+        if not _is_valid_food_order_phone(phone_no):
+            raise HTTPException(status_code=400, detail="Phone No. must be 9 or 11 digits.")
+        if secondary_phone_no and not _is_valid_food_order_phone(secondary_phone_no):
+            raise HTTPException(status_code=400, detail="Phone No. must be 9 or 11 digits.")
 
         created_at = datetime.now(timezone.utc).isoformat()
         with connect_db() as connection:
@@ -1580,7 +1592,8 @@ def create_food_router(
                 delivery_lng=request.delivery_lng,
                 fulfillment_type=request.fulfillment_type,
                 payment_method=request.payment_method,
-                phone_no=request.phone_no,
+                phone_no=phone_no,
+                secondary_phone_no=secondary_phone_no,
                 subtotal_mmk=request.subtotal_mmk,
                 delivery_fee_mmk=request.delivery_fee_mmk,
                 discount_mmk=discount_mmk,
