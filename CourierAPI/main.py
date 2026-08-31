@@ -1510,7 +1510,15 @@ def require_account_phone(authorization: str | None) -> str:
     return phone
 
 
-app.include_router(create_food_router(db_path, require_account_phone, lambda url: signed_gcs_read_url(url), notify_restaurant_menu_update))
+app.include_router(
+    create_food_router(
+        db_path,
+        require_account_phone,
+        lambda url: signed_gcs_read_url(url),
+        notify_restaurant_menu_update,
+        create_app_notification,
+    )
+)
 
 
 def account_conversation_id(conversation_id: str, authorization: str | None, fallback_phone: str | None = None) -> str:
