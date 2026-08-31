@@ -691,6 +691,7 @@ def create_food_router(
     db_path: Path,
     require_account_phone: Callable[[str | None], str],
     sign_url: SignUrl | None = None,
+    notify_restaurant_update: Callable[[str, str, str, str], None] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/food", tags=["food"])
 
@@ -799,7 +800,7 @@ def create_food_router(
         with connect_db() as connection:
             application_row = connection.execute(
                 """
-                SELECT id
+                SELECT id, payload
                 FROM food_store_applications
                 WHERE user_phone = ? AND status = 'confirmed'
                 ORDER BY created_at DESC
@@ -929,6 +930,20 @@ def create_food_router(
                     json.dumps(item.model_dump(mode="json"), ensure_ascii=False),
                     item.id,
                 ),
+            )
+            store_payload = json.loads(application_row["payload"] or "{}")
+            store_name = store_payload.get("store_name") or "Restaurant"
+            was_discounted = (
+                existing_item.original_price_mmk is not None
+                and existing_item.price_mmk < existing_item.original_price_mmk
+            )
+            is_discounted = item.original_price_mmk is not None and item.price_mmk < item.original_price_mmk
+        if notify_restaurant_update and existing_item.status == "confirmed" and is_discounted and not was_discounted:
+            notify_restaurant_update(
+                item.id,
+                item.restaurant_id,
+                "Restaurant update",
+                f"{store_name} has a discount: {item.name}.",
             )
         if sign_url and item.image_url:
             item = item.model_copy(update={"image_url": sign_url(item.image_url)})
