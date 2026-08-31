@@ -98,7 +98,34 @@ class FoodOrderResponse(BaseModel):
     status: str
     items: list[FoodOrderItemRequest]
     note: str = ""
+    restaurant_name: str = ""
+    restaurant_location: str = ""
+    delivery_lat: float | None = None
+    delivery_lng: float | None = None
+    rider_name: str | None = None
+    rider_phone: str | None = None
+    accepted_at: str | None = None
+    pickup_started_at: str | None = None
+    delivery_started_at: str | None = None
+    completed_at: str | None = None
+    rider_lat: float | None = None
+    rider_lng: float | None = None
+    rider_location_updated_at: str | None = None
     created_at: str
+
+
+class FoodAcceptOrderRequest(BaseModel):
+    rider_name: str = Field(min_length=1)
+    rider_phone: str | None = None
+
+
+class FoodUpdateOrderStatusRequest(BaseModel):
+    status: str
+
+
+class FoodUpdateRiderLocationRequest(BaseModel):
+    lat: float
+    lng: float
 
 
 class FoodStoreApplicationRequest(BaseModel):
@@ -250,6 +277,7 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             user_phone TEXT NOT NULL,
             restaurant_id TEXT NOT NULL,
+            rider_phone TEXT,
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
             payload TEXT NOT NULL
@@ -284,6 +312,13 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_food_orders_status_created "
         "ON food_orders (status, created_at)"
+    )
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(food_orders)").fetchall()}
+    if "rider_phone" not in columns:
+        connection.execute("ALTER TABLE food_orders ADD COLUMN rider_phone TEXT")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_food_orders_rider_created "
+        "ON food_orders (rider_phone, created_at)"
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_food_store_applications_user_created "
@@ -692,6 +727,7 @@ def create_food_router(
     require_account_phone: Callable[[str | None], str],
     sign_url: SignUrl | None = None,
     notify_restaurant_update: Callable[[str, str, str, str], None] | None = None,
+    notify_user: Callable[[str | None, str, str, str], None] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/food", tags=["food"])
 
@@ -699,6 +735,28 @@ def create_food_router(
         connection = sqlite3.connect(db_path)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def food_order_from_row(row: sqlite3.Row) -> FoodOrderResponse:
+        return FoodOrderResponse(**json.loads(row["payload"] or "{}"))
+
+    def save_food_order(connection: sqlite3.Connection, order: FoodOrderResponse) -> None:
+        connection.execute(
+            """
+            UPDATE food_orders
+            SET status = ?, rider_phone = ?, payload = ?
+            WHERE id = ?
+            """,
+            (
+                order.status,
+                order.rider_phone,
+                json.dumps(order.model_dump(mode="json"), ensure_ascii=False),
+                order.id,
+            ),
+        )
+
+    def notify_food_order_user(order: FoodOrderResponse, key_suffix: str, title: str, message: str) -> None:
+        if notify_user:
+            notify_user(order.user_phone, f"food-order-{order.id}-{key_suffix}", title, message)
 
     @router.get("/restaurants", response_model=list[FoodRestaurantResponse])
     def list_restaurants() -> list[FoodRestaurantResponse]:
@@ -1028,7 +1086,124 @@ def create_food_router(
                 """,
                 (user_phone,),
             ).fetchall()
-        return [FoodOrderResponse(**json.loads(row["payload"])) for row in rows]
+        return [food_order_from_row(row) for row in rows]
+
+    @router.get("/rider/orders", response_model=list[FoodOrderResponse])
+    def list_rider_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
+        rider_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload
+                FROM food_orders
+                WHERE status = 'pending' OR rider_phone = ?
+                ORDER BY created_at DESC
+                """,
+                (rider_phone,),
+            ).fetchall()
+        return [food_order_from_row(row) for row in rows]
+
+    @router.post("/rider/orders/{order_id}/accept", response_model=FoodOrderResponse)
+    def accept_food_order(
+        order_id: str,
+        request: FoodAcceptOrderRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodOrderResponse:
+        rider_phone = request.rider_phone or require_account_phone(authorization)
+        with connect_db() as connection:
+            row = connection.execute(
+                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                (order_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="外卖订单不存在")
+            order = food_order_from_row(row)
+            if order.status != "pending":
+                raise HTTPException(status_code=400, detail="外卖订单已经被接单")
+            order = order.model_copy(
+                update={
+                    "status": "accepted",
+                    "rider_name": request.rider_name,
+                    "rider_phone": rider_phone,
+                    "accepted_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            save_food_order(connection, order)
+        notify_food_order_user(order, "accepted", "Rider accepted", f"{request.rider_name} accepted your food order.")
+        return order
+
+    @router.post("/rider/orders/{order_id}/status", response_model=FoodOrderResponse)
+    def update_food_order_status(
+        order_id: str,
+        request: FoodUpdateOrderStatusRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodOrderResponse:
+        rider_phone = require_account_phone(authorization)
+        allowed_statuses = {"picking_up", "delivering", "completed"}
+        if request.status not in allowed_statuses:
+            raise HTTPException(status_code=400, detail="外卖订单状态不正确")
+        with connect_db() as connection:
+            row = connection.execute(
+                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                (order_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="外卖订单不存在")
+            order = food_order_from_row(row)
+            if order.rider_phone != rider_phone:
+                raise HTTPException(status_code=403, detail="只能更新自己的外卖订单")
+            now = datetime.now(timezone.utc).isoformat()
+            updates = {"status": request.status}
+            if request.status == "picking_up":
+                updates["pickup_started_at"] = now
+            elif request.status == "delivering":
+                updates["delivery_started_at"] = now
+            elif request.status == "completed":
+                updates["completed_at"] = now
+            order = order.model_copy(update=updates)
+            save_food_order(connection, order)
+        title_by_status = {
+            "picking_up": "Rider is picking up food",
+            "delivering": "Rider is delivering food",
+            "completed": "Food delivered",
+        }
+        message_by_status = {
+            "picking_up": "Your rider is heading to the restaurant.",
+            "delivering": "Your rider picked up the food and is on the way.",
+            "completed": "Your food order has been completed.",
+        }
+        notify_food_order_user(order, request.status, title_by_status[request.status], message_by_status[request.status])
+        return order
+
+    @router.post("/rider/orders/{order_id}/location", response_model=FoodOrderResponse)
+    def update_food_rider_location(
+        order_id: str,
+        request: FoodUpdateRiderLocationRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodOrderResponse:
+        rider_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            row = connection.execute(
+                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                (order_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="外卖订单不存在")
+            order = food_order_from_row(row)
+            if order.rider_phone != rider_phone:
+                raise HTTPException(status_code=403, detail="只能更新自己的外卖订单")
+            first_location = order.rider_location_updated_at is None
+            order = order.model_copy(
+                update={
+                    "rider_lat": request.lat,
+                    "rider_lng": request.lng,
+                    "rider_location_updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            save_food_order(connection, order)
+        if first_location:
+            notify_food_order_user(order, "rider-location", "Rider location available", "You can now track your food rider on the map.")
+        return order
 
     @router.get("/stores/my-application", response_model=FoodStoreApplicationResponse | None)
     def my_store_application(authorization: str | None = Header(default=None)) -> FoodStoreApplicationResponse | None:
@@ -1151,6 +1326,8 @@ def create_food_router(
                 user_phone=user_phone,
                 restaurant_id=request.restaurant_id,
                 delivery_address=request.delivery_address,
+                delivery_lat=request.delivery_lat,
+                delivery_lng=request.delivery_lng,
                 fulfillment_type=request.fulfillment_type,
                 payment_method=request.payment_method,
                 phone_no=request.phone_no,
@@ -1161,17 +1338,20 @@ def create_food_router(
                 status="pending",
                 items=request.items,
                 note=request.note,
+                restaurant_name=restaurant_payload.get("store_name") or "",
+                restaurant_location=restaurant_payload.get("store_location") or "",
                 created_at=created_at,
             )
             connection.execute(
                 """
-                INSERT INTO food_orders (id, user_phone, restaurant_id, status, created_at, payload)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO food_orders (id, user_phone, restaurant_id, rider_phone, status, created_at, payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order.id,
                     user_phone,
                     order.restaurant_id,
+                    order.rider_phone,
                     order.status,
                     created_at,
                     json.dumps(order.model_dump(mode="json"), ensure_ascii=False),
