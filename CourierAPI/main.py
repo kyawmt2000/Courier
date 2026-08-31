@@ -969,6 +969,15 @@ def issue_coupon(coupon_id: str, request: AdminIssueCouponRequest) -> CouponResp
     return coupon_from_row(updated)
 
 
+def delete_coupon(coupon_id: str) -> dict:
+    with connect_db() as connection:
+        existing = connection.execute("SELECT id FROM coupons WHERE id = ? LIMIT 1", (coupon_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Coupon 不存在")
+        connection.execute("DELETE FROM coupons WHERE id = ?", (coupon_id,))
+    return {"status": "deleted", "id": coupon_id}
+
+
 def normalize_myanmar_phone(phone: str) -> str:
     cleaned = re.sub(r"[^\d+]", "", phone.strip())
     if cleaned.startswith("+95"):
@@ -3555,6 +3564,7 @@ ADMIN_HTML = r'''
             <button onclick="issueCouponToAll('${coupon.id}', this)">发给所有账号</button>
             <input id="couponIssueEmail-${coupon.id}" type="email" list="couponAccountEmails" placeholder="账号邮箱" style="width:100%; box-sizing:border-box; margin-bottom:6px;">
             <button onclick="issueCouponToEmail('${coupon.id}', this)">发给账号邮箱</button>
+            <button class="danger" onclick="deleteCoupon('${coupon.id}', this)">删除</button>
           </td>
         </tr>`).join("");
       if (!coupons.length) {
@@ -3655,6 +3665,23 @@ ADMIN_HTML = r'''
         return;
       }
       issueCoupon(couponId, { target_type: "account", target_email: email }, button);
+    }
+
+    async function deleteCoupon(couponId, button = null) {
+      if (!confirm("确定删除这个 Coupon？")) return;
+      setButtonBusy(button, true, "删除中...");
+      try {
+        const response = await fetch(`/admin/coupons/${encodeURIComponent(couponId)}?key=${keyParam()}`, { method: "DELETE" });
+        if (!response.ok) throw new Error(await errorText(response));
+        state.coupons = state.coupons.filter(item => item.id !== couponId);
+        renderCoupons();
+        showToast("Coupon 已删除");
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "删除失败", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
     }
 
     function selectAccount(phone) {
@@ -5438,6 +5465,12 @@ def admin_issue_coupon(
 ) -> CouponResponse:
     require_admin_key(key)
     return issue_coupon(coupon_id, request)
+
+
+@app.delete("/admin/coupons/{coupon_id}")
+def admin_delete_coupon(coupon_id: str, key: str = Query(default="")) -> dict:
+    require_admin_key(key)
+    return delete_coupon(coupon_id)
 
 
 @app.patch("/admin/food/store-applications/{application_id}")
