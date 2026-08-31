@@ -3629,13 +3629,14 @@ ADMIN_HTML = r'''
         const price = Number(item.price_mmk || 0);
         return `${escapeHtml(name)} x${Number(item.quantity || 0)}${price ? ` (${price.toLocaleString()} MMK)` : ""}`;
       }).join("<br>") || `<span class="muted">无菜品</span>`;
+      const customerPhones = [order.phone_no, order.secondary_phone_no].filter(Boolean).join(" / ");
       const proof = order.rider_deposit_proof_url
         ? `<a href="${escapeHtml(order.rider_deposit_proof_url)}" target="_blank" rel="noopener"><img src="${escapeHtml(order.rider_deposit_proof_url)}" alt="骑手押金截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;"></a>`
         : `<span class="muted">无截图</span>`;
       return `
         <tr>
           <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
-          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
+          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}${customerPhones ? `<br><span class="muted">客户电话：${escapeHtml(customerPhones)}</span>` : ""}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td><span class="pill">${label(order.status)}</span></td>
           <td>外卖：${Number(order.goods_amount || 0).toLocaleString()} MMK<br><span class="muted">配送费：${Number(order.delivery_fee_mmk || 0).toLocaleString()} MMK</span></td>
           <td>${items}</td>
