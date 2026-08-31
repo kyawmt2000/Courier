@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
+
+RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
 
 
 class FoodRestaurantResponse(BaseModel):
@@ -96,6 +98,7 @@ class FoodOrderResponse(BaseModel):
     subtotal_mmk: float = 0
     delivery_fee_mmk: float = 0
     discount_mmk: float = 0
+    goods_amount: float = 0
     voucher_code: str = ""
     status: str
     items: list[FoodOrderItemRequest]
@@ -106,6 +109,10 @@ class FoodOrderResponse(BaseModel):
     delivery_lng: float | None = None
     rider_name: str | None = None
     rider_phone: str | None = None
+    rider_deposit_status: str = "not_required"
+    rider_deposit_due_at: str | None = None
+    rider_deposit_submitted_at: str | None = None
+    rider_deposit_proof_url: str | None = None
     accepted_at: str | None = None
     pickup_started_at: str | None = None
     delivery_started_at: str | None = None
@@ -128,6 +135,15 @@ class FoodUpdateOrderStatusRequest(BaseModel):
 class FoodUpdateRiderLocationRequest(BaseModel):
     lat: float
     lng: float
+
+
+class FoodRiderDepositTransferRequest(BaseModel):
+    payment_proof_url: str | None = None
+
+
+class AdminUpdateFoodOrderRequest(BaseModel):
+    status: str | None = None
+    rider_deposit_status: str | None = None
 
 
 class FoodStoreApplicationRequest(BaseModel):
@@ -518,6 +534,144 @@ def load_admin_menu_items(db_path: Path, sign_url: SignUrl | None = None) -> lis
         data["user_phone"] = row["user_phone"] or ""
         items.append(data)
     return items
+
+
+def _food_order_from_payload(payload: str | None) -> FoodOrderResponse:
+    return FoodOrderResponse(**json.loads(payload or "{}"))
+
+
+def _food_order_payload(order: FoodOrderResponse) -> str:
+    return json.dumps(order.model_dump(mode="json"), ensure_ascii=False)
+
+
+def _enrich_food_order_items(connection: sqlite3.Connection, order: FoodOrderResponse) -> FoodOrderResponse:
+    enriched_items: list[FoodOrderItemRequest] = []
+    for order_item in order.items:
+        row = connection.execute(
+            """
+            SELECT name, price_mmk
+            FROM food_menu_items
+            WHERE id = ? AND restaurant_id = ?
+            """,
+            (order_item.menu_item_id, order.restaurant_id),
+        ).fetchone()
+        if row:
+            enriched_items.append(
+                order_item.model_copy(
+                    update={
+                        "menu_item_name": row["name"] or order_item.menu_item_name,
+                        "price_mmk": float(row["price_mmk"] or 0),
+                    }
+                )
+            )
+        else:
+            enriched_items.append(order_item)
+    return order.model_copy(update={"items": enriched_items})
+
+
+def _food_order_for_admin(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    sign_url: SignUrl | None = None,
+) -> dict:
+    order = _enrich_food_order_items(connection, _food_order_from_payload(row["payload"]))
+    if sign_url and order.rider_deposit_proof_url:
+        order = order.model_copy(update={"rider_deposit_proof_url": sign_url(order.rider_deposit_proof_url)})
+    data = order.model_dump(mode="json")
+    data["user_phone"] = row["user_phone"]
+    data["rider_phone"] = row["rider_phone"]
+    data["user_nickname"] = row["user_nickname"]
+    data["user_email"] = row["user_email"]
+    data["rider_nickname"] = row["rider_nickname"]
+    data["rider_email"] = row["rider_email"]
+    return data
+
+
+def load_admin_food_orders(
+    db_path: Path,
+    sign_url: SignUrl | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT
+                food_orders.user_phone,
+                food_orders.rider_phone,
+                user_account.nickname AS user_nickname,
+                user_account.email AS user_email,
+                rider_account.nickname AS rider_nickname,
+                rider_account.email AS rider_email,
+                food_orders.payload
+            FROM food_orders
+            LEFT JOIN accounts AS user_account
+                ON user_account.phone = food_orders.user_phone
+            LEFT JOIN accounts AS rider_account
+                ON rider_account.phone = food_orders.rider_phone
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [_food_order_for_admin(connection, row, sign_url) for row in rows]
+
+
+def update_admin_food_order(
+    db_path: Path,
+    order_id: str,
+    request: AdminUpdateFoodOrderRequest,
+    sign_url: SignUrl | None = None,
+) -> dict:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+            (order_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="外卖订单不存在")
+        order = _food_order_from_payload(row["payload"])
+        updates = {
+            name: value
+            for name, value in {
+                "status": request.status,
+                "rider_deposit_status": request.rider_deposit_status,
+            }.items()
+            if value is not None
+        }
+        if request.rider_deposit_status == "confirmed":
+            updates["rider_deposit_due_at"] = None
+        updated = _enrich_food_order_items(connection, order.model_copy(update=updates))
+        connection.execute(
+            """
+            UPDATE food_orders
+            SET status = ?, rider_phone = ?, payload = ?
+            WHERE id = ?
+            """,
+            (updated.status, updated.rider_phone, _food_order_payload(updated), updated.id),
+        )
+        admin_row = connection.execute(
+            """
+            SELECT
+                food_orders.user_phone,
+                food_orders.rider_phone,
+                user_account.nickname AS user_nickname,
+                user_account.email AS user_email,
+                rider_account.nickname AS rider_nickname,
+                rider_account.email AS rider_email,
+                food_orders.payload
+            FROM food_orders
+            LEFT JOIN accounts AS user_account
+                ON user_account.phone = food_orders.user_phone
+            LEFT JOIN accounts AS rider_account
+                ON rider_account.phone = food_orders.rider_phone
+            WHERE food_orders.id = ?
+            LIMIT 1
+            """,
+            (order_id,),
+        ).fetchone()
+        return _food_order_for_admin(connection, admin_row, sign_url)
 
 
 def update_admin_store_application(
@@ -1151,6 +1305,10 @@ def create_food_router(
                     "status": "accepted",
                     "rider_name": request.rider_name,
                     "rider_phone": rider_phone,
+                    "rider_deposit_status": "unpaid",
+                    "rider_deposit_due_at": (datetime.now(timezone.utc) + RIDER_DEPOSIT_CONFIRM_WINDOW).isoformat(),
+                    "rider_deposit_submitted_at": None,
+                    "rider_deposit_proof_url": None,
                     "accepted_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -1158,6 +1316,40 @@ def create_food_router(
             save_food_order(connection, order)
         notify_food_order_user(order, "accepted", "Rider accepted", f"{request.rider_name} accepted your food order.")
         return order
+
+    @router.post("/rider/orders/{order_id}/deposit", response_model=FoodOrderResponse)
+    def mark_food_rider_deposit_transferred(
+        order_id: str,
+        request: FoodRiderDepositTransferRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodOrderResponse:
+        rider_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            row = connection.execute(
+                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                (order_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="外卖订单不存在")
+            order = food_order_from_row(row)
+            if order.rider_phone != rider_phone:
+                raise HTTPException(status_code=403, detail="不能更新其他骑手的押金状态")
+            if order.rider_deposit_status == "confirmed":
+                return enrich_food_order_items(connection, order)
+            payment_proof_url = (request.payment_proof_url or "").strip()
+            if not payment_proof_url:
+                raise HTTPException(status_code=400, detail="请上传转账截图")
+            order = order.model_copy(
+                update={
+                    "rider_deposit_status": "pending",
+                    "rider_deposit_due_at": None,
+                    "rider_deposit_submitted_at": datetime.now(timezone.utc).isoformat(),
+                    "rider_deposit_proof_url": payment_proof_url,
+                }
+            )
+            order = enrich_food_order_items(connection, order)
+            save_food_order(connection, order)
+            return order
 
     @router.post("/rider/orders/{order_id}/status", response_model=FoodOrderResponse)
     def update_food_order_status(
@@ -1179,6 +1371,8 @@ def create_food_router(
             order = food_order_from_row(row)
             if order.rider_phone != rider_phone:
                 raise HTTPException(status_code=403, detail="只能更新自己的外卖订单")
+            if order.rider_deposit_status != "confirmed":
+                raise HTTPException(status_code=403, detail="平台确认骑手押金后才能开始取件配送")
             now = datetime.now(timezone.utc).isoformat()
             updates = {"status": request.status}
             if request.status == "picking_up":
@@ -1363,6 +1557,7 @@ def create_food_router(
                 subtotal_mmk=request.subtotal_mmk,
                 delivery_fee_mmk=request.delivery_fee_mmk,
                 discount_mmk=discount_mmk,
+                goods_amount=request.subtotal_mmk - discount_mmk,
                 voucher_code=voucher_code,
                 status="pending",
                 items=request.items,
