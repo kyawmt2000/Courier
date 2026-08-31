@@ -1268,6 +1268,33 @@ def create_food_router(
             ).fetchall()
             return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
 
+    @router.get("/stores/orders", response_model=list[FoodOrderResponse])
+    def list_store_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            application_rows = connection.execute(
+                """
+                SELECT id
+                FROM food_store_applications
+                WHERE user_phone = ? AND status = 'confirmed'
+                """,
+                (user_phone,),
+            ).fetchall()
+            restaurant_ids = [row["id"] for row in application_rows]
+            if not restaurant_ids:
+                return []
+            placeholders = ",".join("?" for _ in restaurant_ids)
+            rows = connection.execute(
+                f"""
+                SELECT payload
+                FROM food_orders
+                WHERE restaurant_id IN ({placeholders})
+                ORDER BY created_at DESC
+                """,
+                tuple(restaurant_ids),
+            ).fetchall()
+            return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
+
     @router.get("/rider/orders", response_model=list[FoodOrderResponse])
     def list_rider_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
         rider_phone = require_account_phone(authorization)
