@@ -59,6 +59,10 @@ class UpdateFoodMenuItemRequest(BaseModel):
     image_url: str = Field(min_length=1)
 
 
+class UpdateFoodMenuAvailabilityRequest(BaseModel):
+    is_available: bool
+
+
 class FoodOrderItemRequest(BaseModel):
     menu_item_id: str
     quantity: int = Field(ge=1, le=99)
@@ -1214,12 +1218,62 @@ def create_food_router(
                 SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
                        status, rejection_reason, reviewed_at, created_at, payload
                 FROM food_menu_items
-                WHERE restaurant_id = ? AND status = 'confirmed' AND is_available = 1
+                WHERE restaurant_id = ? AND status = 'confirmed'
                 ORDER BY created_at DESC
                 """,
                 (application_row["id"],),
             ).fetchall()
         return [_menu_item_from_row(row, sign_url) for row in rows]
+
+    @router.patch("/stores/menu-items/{menu_item_id}/availability", response_model=FoodMenuItemResponse)
+    def update_store_menu_item_availability(
+        menu_item_id: str,
+        request: UpdateFoodMenuAvailabilityRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodMenuItemResponse:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            application_row = connection.execute(
+                """
+                SELECT id
+                FROM food_store_applications
+                WHERE user_phone = ? AND status = 'confirmed'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_phone,),
+            ).fetchone()
+            if not application_row:
+                raise HTTPException(status_code=403, detail="店铺审核确认后才能编辑菜品")
+
+            row = connection.execute(
+                """
+                SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
+                       status, rejection_reason, reviewed_at, created_at, payload
+                FROM food_menu_items
+                WHERE id = ? AND restaurant_id = ? AND status = 'confirmed'
+                """,
+                (menu_item_id, application_row["id"]),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="菜品不存在")
+
+            item = _menu_item_from_row(row).model_copy(update={"is_available": request.is_available})
+            connection.execute(
+                """
+                UPDATE food_menu_items
+                SET is_available = ?, payload = ?
+                WHERE id = ?
+                """,
+                (
+                    1 if item.is_available else 0,
+                    json.dumps(item.model_dump(mode="json"), ensure_ascii=False),
+                    item.id,
+                ),
+            )
+        if sign_url and item.image_url:
+            item = item.model_copy(update={"image_url": sign_url(item.image_url)})
+        return item
 
     @router.post("/menu-items/{menu_item_id}/click", response_model=FoodMenuItemResponse)
     def record_menu_item_click(
