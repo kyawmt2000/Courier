@@ -27,14 +27,17 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from pydantic import BaseModel, ConfigDict, Field
 
 from food import (
+    AdminUpdateFoodOrderRequest,
     AdminUpdateFoodMenuItemRequest,
     AdminUpdateFoodStoreApplicationRequest,
     create_food_router,
     delete_admin_menu_item,
     delete_admin_store_application,
     init_food_storage,
+    load_admin_food_orders,
     load_admin_menu_items,
     load_admin_store_applications,
+    update_admin_food_order,
     update_admin_menu_item,
     update_admin_store_application,
 )
@@ -2847,6 +2850,7 @@ ADMIN_HTML = r'''
       <button id="autoRefreshButton" class="auto-toggle" onclick="toggleAutoRefresh()">自动同步中</button>
       <button id="refreshButton" onclick="loadData()">刷新</button>
       <button id="tab-payments" class="tab active" onclick="showPage('payments')">订单</button>
+      <button id="tab-food-orders" class="tab" onclick="showPage('food-orders')">外卖订单</button>
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
       <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
       <button id="tab-stores" class="tab" onclick="showPage('stores')">店铺注册</button>
@@ -2875,6 +2879,17 @@ ADMIN_HTML = r'''
         </colgroup>
         <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>付款截图</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
         <tbody id="codOrders"></tbody>
+      </table>
+    </section>
+    <section id="page-food-orders" class="page">
+      <h2>外卖订单</h2>
+      <table class="orders-table">
+        <colgroup>
+          <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
+          <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
+        </colgroup>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>菜品</th><th>骑手押金</th><th>餐厅/地址</th><th>操作</th></tr></thead>
+        <tbody id="foodOrders"></tbody>
       </table>
     </section>
     <section id="detailSection" class="hidden">
@@ -2986,7 +3001,7 @@ ADMIN_HTML = r'''
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    let state = { orders: [], accounts: [], messages: [], payments: [], store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
+    let state = { orders: [], food_orders: [], accounts: [], messages: [], payments: [], store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
     let currentPage = "payments";
     let tabBadges = { payments: 0, orders: 0, accounts: 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
     let selectedServiceConversationId = null;
@@ -3002,9 +3017,10 @@ ADMIN_HTML = r'''
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
-    const pages = ["payments","accounts","service","stores","menu-items","settlements","coupons"];
+    const pages = ["payments","food-orders","accounts","service","stores","menu-items","settlements","coupons"];
     const pageTitles = {
       payments: "订单",
+      "food-orders": "外卖订单",
       accounts: "账号资料",
       service: "Customer Service",
       stores: "店铺注册",
