@@ -61,6 +61,8 @@ class FoodOrderItemRequest(BaseModel):
     menu_item_id: str
     quantity: int = Field(ge=1, le=99)
     note: str = ""
+    menu_item_name: str = ""
+    price_mmk: float | None = None
 
 
 class FoodMenuItemClickRequest(BaseModel):
@@ -739,6 +741,30 @@ def create_food_router(
     def food_order_from_row(row: sqlite3.Row) -> FoodOrderResponse:
         return FoodOrderResponse(**json.loads(row["payload"] or "{}"))
 
+    def enrich_food_order_items(connection: sqlite3.Connection, order: FoodOrderResponse) -> FoodOrderResponse:
+        enriched_items: list[FoodOrderItemRequest] = []
+        for order_item in order.items:
+            row = connection.execute(
+                """
+                SELECT name, price_mmk
+                FROM food_menu_items
+                WHERE id = ? AND restaurant_id = ?
+                """,
+                (order_item.menu_item_id, order.restaurant_id),
+            ).fetchone()
+            if row:
+                enriched_items.append(
+                    order_item.model_copy(
+                        update={
+                            "menu_item_name": row["name"] or order_item.menu_item_name,
+                            "price_mmk": float(row["price_mmk"] or 0),
+                        }
+                    )
+                )
+            else:
+                enriched_items.append(order_item)
+        return order.model_copy(update={"items": enriched_items})
+
     def save_food_order(connection: sqlite3.Connection, order: FoodOrderResponse) -> None:
         connection.execute(
             """
@@ -1086,7 +1112,7 @@ def create_food_router(
                 """,
                 (user_phone,),
             ).fetchall()
-        return [food_order_from_row(row) for row in rows]
+            return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
 
     @router.get("/rider/orders", response_model=list[FoodOrderResponse])
     def list_rider_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
@@ -1101,7 +1127,7 @@ def create_food_router(
                 """,
                 (rider_phone,),
             ).fetchall()
-        return [food_order_from_row(row) for row in rows]
+            return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
 
     @router.post("/rider/orders/{order_id}/accept", response_model=FoodOrderResponse)
     def accept_food_order(
@@ -1128,6 +1154,7 @@ def create_food_router(
                     "accepted_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
+            order = enrich_food_order_items(connection, order)
             save_food_order(connection, order)
         notify_food_order_user(order, "accepted", "Rider accepted", f"{request.rider_name} accepted your food order.")
         return order
@@ -1161,6 +1188,7 @@ def create_food_router(
             elif request.status == "completed":
                 updates["completed_at"] = now
             order = order.model_copy(update=updates)
+            order = enrich_food_order_items(connection, order)
             save_food_order(connection, order)
         title_by_status = {
             "picking_up": "Rider is picking up food",
@@ -1200,6 +1228,7 @@ def create_food_router(
                     "rider_location_updated_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
+            order = enrich_food_order_items(connection, order)
             save_food_order(connection, order)
         if first_location:
             notify_food_order_user(order, "rider-location", "Rider location available", "You can now track your food rider on the map.")
@@ -1342,6 +1371,7 @@ def create_food_router(
                 restaurant_location=restaurant_payload.get("store_location") or "",
                 created_at=created_at,
             )
+            order = enrich_food_order_items(connection, order)
             connection.execute(
                 """
                 INSERT INTO food_orders (id, user_phone, restaurant_id, rider_phone, status, created_at, payload)
