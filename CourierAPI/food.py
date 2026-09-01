@@ -78,6 +78,8 @@ class FoodMenuItemClickRequest(BaseModel):
 class CreateFoodOrderRequest(BaseModel):
     restaurant_id: str
     delivery_address: str
+    delivery_city: str = ""
+    delivery_township: str = ""
     delivery_lat: float | None = None
     delivery_lng: float | None = None
     fulfillment_type: str = "delivery"
@@ -97,6 +99,8 @@ class FoodOrderResponse(BaseModel):
     user_phone: str
     restaurant_id: str
     delivery_address: str
+    delivery_city: str = ""
+    delivery_township: str = ""
     fulfillment_type: str = "delivery"
     payment_method: str = ""
     phone_no: str = ""
@@ -164,6 +168,8 @@ class FoodStoreApplicationRequest(BaseModel):
     bank_account_name: str = ""
     bank_account_number: str = ""
     store_address: str = Field(min_length=1)
+    store_city: str = ""
+    store_township: str = ""
     store_location: str = ""
     business_hours_open: str = "09:00"
     business_hours_close: str = "21:00"
@@ -189,6 +195,8 @@ class FoodStoreApplicationResponse(BaseModel):
     bank_account_name: str = ""
     bank_account_number: str = ""
     store_address: str = ""
+    store_city: str = ""
+    store_township: str = ""
     store_location: str = ""
     business_hours_open: str = "09:00"
     business_hours_close: str = "21:00"
@@ -229,6 +237,107 @@ RESTAURANT_TYPES = {
     "Coffee",
     "Fast Food",
 }
+
+DELIVERY_TOWNSHIPS_BY_CITY = {
+    "Yangon": [
+        "Ahlone",
+        "Bahan",
+        "Dagon",
+        "Kamayut",
+        "Kyauktada",
+        "Kyeemyindaing",
+        "Lanmadaw",
+        "Latha",
+        "Pabedan",
+        "Sanchaung",
+        "Botahtaung",
+        "Dagon Myothit (East)",
+        "Dagon Myothit (North)",
+        "Dagon Myothit (Seikkan)",
+        "Dagon Myothit (South)",
+        "Dawbon",
+        "Mingalartaungnyunt",
+        "North Okkalapa",
+        "Pazundaung",
+        "South Okkalapa",
+        "Tamwe",
+        "Thaketa",
+        "Thingangyun",
+        "Yankin",
+        "Hlaing",
+        "Hlaingthaya",
+        "Hmawbi",
+        "Htantabin",
+        "Insein",
+        "Mayangone",
+        "Mingaladon",
+        "Shwepyitha",
+        "Cocokyun",
+        "Dala",
+        "Kawhmu",
+        "Kayan",
+        "Kungyangon",
+        "Kyauktan",
+        "Seikkan",
+        "Seikkyi Kanaungto",
+        "Thanlyin",
+        "Thongwa",
+        "Twantay",
+    ],
+    "Mandalay": ["Aungmyethazan", "Chanayethazan", "Mahaaungmye", "Chanmyathazi", "Pyigyidagun", "Patheingyi"],
+    "Naypyidaw": ["Zabuthiri", "Dekkhinathiri", "Pobbathiri", "Ottarathiri", "Zeyathiri", "Pyinmana", "Lewe", "Tatkone"],
+    "Bago": ["Bago"],
+    "Mawlamyine": ["Mawlamyine"],
+    "Taunggyi": ["Taunggyi"],
+    "Taungoo": ["Taungoo"],
+}
+
+CITY_BOUNDS_WITH_MARGIN = {
+    "Yangon": ((15.95, 17.35), (95.65, 96.75), 0.25),
+    "Mandalay": ((21.65, 22.35), (95.75, 96.35), 0.20),
+    "Naypyidaw": ((19.35, 20.10), (95.70, 96.45), 0.25),
+    "Bago": ((17.05, 17.65), (96.15, 96.85), 0.20),
+    "Mawlamyine": ((16.20, 16.75), (97.35, 97.90), 0.20),
+    "Taunggyi": ((20.55, 21.05), (96.75, 97.30), 0.20),
+    "Taungoo": ((18.70, 19.15), (96.20, 96.70), 0.20),
+}
+
+
+def _validate_delivery_city_township(city: str, township: str) -> tuple[str, str]:
+    cleaned_city = city.strip()
+    cleaned_township = township.strip()
+    if not cleaned_city:
+        raise HTTPException(status_code=400, detail="请选择城市")
+    if cleaned_city not in DELIVERY_TOWNSHIPS_BY_CITY:
+        raise HTTPException(status_code=400, detail="暂不支持该城市")
+    if not cleaned_township:
+        raise HTTPException(status_code=400, detail="请选择镇区")
+    if cleaned_township not in DELIVERY_TOWNSHIPS_BY_CITY[cleaned_city]:
+        raise HTTPException(status_code=400, detail="请选择该城市内的镇区")
+    return cleaned_city, cleaned_township
+
+
+def _coordinate_from_text(value: str | None) -> tuple[float, float] | None:
+    if not value:
+        return None
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) < 2:
+        return None
+    try:
+        return float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+
+
+def _coordinate_inside_city(latitude: float, longitude: float, city: str) -> bool:
+    bounds = CITY_BOUNDS_WITH_MARGIN.get(city.strip())
+    if bounds is None:
+        return True
+    lat_bounds, lng_bounds, margin = bounds
+    return (
+        lat_bounds[0] - margin <= latitude <= lat_bounds[1] + margin
+        and lng_bounds[0] - margin <= longitude <= lng_bounds[1] + margin
+    )
 
 
 def _normalize_business_hour(value: str, default: str) -> str:
@@ -381,6 +490,8 @@ def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
     payload.setdefault("signature_dish_image_url", "")
     payload.setdefault("license_urls", [])
     payload.setdefault("menu_urls", [])
+    payload.setdefault("store_city", "")
+    payload.setdefault("store_township", "")
     payload["status"] = row["status"]
     payload["rejection_reason"] = row["rejection_reason"]
     payload["reviewed_at"] = row["reviewed_at"]
@@ -451,6 +562,10 @@ def _build_store_application(
         raise HTTPException(status_code=400, detail="营业执照最多上传 3 张")
     if len(request.menu_urls) > 10:
         raise HTTPException(status_code=400, detail="菜单最多上传 10 张")
+    store_city, store_township = _validate_delivery_city_township(request.store_city, request.store_township)
+    store_coordinate = _coordinate_from_text(request.store_location)
+    if store_coordinate and not _coordinate_inside_city(store_coordinate[0], store_coordinate[1], store_city):
+        raise HTTPException(status_code=400, detail=f"请选择 {store_city} 内的 Google Map Location")
 
     return FoodStoreApplicationResponse(
         id=application_id,
@@ -466,6 +581,8 @@ def _build_store_application(
         bank_account_name=bank_account_name,
         bank_account_number=bank_account_number,
         store_address=request.store_address.strip(),
+        store_city=store_city,
+        store_township=store_township,
         store_location=request.store_location.strip(),
         business_hours_open=business_hours_open,
         business_hours_close=business_hours_close,
@@ -1594,6 +1711,16 @@ def create_food_router(
             raise HTTPException(status_code=400, detail="Phone No. must be 9 or 11 digits.")
         if secondary_phone_no and not _is_valid_food_order_phone(secondary_phone_no):
             raise HTTPException(status_code=400, detail="Phone No. must be 9 or 11 digits.")
+        delivery_city = request.delivery_city.strip()
+        delivery_township = request.delivery_township.strip()
+        if request.fulfillment_type != "pickup":
+            delivery_city, delivery_township = _validate_delivery_city_township(delivery_city, delivery_township)
+            if (
+                request.delivery_lat is not None
+                and request.delivery_lng is not None
+                and not _coordinate_inside_city(request.delivery_lat, request.delivery_lng, delivery_city)
+            ):
+                raise HTTPException(status_code=400, detail=f"请选择 {delivery_city} 内的 Google Map Location")
 
         created_at = datetime.now(timezone.utc).isoformat()
         with connect_db() as connection:
@@ -1642,6 +1769,8 @@ def create_food_router(
                 user_phone=user_phone,
                 restaurant_id=request.restaurant_id,
                 delivery_address=request.delivery_address,
+                delivery_city=delivery_city,
+                delivery_township=delivery_township,
                 delivery_lat=request.delivery_lat,
                 delivery_lng=request.delivery_lng,
                 fulfillment_type=request.fulfillment_type,
