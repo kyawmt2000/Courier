@@ -6,7 +6,7 @@ from typing import Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
@@ -42,6 +42,7 @@ class FoodMenuItemResponse(BaseModel):
 
 
 class CreateFoodMenuItemRequest(BaseModel):
+    restaurant_id: str = ""
     category: str = Field(min_length=1)
     title: str = Field(min_length=1)
     description: str = ""
@@ -51,6 +52,7 @@ class CreateFoodMenuItemRequest(BaseModel):
 
 
 class UpdateFoodMenuItemRequest(BaseModel):
+    restaurant_id: str = ""
     category: str = Field(min_length=1)
     title: str = Field(min_length=1)
     description: str = ""
@@ -1163,16 +1165,27 @@ def create_food_router(
 
         created_at = datetime.now(timezone.utc).isoformat()
         with connect_db() as connection:
-            application_row = connection.execute(
-                """
-                SELECT id, payload
-                FROM food_store_applications
-                WHERE user_phone = ? AND status = 'confirmed'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (user_phone,),
-            ).fetchone()
+            if request.restaurant_id.strip():
+                application_row = connection.execute(
+                    """
+                    SELECT id, payload
+                    FROM food_store_applications
+                    WHERE id = ? AND user_phone = ? AND status = 'confirmed'
+                    LIMIT 1
+                    """,
+                    (request.restaurant_id.strip(), user_phone),
+                ).fetchone()
+            else:
+                application_row = connection.execute(
+                    """
+                    SELECT id, payload
+                    FROM food_store_applications
+                    WHERE user_phone = ? AND status = 'confirmed'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (user_phone,),
+                ).fetchone()
             if not application_row:
                 raise HTTPException(status_code=403, detail="店铺审核确认后才能上传菜品")
 
@@ -1234,29 +1247,19 @@ def create_food_router(
             raise HTTPException(status_code=400, detail="请上传菜品图片")
 
         with connect_db() as connection:
-            application_row = connection.execute(
-                """
-                SELECT id
-                FROM food_store_applications
-                WHERE user_phone = ? AND status = 'confirmed'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (user_phone,),
-            ).fetchone()
-            if not application_row:
-                raise HTTPException(status_code=403, detail="店铺审核确认后才能编辑菜品")
-
             row = connection.execute(
                 """
                 SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
-                       status, rejection_reason, reviewed_at, created_at, payload
-                FROM food_menu_items
-                WHERE id = ? AND restaurant_id = ?
+                       status, rejection_reason, reviewed_at, created_at, item.payload, store.payload AS store_payload
+                FROM food_menu_items item
+                JOIN food_store_applications store ON store.id = item.restaurant_id
+                WHERE item.id = ? AND store.user_phone = ? AND store.status = 'confirmed'
                 """,
-                (menu_item_id, application_row["id"]),
+                (menu_item_id, user_phone),
             ).fetchone()
             if not row:
+                raise HTTPException(status_code=404, detail="菜品不存在")
+            if request.restaurant_id.strip() and row["restaurant_id"] != request.restaurant_id.strip():
                 raise HTTPException(status_code=404, detail="菜品不存在")
 
             existing_item = _menu_item_from_row(row)
@@ -1296,7 +1299,7 @@ def create_food_router(
                     item.id,
                 ),
             )
-            store_payload = json.loads(application_row["payload"] or "{}")
+            store_payload = json.loads(row["store_payload"] or "{}")
             store_name = store_payload.get("store_name") or "Restaurant"
             was_discounted = (
                 existing_item.original_price_mmk is not None
@@ -1315,19 +1318,34 @@ def create_food_router(
         return item
 
     @router.get("/stores/menu-items", response_model=list[FoodMenuItemResponse])
-    def list_my_store_menu_items(authorization: str | None = Header(default=None)) -> list[FoodMenuItemResponse]:
+    def list_my_store_menu_items(
+        restaurant_id: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> list[FoodMenuItemResponse]:
         user_phone = require_account_phone(authorization)
         with connect_db() as connection:
-            application_row = connection.execute(
-                """
-                SELECT id
-                FROM food_store_applications
-                WHERE user_phone = ? AND status = 'confirmed'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (user_phone,),
-            ).fetchone()
+            selected_restaurant_id = (restaurant_id or "").strip()
+            if selected_restaurant_id:
+                application_row = connection.execute(
+                    """
+                    SELECT id
+                    FROM food_store_applications
+                    WHERE id = ? AND user_phone = ? AND status = 'confirmed'
+                    LIMIT 1
+                    """,
+                    (selected_restaurant_id, user_phone),
+                ).fetchone()
+            else:
+                application_row = connection.execute(
+                    """
+                    SELECT id
+                    FROM food_store_applications
+                    WHERE user_phone = ? AND status = 'confirmed'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (user_phone,),
+                ).fetchone()
             if not application_row:
                 return []
             rows = connection.execute(
@@ -1350,27 +1368,16 @@ def create_food_router(
     ) -> FoodMenuItemResponse:
         user_phone = require_account_phone(authorization)
         with connect_db() as connection:
-            application_row = connection.execute(
-                """
-                SELECT id
-                FROM food_store_applications
-                WHERE user_phone = ? AND status = 'confirmed'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (user_phone,),
-            ).fetchone()
-            if not application_row:
-                raise HTTPException(status_code=403, detail="店铺审核确认后才能编辑菜品")
-
             row = connection.execute(
                 """
                 SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
-                       status, rejection_reason, reviewed_at, created_at, payload
-                FROM food_menu_items
-                WHERE id = ? AND restaurant_id = ? AND status = 'confirmed'
+                       status, rejection_reason, reviewed_at, created_at, item.payload
+                FROM food_menu_items item
+                JOIN food_store_applications store ON store.id = item.restaurant_id
+                WHERE item.id = ? AND item.status = 'confirmed'
+                  AND store.user_phone = ? AND store.status = 'confirmed'
                 """,
-                (menu_item_id, application_row["id"]),
+                (menu_item_id, user_phone),
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="菜品不存在")
@@ -1446,17 +1453,33 @@ def create_food_router(
             return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
 
     @router.get("/stores/orders", response_model=list[FoodOrderResponse])
-    def list_store_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
+    def list_store_food_orders(
+        restaurant_id: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> list[FoodOrderResponse]:
         user_phone = require_account_phone(authorization)
         with connect_db() as connection:
-            application_rows = connection.execute(
-                """
-                SELECT id
-                FROM food_store_applications
-                WHERE user_phone = ? AND status = 'confirmed'
-                """,
-                (user_phone,),
-            ).fetchall()
+            selected_restaurant_id = (restaurant_id or "").strip()
+            if selected_restaurant_id:
+                application_rows = connection.execute(
+                    """
+                    SELECT id
+                    FROM food_store_applications
+                    WHERE id = ? AND user_phone = ? AND status = 'confirmed'
+                    """,
+                    (selected_restaurant_id, user_phone),
+                ).fetchall()
+            else:
+                application_rows = connection.execute(
+                    """
+                    SELECT id
+                    FROM food_store_applications
+                    WHERE user_phone = ? AND status = 'confirmed'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (user_phone,),
+                ).fetchall()
             restaurant_ids = [row["id"] for row in application_rows]
             if not restaurant_ids:
                 return []
@@ -1647,6 +1670,21 @@ def create_food_router(
                 (user_phone,),
             ).fetchone()
         return _signed_application(_application_from_row(row), sign_url) if row else None
+
+    @router.get("/stores/my-applications", response_model=list[FoodStoreApplicationResponse])
+    def my_store_applications(authorization: str | None = Header(default=None)) -> list[FoodStoreApplicationResponse]:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload, status, rejection_reason, reviewed_at
+                FROM food_store_applications
+                WHERE user_phone = ?
+                ORDER BY created_at DESC
+                """,
+                (user_phone,),
+            ).fetchall()
+        return [_signed_application(_application_from_row(row), sign_url) for row in rows]
 
     @router.put("/stores/my-application", response_model=FoodStoreApplicationResponse)
     def update_my_store_application(
