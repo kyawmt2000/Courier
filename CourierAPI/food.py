@@ -16,6 +16,7 @@ class FoodRestaurantResponse(BaseModel):
     id: str
     name: str
     description: str = ""
+    store_city: str = ""
     image_url: str | None = None
     is_open: bool = True
     business_hours_open: str = "09:00"
@@ -1115,6 +1116,7 @@ def create_food_router(
                     id=row["id"],
                     name=payload.get("store_name") or "",
                     description=description,
+                    store_city=payload.get("store_city") or "",
                     image_url=sign_url(image_url) if sign_url else image_url,
                     is_open=_is_restaurant_open(business_hours_open, business_hours_close),
                     business_hours_open=business_hours_open,
