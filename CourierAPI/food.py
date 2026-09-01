@@ -118,6 +118,8 @@ class FoodOrderResponse(BaseModel):
     note: str = ""
     restaurant_name: str = ""
     restaurant_location: str = ""
+    restaurant_city: str = ""
+    restaurant_township: str = ""
     delivery_lat: float | None = None
     delivery_lng: float | None = None
     rider_name: str | None = None
@@ -1047,7 +1049,27 @@ def create_food_router(
                 )
             else:
                 enriched_items.append(order_item)
-        return order.model_copy(update={"items": enriched_items})
+        update: dict[str, object] = {"items": enriched_items}
+        restaurant_row = connection.execute(
+            """
+            SELECT payload
+            FROM food_store_applications
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (order.restaurant_id,),
+        ).fetchone()
+        if restaurant_row:
+            restaurant_payload = json.loads(restaurant_row["payload"] or "{}")
+            update.update(
+                {
+                    "restaurant_name": order.restaurant_name or restaurant_payload.get("store_name") or "",
+                    "restaurant_location": order.restaurant_location or restaurant_payload.get("store_location") or "",
+                    "restaurant_city": restaurant_payload.get("store_city") or order.restaurant_city or "",
+                    "restaurant_township": restaurant_payload.get("store_township") or order.restaurant_township or "",
+                }
+            )
+        return order.model_copy(update=update)
 
     def save_food_order(connection: sqlite3.Connection, order: FoodOrderResponse) -> None:
         connection.execute(
@@ -1827,6 +1849,8 @@ def create_food_router(
                 note=request.note,
                 restaurant_name=restaurant_payload.get("store_name") or "",
                 restaurant_location=restaurant_payload.get("store_location") or "",
+                restaurant_city=restaurant_payload.get("store_city") or "",
+                restaurant_township=restaurant_payload.get("store_township") or "",
                 created_at=created_at,
             )
             order = enrich_food_order_items(connection, order)
