@@ -138,6 +138,14 @@ class FoodOrderResponse(BaseModel):
     created_at: str
 
 
+def _restaurant_location_text(payload: dict[str, object]) -> str:
+    store_address = str(payload.get("store_address") or "").strip()
+    store_location = str(payload.get("store_location") or "").strip()
+    if store_address and store_location:
+        return f"{store_address}, Google Map Location: {store_location}"
+    return store_address or store_location
+
+
 class FoodAcceptOrderRequest(BaseModel):
     rider_name: str = Field(min_length=1)
     rider_phone: str | None = None
@@ -1064,7 +1072,7 @@ def create_food_router(
             update.update(
                 {
                     "restaurant_name": order.restaurant_name or restaurant_payload.get("store_name") or "",
-                    "restaurant_location": order.restaurant_location or restaurant_payload.get("store_location") or "",
+                    "restaurant_location": _restaurant_location_text(restaurant_payload) or order.restaurant_location or "",
                     "restaurant_city": restaurant_payload.get("store_city") or order.restaurant_city or "",
                     "restaurant_township": restaurant_payload.get("store_township") or order.restaurant_township or "",
                 }
@@ -1863,7 +1871,7 @@ def create_food_router(
                 items=request.items,
                 note=request.note,
                 restaurant_name=restaurant_payload.get("store_name") or "",
-                restaurant_location=restaurant_payload.get("store_location") or "",
+                restaurant_location=_restaurant_location_text(restaurant_payload),
                 restaurant_city=restaurant_payload.get("store_city") or "",
                 restaurant_township=restaurant_payload.get("store_township") or "",
                 created_at=created_at,
