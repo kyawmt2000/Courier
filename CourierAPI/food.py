@@ -1520,8 +1520,12 @@ def create_food_router(
             return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
 
     @router.get("/rider/orders", response_model=list[FoodOrderResponse])
-    def list_rider_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
+    def list_rider_food_orders(
+        city: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> list[FoodOrderResponse]:
         rider_phone = require_account_phone(authorization)
+        requested_city = (city or "").strip()
         with connect_db() as connection:
             rows = connection.execute(
                 """
@@ -1532,7 +1536,18 @@ def create_food_router(
                 """,
                 (rider_phone,),
             ).fetchall()
-            return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
+            orders = [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
+            if not requested_city:
+                return orders
+            return [
+                order
+                for order in orders
+                if order.rider_phone == rider_phone
+                or (
+                    order.status == "pending"
+                    and order.restaurant_city.strip().casefold() == requested_city.casefold()
+                )
+            ]
 
     @router.post("/rider/orders/{order_id}/accept", response_model=FoodOrderResponse)
     def accept_food_order(
