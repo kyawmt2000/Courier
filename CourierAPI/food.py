@@ -1024,6 +1024,7 @@ def create_food_router(
     sign_url: SignUrl | None = None,
     notify_restaurant_update: Callable[[str, str, str, str], None] | None = None,
     notify_user: Callable[[str | None, str, str, str], None] | None = None,
+    require_approved_rider: Callable[[str], None] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/food", tags=["food"])
 
@@ -1564,6 +1565,8 @@ def create_food_router(
         authorization: str | None = Header(default=None),
     ) -> FoodOrderResponse:
         rider_phone = request.rider_phone or require_account_phone(authorization)
+        if require_approved_rider:
+            require_approved_rider(rider_phone)
         with connect_db() as connection:
             row = connection.execute(
                 "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
