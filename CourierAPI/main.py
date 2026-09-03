@@ -1683,6 +1683,7 @@ def upload_folder(value: str) -> str:
         "food store payment": "food store payment",
         "rider deposit": "rider deposit",
         "rider deposit proof": "rider deposit",
+        "rider registration": "rider registration",
         "rider settlement": "rider settlement",
         "user settlement": "user settlement",
     }
