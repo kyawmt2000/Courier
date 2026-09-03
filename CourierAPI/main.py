@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -133,6 +133,7 @@ SettlementStatus = Literal["pending", "paid_to_user", "paid_to_rider", "complete
 CouponScope = Literal["food", "parcel", "both"]
 CouponTargetType = Literal["none", "all", "account"]
 CouponDiscountType = Literal["amount", "percent"]
+RiderRegistrationStatus = Literal["not_submitted", "pending", "approved", "rejected"]
 
 
 class HealthResponse(BaseModel):
@@ -404,6 +405,38 @@ class UpdateOrderStatusRequest(BaseModel):
 class UpdateRiderLocationRequest(BaseModel):
     lat: float
     lng: float
+
+
+class RiderRegistrationRequest(BaseModel):
+    avatar_url: str = Field(min_length=1)
+    phone_no: str = Field(min_length=9, max_length=11)
+    nrc_front_url: str = Field(min_length=1)
+    nrc_back_url: str = Field(min_length=1)
+    household_registration_url: str = Field(min_length=1)
+    bicycle_photo_url: str = Field(min_length=1)
+    address: str = Field(min_length=1, max_length=500)
+
+
+class RiderRegistrationResponse(BaseModel):
+    id: str
+    account_phone: str
+    avatar_url: str
+    phone_no: str
+    nrc_front_url: str
+    nrc_back_url: str
+    household_registration_url: str
+    bicycle_photo_url: str
+    address: str
+    status: RiderRegistrationStatus
+    admin_feedback: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    reviewed_at: datetime | None = None
+
+
+class AdminUpdateRiderRegistrationRequest(BaseModel):
+    status: Literal["approved", "rejected"]
+    admin_feedback: str | None = None
 
 
 class RiderSettlementRequest(BaseModel):
@@ -733,6 +766,34 @@ def init_storage() -> None:
             "CREATE INDEX IF NOT EXISTS idx_app_notifications_user_created "
             "ON app_notifications (user_phone, created_at)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rider_registrations (
+                id TEXT PRIMARY KEY,
+                account_phone TEXT NOT NULL,
+                status TEXT NOT NULL,
+                avatar_url TEXT NOT NULL,
+                phone_no TEXT NOT NULL,
+                nrc_front_url TEXT NOT NULL,
+                nrc_back_url TEXT NOT NULL,
+                household_registration_url TEXT NOT NULL,
+                bicycle_photo_url TEXT NOT NULL,
+                address TEXT NOT NULL,
+                admin_feedback TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reviewed_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rider_registrations_account_updated "
+            "ON rider_registrations (account_phone, updated_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rider_registrations_status_updated "
+            "ON rider_registrations (status, updated_at)"
+        )
         add_column_if_missing(connection, "chat_messages", "conversation_id", "TEXT NOT NULL DEFAULT 'main'")
         add_column_if_missing(connection, "chat_messages", "sender_phone", "TEXT")
         add_column_if_missing(connection, "chat_messages", "image_url", "TEXT")
@@ -781,6 +842,19 @@ def init_storage() -> None:
         add_column_if_missing(connection, "app_notifications", "title", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "app_notifications", "message", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "app_notifications", "created_at", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "account_phone", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "status", "TEXT NOT NULL DEFAULT 'pending'")
+        add_column_if_missing(connection, "rider_registrations", "avatar_url", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "phone_no", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "nrc_front_url", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "nrc_back_url", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "household_registration_url", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "bicycle_photo_url", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "address", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "admin_feedback", "TEXT")
+        add_column_if_missing(connection, "rider_registrations", "created_at", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "updated_at", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "reviewed_at", "TEXT")
         init_food_storage(connection)
 
 
@@ -1520,6 +1594,7 @@ app.include_router(
         lambda url: signed_gcs_read_url(url),
         notify_restaurant_menu_update,
         create_app_notification,
+        require_approved_rider_registration,
     )
 )
 
@@ -2675,6 +2750,190 @@ def load_admin_accounts() -> list[dict]:
     return result
 
 
+def clean_rider_registration_phone(phone: str) -> str:
+    digits = re.sub(r"\D+", "", phone or "")
+    if len(digits) not in (9, 11):
+        raise HTTPException(status_code=400, detail="骑手手机号必须是 9 位数或 11 位数")
+    return digits
+
+
+def rider_registration_from_row(
+    row: sqlite3.Row | None,
+    sign_url: Callable[[str | None], str | None] | None = None,
+) -> RiderRegistrationResponse:
+    if not row:
+        now = datetime.now(timezone.utc)
+        return RiderRegistrationResponse(
+            id="",
+            account_phone="",
+            avatar_url="",
+            phone_no="",
+            nrc_front_url="",
+            nrc_back_url="",
+            household_registration_url="",
+            bicycle_photo_url="",
+            address="",
+            status="not_submitted",
+            admin_feedback=None,
+            created_at=now,
+            updated_at=now,
+            reviewed_at=None,
+        )
+    data = dict(row)
+    if sign_url:
+        for field in ("avatar_url", "nrc_front_url", "nrc_back_url", "household_registration_url", "bicycle_photo_url"):
+            data[field] = sign_url(data.get(field))
+    return RiderRegistrationResponse(**data)
+
+
+def load_rider_registration(
+    account_phone: str,
+    sign_url: Callable[[str | None], str | None] | None = None,
+) -> RiderRegistrationResponse:
+    with connect_db() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM rider_registrations
+            WHERE account_phone = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (account_phone,),
+        ).fetchone()
+    registration = rider_registration_from_row(row, sign_url)
+    if not row:
+        return registration.model_copy(update={"account_phone": account_phone})
+    return registration
+
+
+def load_admin_rider_registrations() -> list[dict]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT rider_registrations.*, accounts.nickname, accounts.email
+            FROM rider_registrations
+            LEFT JOIN accounts ON accounts.phone = rider_registrations.account_phone
+            ORDER BY updated_at DESC
+            """
+        ).fetchall()
+    result: list[dict] = []
+    for row in rows:
+        registration = rider_registration_from_row(row, signed_gcs_read_url).model_dump(mode="json")
+        registration["nickname"] = row["nickname"]
+        registration["email"] = row["email"]
+        result.append(registration)
+    return result
+
+
+def save_rider_registration(account_phone: str, request: RiderRegistrationRequest) -> RiderRegistrationResponse:
+    phone_no = clean_rider_registration_phone(request.phone_no)
+    now = datetime.now(timezone.utc).isoformat()
+    with connect_db() as connection:
+        existing = connection.execute(
+            "SELECT id, created_at FROM rider_registrations WHERE account_phone = ? LIMIT 1",
+            (account_phone,),
+        ).fetchone()
+        registration_id = existing["id"] if existing else str(uuid4())
+        created_at = existing["created_at"] if existing else now
+        connection.execute(
+            """
+            INSERT INTO rider_registrations (
+                id, account_phone, status, avatar_url, phone_no, nrc_front_url, nrc_back_url,
+                household_registration_url, bicycle_photo_url, address, admin_feedback,
+                created_at, updated_at, reviewed_at
+            )
+            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+            ON CONFLICT(id) DO UPDATE SET
+                status = 'pending',
+                avatar_url = excluded.avatar_url,
+                phone_no = excluded.phone_no,
+                nrc_front_url = excluded.nrc_front_url,
+                nrc_back_url = excluded.nrc_back_url,
+                household_registration_url = excluded.household_registration_url,
+                bicycle_photo_url = excluded.bicycle_photo_url,
+                address = excluded.address,
+                admin_feedback = NULL,
+                updated_at = excluded.updated_at,
+                reviewed_at = NULL
+            """,
+            (
+                registration_id,
+                account_phone,
+                clean_optional_text(request.avatar_url) or "",
+                phone_no,
+                clean_optional_text(request.nrc_front_url) or "",
+                clean_optional_text(request.nrc_back_url) or "",
+                clean_optional_text(request.household_registration_url) or "",
+                clean_optional_text(request.bicycle_photo_url) or "",
+                request.address.strip(),
+                created_at,
+                now,
+            ),
+        )
+        row = connection.execute("SELECT * FROM rider_registrations WHERE id = ? LIMIT 1", (registration_id,)).fetchone()
+    return rider_registration_from_row(row, signed_gcs_read_url)
+
+
+def update_rider_registration_admin(
+    registration_id: str,
+    request: AdminUpdateRiderRegistrationRequest,
+) -> RiderRegistrationResponse:
+    feedback = clean_optional_text(request.admin_feedback)
+    if request.status == "rejected" and not feedback:
+        raise HTTPException(status_code=400, detail="拒绝时请填写反馈")
+    now = datetime.now(timezone.utc).isoformat()
+    with connect_db() as connection:
+        row = connection.execute("SELECT * FROM rider_registrations WHERE id = ? LIMIT 1", (registration_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="骑手资料不存在")
+        connection.execute(
+            """
+            UPDATE rider_registrations
+            SET status = ?, admin_feedback = ?, updated_at = ?, reviewed_at = ?
+            WHERE id = ?
+            """,
+            (request.status, feedback, now, now, registration_id),
+        )
+        updated = connection.execute("SELECT * FROM rider_registrations WHERE id = ? LIMIT 1", (registration_id,)).fetchone()
+    registration = rider_registration_from_row(updated, signed_gcs_read_url)
+    if registration.status == "approved":
+        create_app_notification(
+            registration.account_phone,
+            f"rider-registration-approved-{registration.updated_at.isoformat()}",
+            "Rider approved",
+            "恭喜你成为Blink 骑手",
+        )
+    else:
+        create_app_notification(
+            registration.account_phone,
+            f"rider-registration-rejected-{registration.updated_at.isoformat()}",
+            "Rider registration rejected",
+            f"请重新填写资料，{registration.admin_feedback or ''}",
+        )
+    return registration
+
+
+def rider_registration_is_approved(account_phone: str) -> bool:
+    with connect_db() as connection:
+        row = connection.execute(
+            """
+            SELECT status
+            FROM rider_registrations
+            WHERE account_phone = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (account_phone,),
+        ).fetchone()
+    return bool(row and row["status"] == "approved")
+
+
+def require_approved_rider_registration(account_phone: str) -> None:
+    if not rider_registration_is_approved(account_phone):
+        raise HTTPException(status_code=403, detail="请先完成 Rider Registration 并等待后台确认")
+
+
 def load_admin_chat_messages(limit: int = 1000) -> list[dict]:
     with connect_db() as connection:
         rows = connection.execute(
@@ -2852,6 +3111,7 @@ ADMIN_HTML = r'''
       <button id="tab-payments" class="tab active" onclick="showPage('payments')">订单</button>
       <button id="tab-food-orders" class="tab" onclick="showPage('food-orders')">外卖订单</button>
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
+      <button id="tab-rider-registrations" class="tab" onclick="showPage('rider-registrations')">骑手资料</button>
       <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
       <button id="tab-stores" class="tab" onclick="showPage('stores')">店铺注册</button>
       <button id="tab-menu-items" class="tab" onclick="showPage('menu-items')">菜品审核</button>
@@ -2903,6 +3163,13 @@ ADMIN_HTML = r'''
           <table><thead><tr><th>头像</th><th>昵称</th><th>收款码</th><th>登录邮箱</th><th>最近登录</th></tr></thead><tbody id="accounts"></tbody></table>
         </div>
       </div>
+    </section>
+    <section id="page-rider-registrations" class="page">
+      <h2>骑手资料</h2>
+      <table>
+        <thead><tr><th>骑手</th><th>手机号/住址</th><th>照片资料</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="riderRegistrations"></tbody>
+      </table>
     </section>
     <section id="page-settlements" class="page">
       <h2>结算</h2>
@@ -3001,9 +3268,9 @@ ADMIN_HTML = r'''
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    let state = { orders: [], food_orders: [], accounts: [], messages: [], payments: [], store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
+    let state = { orders: [], food_orders: [], accounts: [], rider_registrations: [], messages: [], payments: [], store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
     let currentPage = "payments";
-    let tabBadges = { payments: 0, orders: 0, accounts: 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
+    let tabBadges = { payments: 0, orders: 0, accounts: 0, "rider-registrations": 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
@@ -3017,11 +3284,12 @@ ADMIN_HTML = r'''
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
-    const pages = ["payments","food-orders","accounts","service","stores","menu-items","settlements","coupons"];
+    const pages = ["payments","food-orders","accounts","rider-registrations","service","stores","menu-items","settlements","coupons"];
     const pageTitles = {
       payments: "订单",
       "food-orders": "外卖订单",
       accounts: "账号资料",
+      "rider-registrations": "骑手资料",
       service: "Customer Service",
       stores: "店铺注册",
       "menu-items": "菜品审核",
@@ -3149,6 +3417,7 @@ ADMIN_HTML = r'''
         orders: new Set((data.orders || []).map(item => item.id).filter(Boolean)),
         payments: new Set((data.payments || []).map(item => item.id).filter(Boolean)),
         accounts: new Set((data.accounts || []).map(item => item.phone).filter(Boolean)),
+        riderRegistrations: new Set((data.rider_registrations || []).map(item => `${item.id}:${item.status}:${item.admin_feedback || ""}:${item.updated_at || ""}`).filter(Boolean)),
         messages: new Set((data.messages || []).map(item => item.id).filter(Boolean)),
         stores: new Set((data.store_applications || []).map(item => `${item.id}:${item.status}:${item.rejection_reason || ""}`).filter(Boolean)),
         menuItems: new Set((data.food_menu_items || []).map(item => `${item.id}:${item.status}:${item.rejection_reason || ""}`).filter(Boolean)),
@@ -3156,11 +3425,12 @@ ADMIN_HTML = r'''
       };
     }
     function rememberNewItems(nextState) {
-      if (!hasLoadedOnce) return { orders: 0, payments: 0, accounts: 0, settlements: 0, messages: 0, stores: 0, menuItems: 0 };
+      if (!hasLoadedOnce) return { orders: 0, payments: 0, accounts: 0, riderRegistrations: 0, settlements: 0, messages: 0, stores: 0, menuItems: 0 };
       const previous = identitySets();
       const freshOrders = (nextState.orders || []).filter(item => item.id && !previous.orders.has(item.id));
       const freshPayments = (nextState.payments || []).filter(item => item.id && !previous.payments.has(item.id));
       const freshAccounts = (nextState.accounts || []).filter(item => item.phone && !previous.accounts.has(item.phone));
+      const freshRiderRegistrations = Array.from(identitySets(nextState).riderRegistrations).filter(item => !previous.riderRegistrations.has(item));
       const freshMessages = (nextState.messages || []).filter(item => item.id && !previous.messages.has(item.id));
       const freshStores = Array.from(identitySets(nextState).stores).filter(item => !previous.stores.has(item));
       const freshMenuItems = Array.from(identitySets(nextState).menuItems).filter(item => !previous.menuItems.has(item));
@@ -3169,6 +3439,7 @@ ADMIN_HTML = r'''
       freshOrders.forEach(() => incrementTabBadge("payments"));
       freshPayments.forEach(() => incrementTabBadge("payments"));
       if (freshAccounts.length) incrementTabBadge("accounts", freshAccounts.length);
+      if (freshRiderRegistrations.length) incrementTabBadge("rider-registrations", freshRiderRegistrations.length);
       if (freshSettlements.length) incrementTabBadge("settlements", freshSettlements.length);
       if (freshMessages.length) incrementTabBadge("service", freshMessages.length);
       if (freshStores.length) incrementTabBadge("stores", freshStores.length);
@@ -3189,6 +3460,7 @@ ADMIN_HTML = r'''
         orders: freshOrders.length,
         payments: freshPayments.length,
         accounts: freshAccounts.length,
+        riderRegistrations: freshRiderRegistrations.length,
         settlements: freshSettlements.length,
         messages: freshMessages.length,
         stores: freshStores.length,
@@ -3423,12 +3695,13 @@ ADMIN_HTML = r'''
         if (activeDetailId && state.orders.some(order => order.id === activeDetailId)) {
           showDetail(activeDetailId);
         }
-        const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.settlements + fresh.messages + fresh.stores + fresh.menuItems;
+        const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.riderRegistrations + fresh.settlements + fresh.messages + fresh.stores + fresh.menuItems;
         if (freshCount) {
           const parts = [];
           if (fresh.orders) parts.push(`${fresh.orders} 个新订单`);
           if (fresh.payments) parts.push(`${fresh.payments} 个新付款`);
           if (fresh.accounts) parts.push(`${fresh.accounts} 个新账号`);
+          if (fresh.riderRegistrations) parts.push(`${fresh.riderRegistrations} 条骑手资料`);
           if (fresh.stores) parts.push(`${fresh.stores} 条店铺注册`);
           if (fresh.menuItems) parts.push(`${fresh.menuItems} 个菜品`);
           if (fresh.settlements) parts.push(`${fresh.settlements} 条新结算`);
@@ -3578,6 +3851,7 @@ ADMIN_HTML = r'''
       }
       renderAccountRows(accounts);
       renderAccountDetail();
+      renderRiderRegistrations();
       renderCouponAccountEmails();
       renderFoodOrders();
       const settlementRows = sortByDateDesc(orders, [
@@ -3621,6 +3895,76 @@ ADMIN_HTML = r'''
       if (!orders.length) {
         table.innerHTML = `<tr><td colspan="8" class="muted">暂无外卖订单</td></tr>`;
       }
+    }
+
+    function riderRegistrationImage(url, title) {
+      return url
+        ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="${escapeHtml(title)}" title="${escapeHtml(title)}"></a>`
+        : `<span class="muted">${escapeHtml(title)} 未上传</span>`;
+    }
+
+    function renderRiderRegistrations() {
+      const table = document.getElementById("riderRegistrations");
+      if (!table) return;
+      const q = document.getElementById("q").value.toLowerCase();
+      const rows = sortByDateDesc((state.rider_registrations || []).filter(item => JSON.stringify(item).toLowerCase().includes(q)), ["updated_at", "created_at"]);
+      table.innerHTML = rows.map(item => `
+        <tr${rowClass("rider-registration", item.id)}>
+          <td>${riderRegistrationImage(item.avatar_url, "骑手头像")}<br><strong>${escapeHtml(item.nickname || item.account_phone || "")}</strong><br><span class="muted">${escapeHtml(item.email || item.account_phone || "")}</span></td>
+          <td><b>${escapeHtml(item.phone_no || "")}</b><br><span class="address-cell">${escapeHtml(item.address || "")}</span><br><span class="muted">提交：${escapeHtml(new Date(item.updated_at || item.created_at).toLocaleString())}</span>${item.reviewed_at ? `<br><span class="muted">审核：${escapeHtml(new Date(item.reviewed_at).toLocaleString())}</span>` : ""}</td>
+          <td>
+            ${riderRegistrationImage(item.nrc_front_url, "NRC 正面")}
+            ${riderRegistrationImage(item.nrc_back_url, "NRC 反面")}
+            ${riderRegistrationImage(item.household_registration_url, "户口资料")}
+            ${riderRegistrationImage(item.bicycle_photo_url, "自行车照片")}
+          </td>
+          <td><span class="pill">${label(item.status)}</span>${item.admin_feedback ? `<br><span class="muted">${escapeHtml(item.admin_feedback)}</span>` : ""}</td>
+          <td class="actions-cell">
+            ${item.status !== "approved" ? `<button onclick="approveRiderRegistration('${item.id}', this)">确认</button>` : ""}
+            <button onclick="rejectRiderRegistration('${item.id}', this)">拒绝</button>
+          </td>
+        </tr>`).join("");
+      if (!rows.length) {
+        table.innerHTML = `<tr><td colspan="5" class="muted">暂无骑手资料</td></tr>`;
+      }
+    }
+
+    async function patchRiderRegistration(id, body, button, successMessage) {
+      setButtonBusy(button, true);
+      try {
+        const response = await fetch(`/admin/rider-registrations/${id}?key=${keyParam()}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        const updated = await response.json();
+        const index = state.rider_registrations.findIndex(item => item.id === updated.id);
+        if (index >= 0) {
+          state.rider_registrations[index] = updated;
+        } else {
+          state.rider_registrations.unshift(updated);
+        }
+        render();
+        showToast(successMessage);
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "Request failed", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function approveRiderRegistration(id, button) {
+      await patchRiderRegistration(id, { status: "approved" }, button, "骑手资料已确认");
+    }
+
+    async function rejectRiderRegistration(id, button) {
+      const feedback = prompt("拒绝反馈");
+      if (feedback === null) return;
+      await patchRiderRegistration(id, { status: "rejected", admin_feedback: feedback }, button, "骑手资料已拒绝");
     }
 
     function foodOrderTableRow(order) {
@@ -5655,10 +5999,12 @@ def admin_data(key: str = Query(default="")) -> dict:
     store_applications_data = load_admin_store_applications(db_path, signed_gcs_read_url)
     food_menu_items_data = load_admin_menu_items(db_path, signed_gcs_read_url)
     food_orders_data = load_admin_food_orders(db_path, signed_gcs_read_url)
+    rider_registrations_data = load_admin_rider_registrations()
     coupons_data = [coupon.model_dump(mode="json") for coupon in load_coupons()]
     return {
         "orders": orders_data,
         "accounts": accounts_data,
+        "rider_registrations": rider_registrations_data,
         "messages": messages_data,
         "payments": payments_data,
         "store_applications": store_applications_data,
@@ -5667,6 +6013,16 @@ def admin_data(key: str = Query(default="")) -> dict:
         "coupons": coupons_data,
         "order_hours": order_hours_status(),
     }
+
+
+@app.patch("/admin/rider-registrations/{registration_id}", response_model=RiderRegistrationResponse)
+def admin_update_rider_registration(
+    registration_id: str,
+    request: AdminUpdateRiderRegistrationRequest,
+    key: str = Query(default=""),
+) -> RiderRegistrationResponse:
+    require_admin_key(key)
+    return update_rider_registration_admin(registration_id, request)
 
 
 @app.patch("/admin/config/order-hours")
@@ -6010,6 +6366,27 @@ def get_account_profile(
     if profile:
         return profile
     return save_account(phone, nickname="快送用户")
+
+
+@app.get("/rider/registration", response_model=RiderRegistrationResponse)
+def get_rider_registration(
+    authorization: str | None = Header(default=None),
+    x_blink_app_role: str | None = Header(default=None, alias="X-Blink-App-Role"),
+) -> RiderRegistrationResponse:
+    phone = require_account_phone(authorization)
+    mark_account_app_role(phone, x_blink_app_role)
+    return load_rider_registration(phone, signed_gcs_read_url)
+
+
+@app.post("/rider/registration", response_model=RiderRegistrationResponse)
+def submit_rider_registration(
+    request: RiderRegistrationRequest,
+    authorization: str | None = Header(default=None),
+    x_blink_app_role: str | None = Header(default=None, alias="X-Blink-App-Role"),
+) -> RiderRegistrationResponse:
+    phone = require_account_phone(authorization)
+    mark_account_app_role(phone, x_blink_app_role)
+    return save_rider_registration(phone, request)
 
 
 @app.post("/account/profile", response_model=UserProfile)
@@ -6561,6 +6938,7 @@ def accept_order(
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
     mark_account_app_role(rider_phone, "rider")
+    require_approved_rider_registration(rider_phone)
     process_order_timeouts()
     if rider_has_active_delivery_order(rider_phone):
         raise HTTPException(status_code=409, detail="你已有进行中订单，完成后才能接受新的订单。")
