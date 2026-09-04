@@ -1587,6 +1587,26 @@ def require_account_phone(authorization: str | None) -> str:
     return phone
 
 
+def rider_registration_is_approved(account_phone: str) -> bool:
+    with connect_db() as connection:
+        row = connection.execute(
+            """
+            SELECT status
+            FROM rider_registrations
+            WHERE account_phone = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (account_phone,),
+        ).fetchone()
+    return bool(row and row["status"] == "approved")
+
+
+def require_approved_rider_registration(account_phone: str) -> None:
+    if not rider_registration_is_approved(account_phone):
+        raise HTTPException(status_code=403, detail="请先完成 Rider Registration 并等待后台确认")
+
+
 app.include_router(
     create_food_router(
         db_path,
@@ -2913,26 +2933,6 @@ def update_rider_registration_admin(
             f"请重新填写拒绝事项：{registration.admin_feedback or ''}",
         )
     return registration
-
-
-def rider_registration_is_approved(account_phone: str) -> bool:
-    with connect_db() as connection:
-        row = connection.execute(
-            """
-            SELECT status
-            FROM rider_registrations
-            WHERE account_phone = ?
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            (account_phone,),
-        ).fetchone()
-    return bool(row and row["status"] == "approved")
-
-
-def require_approved_rider_registration(account_phone: str) -> None:
-    if not rider_registration_is_approved(account_phone):
-        raise HTTPException(status_code=403, detail="请先完成 Rider Registration 并等待后台确认")
 
 
 def load_admin_chat_messages(limit: int = 1000) -> list[dict]:
