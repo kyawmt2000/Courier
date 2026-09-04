@@ -223,6 +223,12 @@ class FoodStoreApplicationResponse(BaseModel):
     rejection_reason: str | None = None
     reviewed_at: str | None = None
     created_at: str
+    is_temporarily_closed: bool = False
+    deleted_at: str | None = None
+
+
+class UpdateFoodStoreTemporaryClosureRequest(BaseModel):
+    is_closed: bool
 
 
 class AdminUpdateFoodStoreApplicationRequest(BaseModel):
@@ -505,6 +511,8 @@ def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
     payload.setdefault("menu_urls", [])
     payload.setdefault("store_city", "")
     payload.setdefault("store_township", "")
+    payload.setdefault("is_temporarily_closed", False)
+    payload.setdefault("deleted_at", None)
     payload["status"] = row["status"]
     payload["rejection_reason"] = row["rejection_reason"]
     payload["reviewed_at"] = row["reviewed_at"]
@@ -641,7 +649,22 @@ def load_admin_store_applications(db_path: Path, sign_url: SignUrl | None = None
             """
             SELECT payload, status, rejection_reason, reviewed_at
             FROM food_store_applications
+            WHERE json_extract(payload, '$.deleted_at') IS NULL
             ORDER BY created_at DESC
+            """
+        ).fetchall()
+    return [_signed_application(_application_from_row(row), sign_url).model_dump(mode="json") for row in rows]
+
+
+def load_admin_deleted_store_applications(db_path: Path, sign_url: SignUrl | None = None) -> list[dict]:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT payload, status, rejection_reason, reviewed_at
+            FROM food_store_applications
+            WHERE json_extract(payload, '$.deleted_at') IS NOT NULL
+            ORDER BY json_extract(payload, '$.deleted_at') DESC
             """
         ).fetchall()
     return [_signed_application(_application_from_row(row), sign_url).model_dump(mode="json") for row in rows]
@@ -1122,6 +1145,7 @@ def create_food_router(
                 FROM food_store_applications store
                 LEFT JOIN food_menu_items item ON item.restaurant_id = store.id
                 WHERE store.status = 'confirmed'
+                  AND json_extract(store.payload, '$.deleted_at') IS NULL
                   AND EXISTS (
                       SELECT 1
                       FROM food_menu_items item
@@ -1149,7 +1173,7 @@ def create_food_router(
                     description=description,
                     store_city=payload.get("store_city") or "",
                     image_url=sign_url(image_url) if sign_url else image_url,
-                    is_open=_is_restaurant_open(business_hours_open, business_hours_close),
+                    is_open=not bool(payload.get("is_temporarily_closed")) and _is_restaurant_open(business_hours_open, business_hours_close),
                     business_hours_open=business_hours_open,
                     business_hours_close=business_hours_close,
                     discount_percent=int(row["discount_percent"] or 0),
@@ -1714,6 +1738,7 @@ def create_food_router(
                 SELECT payload, status, rejection_reason, reviewed_at
                 FROM food_store_applications
                 WHERE user_phone = ?
+                  AND json_extract(payload, '$.deleted_at') IS NULL
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
@@ -1730,6 +1755,7 @@ def create_food_router(
                 SELECT payload, status, rejection_reason, reviewed_at
                 FROM food_store_applications
                 WHERE user_phone = ?
+                  AND json_extract(payload, '$.deleted_at') IS NULL
                 ORDER BY created_at DESC
                 """,
                 (user_phone,),
@@ -1749,6 +1775,7 @@ def create_food_router(
                 SELECT payload, status, rejection_reason, reviewed_at
                 FROM food_store_applications
                 WHERE id = ? AND user_phone = ?
+                  AND json_extract(payload, '$.deleted_at') IS NULL
                 LIMIT 1
                 """,
                 (application_id, user_phone),
@@ -1759,6 +1786,7 @@ def create_food_router(
                 SELECT payload, status, rejection_reason, reviewed_at
                 FROM food_store_applications
                 WHERE user_phone = ?
+                  AND json_extract(payload, '$.deleted_at') IS NULL
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
@@ -1849,6 +1877,85 @@ def create_food_router(
             )
         return _signed_application(application, sign_url)
 
+    def _update_my_store_application_payload(
+        connection: sqlite3.Connection,
+        *,
+        application_id: str,
+        user_phone: str,
+        updates: dict[str, object],
+    ) -> FoodStoreApplicationResponse:
+        row = connection.execute(
+            """
+            SELECT payload, status, rejection_reason, reviewed_at
+            FROM food_store_applications
+            WHERE id = ? AND user_phone = ?
+            LIMIT 1
+            """,
+            (application_id, user_phone),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="没有店铺资料")
+        application = _application_from_row(row)
+        if application.status != "confirmed":
+            raise HTTPException(status_code=400, detail="店铺审核确认后才能操作")
+        payload = application.model_dump(mode="json")
+        payload.update(updates)
+        updated = FoodStoreApplicationResponse(**payload)
+        application_payload = json.dumps(updated.model_dump(mode="json"), ensure_ascii=False)
+        connection.execute(
+            """
+            UPDATE food_store_applications
+            SET payload = ?
+            WHERE id = ? AND user_phone = ?
+            """,
+            (application_payload, application_id, user_phone),
+        )
+        connection.execute(
+            """
+            UPDATE food_restaurants
+            SET is_open = ?, payload = ?
+            WHERE id = ?
+            """,
+            (
+                0 if updated.is_temporarily_closed or updated.deleted_at else 1,
+                application_payload,
+                application_id,
+            ),
+        )
+        return updated
+
+    @router.patch("/stores/my-applications/{application_id}/temporary-closure", response_model=FoodStoreApplicationResponse)
+    def update_my_store_temporary_closure(
+        application_id: str,
+        request: UpdateFoodStoreTemporaryClosureRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodStoreApplicationResponse:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            application = _update_my_store_application_payload(
+                connection,
+                application_id=application_id,
+                user_phone=user_phone,
+                updates={"is_temporarily_closed": request.is_closed},
+            )
+        return _signed_application(application, sign_url)
+
+    @router.delete("/stores/my-applications/{application_id}", response_model=FoodStoreApplicationResponse)
+    def delete_my_store_application(
+        application_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> FoodStoreApplicationResponse:
+        user_phone = require_account_phone(authorization)
+        deleted_at = datetime.now(timezone.utc).isoformat()
+        with connect_db() as connection:
+            application = _update_my_store_application_payload(
+                connection,
+                application_id=application_id,
+                user_phone=user_phone,
+                updates={"deleted_at": deleted_at, "is_temporarily_closed": True},
+            )
+        return _signed_application(application, sign_url)
+
     @router.post("/orders", response_model=FoodOrderResponse)
     def create_food_order(
         request: CreateFoodOrderRequest,
@@ -1881,12 +1988,15 @@ def create_food_router(
                 SELECT payload
                 FROM food_store_applications
                 WHERE id = ? AND status = 'confirmed'
+                  AND json_extract(payload, '$.deleted_at') IS NULL
                 """,
                 (request.restaurant_id,),
             ).fetchone()
             if not restaurant_row:
                 raise HTTPException(status_code=404, detail="餐厅不存在")
             restaurant_payload = json.loads(restaurant_row["payload"] or "{}")
+            if bool(restaurant_payload.get("is_temporarily_closed")):
+                raise HTTPException(status_code=400, detail="店铺已打烊，暂时不能下单")
             open_text = _normalize_business_hour(restaurant_payload.get("business_hours_open") or "09:00", "09:00")
             close_text = _normalize_business_hour(restaurant_payload.get("business_hours_close") or "21:00", "21:00")
             if not _is_restaurant_open(open_text, close_text):
