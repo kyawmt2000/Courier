@@ -3904,6 +3904,13 @@ ADMIN_HTML = r'''
         : `<span class="muted">${escapeHtml(title)} 未上传</span>`;
     }
 
+    function riderRegistrationActions(item) {
+      return `
+        ${item.status !== "approved" ? `<button onclick="approveRiderRegistration('${item.id}', this)">通过</button>` : ""}
+        <button class="danger" onclick="rejectRiderRegistration('${item.id}', this)">拒绝</button>
+      `;
+    }
+
     function renderRiderRegistrations() {
       const table = document.getElementById("riderRegistrations");
       if (!table) return;
@@ -3921,8 +3928,7 @@ ADMIN_HTML = r'''
           </td>
           <td><span class="pill">${label(item.status)}</span>${item.admin_feedback ? `<br><span class="muted">${escapeHtml(item.admin_feedback)}</span>` : ""}</td>
           <td class="actions-cell">
-            ${item.status !== "approved" ? `<button onclick="approveRiderRegistration('${item.id}', this)">通过</button>` : ""}
-            <button class="danger" onclick="rejectRiderRegistration('${item.id}', this)">拒绝</button>
+            ${riderRegistrationActions(item)}
           </td>
         </tr>`).join("");
       if (!rows.length) {
@@ -4299,8 +4305,7 @@ ADMIN_HTML = r'''
               ${riderRegistrationImage(item.bicycle_photo_url, "自行车照片")}
             </span></div>
             <div class="actions">
-              ${item.status !== "approved" ? `<button onclick="approveRiderRegistration('${item.id}', this)">通过</button>` : ""}
-              <button class="danger" onclick="rejectRiderRegistration('${item.id}', this)">拒绝</button>
+              ${riderRegistrationActions(item)}
             </div>
           </div>
         </section>`;
