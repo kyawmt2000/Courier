@@ -411,6 +411,7 @@ class RiderRegistrationRequest(BaseModel):
     rider_name: str = Field(min_length=1, max_length=80)
     gender: Literal["male", "female"]
     is_disabled: bool = False
+    nrc_no: str = Field(min_length=1, max_length=80)
     avatar_url: str = Field(min_length=1)
     phone_no: str = Field(min_length=9, max_length=11)
     nrc_front_url: str = Field(min_length=1)
@@ -426,6 +427,7 @@ class RiderRegistrationResponse(BaseModel):
     rider_name: str = ""
     gender: str = ""
     is_disabled: bool = False
+    nrc_no: str = ""
     avatar_url: str
     phone_no: str
     nrc_front_url: str
@@ -781,6 +783,7 @@ def init_storage() -> None:
                 rider_name TEXT NOT NULL DEFAULT '',
                 gender TEXT NOT NULL DEFAULT '',
                 is_disabled INTEGER NOT NULL DEFAULT 0,
+                nrc_no TEXT NOT NULL DEFAULT '',
                 avatar_url TEXT NOT NULL,
                 phone_no TEXT NOT NULL,
                 nrc_front_url TEXT NOT NULL,
@@ -856,6 +859,7 @@ def init_storage() -> None:
         add_column_if_missing(connection, "rider_registrations", "rider_name", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "rider_registrations", "gender", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "rider_registrations", "is_disabled", "INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing(connection, "rider_registrations", "nrc_no", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "rider_registrations", "avatar_url", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "rider_registrations", "phone_no", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "rider_registrations", "nrc_front_url", "TEXT NOT NULL DEFAULT ''")
@@ -2804,6 +2808,7 @@ def rider_registration_from_row(
             rider_name="",
             gender="",
             is_disabled=False,
+            nrc_no="",
             avatar_url="",
             phone_no="",
             nrc_front_url="",
@@ -2877,16 +2882,17 @@ def save_rider_registration(account_phone: str, request: RiderRegistrationReques
         connection.execute(
             """
             INSERT INTO rider_registrations (
-                id, account_phone, status, rider_name, gender, is_disabled, avatar_url, phone_no, nrc_front_url, nrc_back_url,
+                id, account_phone, status, rider_name, gender, is_disabled, nrc_no, avatar_url, phone_no, nrc_front_url, nrc_back_url,
                 household_registration_url, bicycle_photo_url, address, admin_feedback,
                 created_at, updated_at, reviewed_at
             )
-            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
                 status = 'pending',
                 rider_name = excluded.rider_name,
                 gender = excluded.gender,
                 is_disabled = excluded.is_disabled,
+                nrc_no = excluded.nrc_no,
                 avatar_url = excluded.avatar_url,
                 phone_no = excluded.phone_no,
                 nrc_front_url = excluded.nrc_front_url,
@@ -2904,6 +2910,7 @@ def save_rider_registration(account_phone: str, request: RiderRegistrationReques
                 request.rider_name.strip(),
                 request.gender,
                 1 if request.is_disabled else 0,
+                request.nrc_no.strip(),
                 clean_optional_text(request.avatar_url) or "",
                 phone_no,
                 clean_optional_text(request.nrc_front_url) or "",
@@ -3947,7 +3954,7 @@ ADMIN_HTML = r'''
       table.innerHTML = rows.map(item => `
         <tr${rowClass("rider-registration", item.id)}>
           <td>${riderRegistrationImage(item.avatar_url, "骑手头像")}<br><strong>${escapeHtml(item.rider_name || item.nickname || item.account_phone || "")}</strong><br><span class="muted">${escapeHtml(item.email || item.account_phone || "")}</span></td>
-          <td><b>${escapeHtml(item.phone_no || "")}</b><br><span class="muted">性别：${escapeHtml(label(item.gender || "")) || "未填"}</span><br><span class="muted">残疾人：${item.is_disabled ? "是" : "不是"}</span><br><span class="address-cell">${escapeHtml(item.address || "")}</span><br><span class="muted">提交：${escapeHtml(new Date(item.updated_at || item.created_at).toLocaleString())}</span>${item.reviewed_at ? `<br><span class="muted">审核：${escapeHtml(new Date(item.reviewed_at).toLocaleString())}</span>` : ""}</td>
+          <td><b>${escapeHtml(item.phone_no || "")}</b><br><span class="muted">性别：${escapeHtml(label(item.gender || "")) || "未填"}</span><br><span class="muted">残疾人：${item.is_disabled ? "是" : "不是"}</span><br><span class="muted">NRC No.：${escapeHtml(item.nrc_no || "")}</span><br><span class="address-cell">${escapeHtml(item.address || "")}</span><br><span class="muted">提交：${escapeHtml(new Date(item.updated_at || item.created_at).toLocaleString())}</span>${item.reviewed_at ? `<br><span class="muted">审核：${escapeHtml(new Date(item.reviewed_at).toLocaleString())}</span>` : ""}</td>
           <td>
             ${riderRegistrationImage(item.nrc_front_url, "NRC 正面")}
             ${riderRegistrationImage(item.nrc_back_url, "NRC 反面")}
