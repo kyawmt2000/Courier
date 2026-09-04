@@ -2903,14 +2903,14 @@ def update_rider_registration_admin(
             registration.account_phone,
             f"rider-registration-approved-{registration.updated_at.isoformat()}",
             "Rider approved",
-            "恭喜你成为Blink 骑手",
+            "恭喜你成为Blink 骑手，可以开始送货啦",
         )
     else:
         create_app_notification(
             registration.account_phone,
             f"rider-registration-rejected-{registration.updated_at.isoformat()}",
             "Rider registration rejected",
-            f"请重新填写资料，{registration.admin_feedback or ''}",
+            f"请重新填写拒绝事项：{registration.admin_feedback or ''}",
         )
     return registration
 
@@ -3921,8 +3921,8 @@ ADMIN_HTML = r'''
           </td>
           <td><span class="pill">${label(item.status)}</span>${item.admin_feedback ? `<br><span class="muted">${escapeHtml(item.admin_feedback)}</span>` : ""}</td>
           <td class="actions-cell">
-            ${item.status !== "approved" ? `<button onclick="approveRiderRegistration('${item.id}', this)">确认</button>` : ""}
-            <button onclick="rejectRiderRegistration('${item.id}', this)">拒绝</button>
+            ${item.status !== "approved" ? `<button onclick="approveRiderRegistration('${item.id}', this)">通过</button>` : ""}
+            <button class="danger" onclick="rejectRiderRegistration('${item.id}', this)">拒绝</button>
           </td>
         </tr>`).join("");
       if (!rows.length) {
@@ -3959,13 +3959,18 @@ ADMIN_HTML = r'''
     }
 
     async function approveRiderRegistration(id, button) {
-      await patchRiderRegistration(id, { status: "approved" }, button, "骑手资料已确认");
+      await patchRiderRegistration(id, { status: "approved" }, button, "骑手资料已通过");
     }
 
     async function rejectRiderRegistration(id, button) {
-      const feedback = prompt("拒绝反馈");
+      const feedback = prompt("请填写拒绝理由");
       if (feedback === null) return;
-      await patchRiderRegistration(id, { status: "rejected", admin_feedback: feedback }, button, "骑手资料已拒绝");
+      const cleaned = feedback.trim();
+      if (!cleaned) {
+        showToast("拒绝时请填写拒绝理由", "error");
+        return;
+      }
+      await patchRiderRegistration(id, { status: "rejected", admin_feedback: cleaned }, button, "骑手资料已拒绝");
     }
 
     function foodOrderTableRow(order) {
@@ -4260,6 +4265,47 @@ ADMIN_HTML = r'''
         </section>`;
     }
 
+    function riderRegistrationForAccount(phone) {
+      return sortByDateDesc(
+        (state.rider_registrations || []).filter(item => item.account_phone === phone),
+        ["updated_at", "created_at"]
+      )[0] || null;
+    }
+
+    function accountRiderRegistrationPanel(phone) {
+      const item = riderRegistrationForAccount(phone);
+      if (!item) {
+        return `
+          <section class="account-panel">
+            <h3>骑手资料</h3>
+            <div class="empty">这个账号还没有提交骑手资料</div>
+          </section>`;
+      }
+      return `
+        <section class="account-panel">
+          <h3>骑手资料</h3>
+          <div class="detail">
+            <div class="row"><b>状态</b><span><span class="pill">${label(item.status)}</span>${item.admin_feedback ? `<br><span class="muted">拒绝理由：${escapeHtml(item.admin_feedback)}</span>` : ""}</span></div>
+            <div class="row"><b>账号</b><span>${displayAccount(item.account_phone, item.nickname, item.email)}</span></div>
+            <div class="row"><b>手机号</b><span>${escapeHtml(item.phone_no || "")}</span></div>
+            <div class="row"><b>住址</b><span class="address-cell">${escapeHtml(item.address || "")}</span></div>
+            <div class="row"><b>提交时间</b><span>${escapeHtml(new Date(item.updated_at || item.created_at).toLocaleString())}</span></div>
+            ${item.reviewed_at ? `<div class="row"><b>审核时间</b><span>${escapeHtml(new Date(item.reviewed_at).toLocaleString())}</span></div>` : ""}
+            <div class="row"><b>照片资料</b><span>
+              ${riderRegistrationImage(item.avatar_url, "骑手头像")}
+              ${riderRegistrationImage(item.nrc_front_url, "NRC 正面")}
+              ${riderRegistrationImage(item.nrc_back_url, "NRC 反面")}
+              ${riderRegistrationImage(item.household_registration_url, "户口资料")}
+              ${riderRegistrationImage(item.bicycle_photo_url, "自行车照片")}
+            </span></div>
+            <div class="actions">
+              ${item.status !== "approved" ? `<button onclick="approveRiderRegistration('${item.id}', this)">通过</button>` : ""}
+              <button class="danger" onclick="rejectRiderRegistration('${item.id}', this)">拒绝</button>
+            </div>
+          </div>
+        </section>`;
+    }
+
     function accountConversationTitle(conversationId, phone) {
       if (conversationId === `account:${phone}`.toLowerCase()) {
         return "Customer Service";
@@ -4382,11 +4428,14 @@ ADMIN_HTML = r'''
       const acceptedOrders = (state.orders || []).filter(order => order.rider_phone === selectedAccountPhone);
       const relatedOrders = Array.from(new Map([...placedOrders, ...acceptedOrders].map(order => [order.id, order])).values());
       const chatThreads = accountChatThreads(selectedAccountPhone, relatedOrders);
+      const riderRegistration = riderRegistrationForAccount(selectedAccountPhone);
       const panelHtml = selectedAccountPanel === "accepted"
         ? accountOrdersPanel("他接的单", acceptedOrders, "骑手")
         : selectedAccountPanel === "chat"
           ? accountChatSection(selectedAccountPhone, relatedOrders)
-          : accountOrdersPanel("他下的单", placedOrders, "发货人/用户");
+          : selectedAccountPanel === "rider-registration"
+            ? accountRiderRegistrationPanel(selectedAccountPhone)
+            : accountOrdersPanel("他下的单", placedOrders, "发货人/用户");
       container.innerHTML = `
         <section>
           <div class="row"><b>登录邮箱</b><span>${escapeHtml(accountLoginLabel(selectedAccountPhone, account?.email || ""))}</span></div>
@@ -4398,6 +4447,7 @@ ADMIN_HTML = r'''
           <div class="account-tabs">
             ${accountTabButton("placed", "他下的单", placedOrders.length)}
             ${accountTabButton("accepted", "他接的单", acceptedOrders.length)}
+            ${accountTabButton("rider-registration", "骑手资料", riderRegistration ? 1 : 0)}
             ${accountTabButton("chat", "聊天记录", chatThreads.length)}
           </div>
         </section>
