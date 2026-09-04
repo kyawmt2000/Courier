@@ -408,6 +408,9 @@ class UpdateRiderLocationRequest(BaseModel):
 
 
 class RiderRegistrationRequest(BaseModel):
+    rider_name: str = Field(min_length=1, max_length=80)
+    gender: Literal["male", "female"]
+    is_disabled: bool = False
     avatar_url: str = Field(min_length=1)
     phone_no: str = Field(min_length=9, max_length=11)
     nrc_front_url: str = Field(min_length=1)
@@ -420,6 +423,9 @@ class RiderRegistrationRequest(BaseModel):
 class RiderRegistrationResponse(BaseModel):
     id: str
     account_phone: str
+    rider_name: str = ""
+    gender: str = ""
+    is_disabled: bool = False
     avatar_url: str
     phone_no: str
     nrc_front_url: str
@@ -772,6 +778,9 @@ def init_storage() -> None:
                 id TEXT PRIMARY KEY,
                 account_phone TEXT NOT NULL,
                 status TEXT NOT NULL,
+                rider_name TEXT NOT NULL DEFAULT '',
+                gender TEXT NOT NULL DEFAULT '',
+                is_disabled INTEGER NOT NULL DEFAULT 0,
                 avatar_url TEXT NOT NULL,
                 phone_no TEXT NOT NULL,
                 nrc_front_url TEXT NOT NULL,
@@ -844,6 +853,9 @@ def init_storage() -> None:
         add_column_if_missing(connection, "app_notifications", "created_at", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "rider_registrations", "account_phone", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "rider_registrations", "status", "TEXT NOT NULL DEFAULT 'pending'")
+        add_column_if_missing(connection, "rider_registrations", "rider_name", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "gender", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(connection, "rider_registrations", "is_disabled", "INTEGER NOT NULL DEFAULT 0")
         add_column_if_missing(connection, "rider_registrations", "avatar_url", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "rider_registrations", "phone_no", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "rider_registrations", "nrc_front_url", "TEXT NOT NULL DEFAULT ''")
@@ -1602,9 +1614,11 @@ def rider_registration_is_approved(account_phone: str) -> bool:
     return bool(row and row["status"] == "approved")
 
 
-def require_approved_rider_registration(account_phone: str) -> None:
-    if not rider_registration_is_approved(account_phone):
+def require_approved_rider_registration(account_phone: str) -> RiderRegistrationResponse:
+    registration = load_rider_registration(account_phone)
+    if registration.status != "approved":
         raise HTTPException(status_code=403, detail="请先完成 Rider Registration 并等待后台确认")
+    return registration
 
 
 app.include_router(
@@ -2787,6 +2801,9 @@ def rider_registration_from_row(
         return RiderRegistrationResponse(
             id="",
             account_phone="",
+            rider_name="",
+            gender="",
+            is_disabled=False,
             avatar_url="",
             phone_no="",
             nrc_front_url="",
@@ -2860,13 +2877,16 @@ def save_rider_registration(account_phone: str, request: RiderRegistrationReques
         connection.execute(
             """
             INSERT INTO rider_registrations (
-                id, account_phone, status, avatar_url, phone_no, nrc_front_url, nrc_back_url,
+                id, account_phone, status, rider_name, gender, is_disabled, avatar_url, phone_no, nrc_front_url, nrc_back_url,
                 household_registration_url, bicycle_photo_url, address, admin_feedback,
                 created_at, updated_at, reviewed_at
             )
-            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
                 status = 'pending',
+                rider_name = excluded.rider_name,
+                gender = excluded.gender,
+                is_disabled = excluded.is_disabled,
                 avatar_url = excluded.avatar_url,
                 phone_no = excluded.phone_no,
                 nrc_front_url = excluded.nrc_front_url,
@@ -2881,6 +2901,9 @@ def save_rider_registration(account_phone: str, request: RiderRegistrationReques
             (
                 registration_id,
                 account_phone,
+                request.rider_name.strip(),
+                request.gender,
+                1 if request.is_disabled else 0,
                 clean_optional_text(request.avatar_url) or "",
                 phone_no,
                 clean_optional_text(request.nrc_front_url) or "",
@@ -3168,7 +3191,7 @@ ADMIN_HTML = r'''
     <section id="page-rider-registrations" class="page">
       <h2>骑手资料</h2>
       <table>
-        <thead><tr><th>骑手</th><th>手机号/住址</th><th>照片资料</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th>骑手</th><th>资料</th><th>照片资料</th><th>状态</th><th>操作</th></tr></thead>
         <tbody id="riderRegistrations"></tbody>
       </table>
     </section>
@@ -3305,7 +3328,8 @@ ADMIN_HTML = r'''
       cod: "货到付款", prepaid: "货费已付款",
       not_required: "无需", unpaid: "未付", pending: "待确认", confirmed: "已确认", rejected: "已拒绝",
       paid_to_user: "已付用户", paid_to_rider: "已付骑手",
-      food: "For Food", parcel: "For Parcel", both: "Both"
+      food: "For Food", parcel: "For Parcel", both: "Both",
+      male: "Male", female: "Female"
     };
 
     function keyParam() { return encodeURIComponent(document.getElementById("key").value); }
@@ -3911,6 +3935,10 @@ ADMIN_HTML = r'''
       `;
     }
 
+    function riderRegistrationApprovalLabel(item) {
+      return item.status === "approved" ? "通过" : "没通过";
+    }
+
     function renderRiderRegistrations() {
       const table = document.getElementById("riderRegistrations");
       if (!table) return;
@@ -3918,15 +3946,15 @@ ADMIN_HTML = r'''
       const rows = sortByDateDesc((state.rider_registrations || []).filter(item => JSON.stringify(item).toLowerCase().includes(q)), ["updated_at", "created_at"]);
       table.innerHTML = rows.map(item => `
         <tr${rowClass("rider-registration", item.id)}>
-          <td>${riderRegistrationImage(item.avatar_url, "骑手头像")}<br><strong>${escapeHtml(item.nickname || item.account_phone || "")}</strong><br><span class="muted">${escapeHtml(item.email || item.account_phone || "")}</span></td>
-          <td><b>${escapeHtml(item.phone_no || "")}</b><br><span class="address-cell">${escapeHtml(item.address || "")}</span><br><span class="muted">提交：${escapeHtml(new Date(item.updated_at || item.created_at).toLocaleString())}</span>${item.reviewed_at ? `<br><span class="muted">审核：${escapeHtml(new Date(item.reviewed_at).toLocaleString())}</span>` : ""}</td>
+          <td>${riderRegistrationImage(item.avatar_url, "骑手头像")}<br><strong>${escapeHtml(item.rider_name || item.nickname || item.account_phone || "")}</strong><br><span class="muted">${escapeHtml(item.email || item.account_phone || "")}</span></td>
+          <td><b>${escapeHtml(item.phone_no || "")}</b><br><span class="muted">性别：${escapeHtml(label(item.gender || "")) || "未填"}</span><br><span class="muted">残疾人：${item.is_disabled ? "是" : "不是"}</span><br><span class="address-cell">${escapeHtml(item.address || "")}</span><br><span class="muted">提交：${escapeHtml(new Date(item.updated_at || item.created_at).toLocaleString())}</span>${item.reviewed_at ? `<br><span class="muted">审核：${escapeHtml(new Date(item.reviewed_at).toLocaleString())}</span>` : ""}</td>
           <td>
             ${riderRegistrationImage(item.nrc_front_url, "NRC 正面")}
             ${riderRegistrationImage(item.nrc_back_url, "NRC 反面")}
             ${riderRegistrationImage(item.household_registration_url, "户口资料")}
-            ${riderRegistrationImage(item.bicycle_photo_url, "自行车照片")}
+            ${riderRegistrationImage(item.bicycle_photo_url, "Rider & Bicycle")}
           </td>
-          <td><span class="pill">${label(item.status)}</span>${item.admin_feedback ? `<br><span class="muted">${escapeHtml(item.admin_feedback)}</span>` : ""}</td>
+          <td><span class="pill">${riderRegistrationApprovalLabel(item)}</span>${item.admin_feedback ? `<br><span class="muted">${escapeHtml(item.admin_feedback)}</span>` : ""}</td>
           <td class="actions-cell">
             ${riderRegistrationActions(item)}
           </td>
@@ -4271,46 +4299,6 @@ ADMIN_HTML = r'''
         </section>`;
     }
 
-    function riderRegistrationForAccount(phone) {
-      return sortByDateDesc(
-        (state.rider_registrations || []).filter(item => item.account_phone === phone),
-        ["updated_at", "created_at"]
-      )[0] || null;
-    }
-
-    function accountRiderRegistrationPanel(phone) {
-      const item = riderRegistrationForAccount(phone);
-      if (!item) {
-        return `
-          <section class="account-panel">
-            <h3>骑手资料</h3>
-            <div class="empty">这个账号还没有提交骑手资料</div>
-          </section>`;
-      }
-      return `
-        <section class="account-panel">
-          <h3>骑手资料</h3>
-          <div class="detail">
-            <div class="row"><b>状态</b><span><span class="pill">${label(item.status)}</span>${item.admin_feedback ? `<br><span class="muted">拒绝理由：${escapeHtml(item.admin_feedback)}</span>` : ""}</span></div>
-            <div class="row"><b>账号</b><span>${displayAccount(item.account_phone, item.nickname, item.email)}</span></div>
-            <div class="row"><b>手机号</b><span>${escapeHtml(item.phone_no || "")}</span></div>
-            <div class="row"><b>住址</b><span class="address-cell">${escapeHtml(item.address || "")}</span></div>
-            <div class="row"><b>提交时间</b><span>${escapeHtml(new Date(item.updated_at || item.created_at).toLocaleString())}</span></div>
-            ${item.reviewed_at ? `<div class="row"><b>审核时间</b><span>${escapeHtml(new Date(item.reviewed_at).toLocaleString())}</span></div>` : ""}
-            <div class="row"><b>照片资料</b><span>
-              ${riderRegistrationImage(item.avatar_url, "骑手头像")}
-              ${riderRegistrationImage(item.nrc_front_url, "NRC 正面")}
-              ${riderRegistrationImage(item.nrc_back_url, "NRC 反面")}
-              ${riderRegistrationImage(item.household_registration_url, "户口资料")}
-              ${riderRegistrationImage(item.bicycle_photo_url, "自行车照片")}
-            </span></div>
-            <div class="actions">
-              ${riderRegistrationActions(item)}
-            </div>
-          </div>
-        </section>`;
-    }
-
     function accountConversationTitle(conversationId, phone) {
       if (conversationId === `account:${phone}`.toLowerCase()) {
         return "Customer Service";
@@ -4433,14 +4421,11 @@ ADMIN_HTML = r'''
       const acceptedOrders = (state.orders || []).filter(order => order.rider_phone === selectedAccountPhone);
       const relatedOrders = Array.from(new Map([...placedOrders, ...acceptedOrders].map(order => [order.id, order])).values());
       const chatThreads = accountChatThreads(selectedAccountPhone, relatedOrders);
-      const riderRegistration = riderRegistrationForAccount(selectedAccountPhone);
       const panelHtml = selectedAccountPanel === "accepted"
         ? accountOrdersPanel("他接的单", acceptedOrders, "骑手")
         : selectedAccountPanel === "chat"
           ? accountChatSection(selectedAccountPhone, relatedOrders)
-          : selectedAccountPanel === "rider-registration"
-            ? accountRiderRegistrationPanel(selectedAccountPhone)
-            : accountOrdersPanel("他下的单", placedOrders, "发货人/用户");
+          : accountOrdersPanel("他下的单", placedOrders, "发货人/用户");
       container.innerHTML = `
         <section>
           <div class="row"><b>登录邮箱</b><span>${escapeHtml(accountLoginLabel(selectedAccountPhone, account?.email || ""))}</span></div>
@@ -4452,7 +4437,6 @@ ADMIN_HTML = r'''
           <div class="account-tabs">
             ${accountTabButton("placed", "他下的单", placedOrders.length)}
             ${accountTabButton("accepted", "他接的单", acceptedOrders.length)}
-            ${accountTabButton("rider-registration", "骑手资料", riderRegistration ? 1 : 0)}
             ${accountTabButton("chat", "聊天记录", chatThreads.length)}
           </div>
         </section>
@@ -6994,7 +6978,7 @@ def accept_order(
 ) -> OrderResponse:
     rider_phone = require_account_phone(authorization)
     mark_account_app_role(rider_phone, "rider")
-    require_approved_rider_registration(rider_phone)
+    rider_registration = require_approved_rider_registration(rider_phone)
     process_order_timeouts()
     if rider_has_active_delivery_order(rider_phone):
         raise HTTPException(status_code=409, detail="你已有进行中订单，完成后才能接受新的订单。")
@@ -7009,8 +6993,8 @@ def accept_order(
             raise HTTPException(status_code=403, detail="平台确认用户送货费付款后骑手才能接单")
         updates: dict[str, object] = {
             "status": "accepted",
-            "rider_name": request.rider_name,
-            "rider_phone": clean_optional_text(request.rider_phone),
+            "rider_name": rider_registration.rider_name.strip() or request.rider_name,
+            "rider_phone": clean_optional_text(rider_registration.phone_no) or clean_optional_text(request.rider_phone),
             "accepted_at": datetime.now(timezone.utc),
             "pickup_started_at": None,
             "delivery_started_at": None,
