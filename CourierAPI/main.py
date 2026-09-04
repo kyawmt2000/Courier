@@ -35,6 +35,7 @@ from food import (
     delete_admin_store_application,
     init_food_storage,
     load_admin_food_orders,
+    load_admin_deleted_store_applications,
     load_admin_menu_items,
     load_admin_store_applications,
     update_admin_food_order,
@@ -3145,6 +3146,7 @@ ADMIN_HTML = r'''
       <button id="tab-rider-registrations" class="tab" onclick="showPage('rider-registrations')">骑手资料</button>
       <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
       <button id="tab-stores" class="tab" onclick="showPage('stores')">店铺注册</button>
+      <button id="tab-deleted-stores" class="tab" onclick="showPage('deleted-stores')">删除餐厅</button>
       <button id="tab-menu-items" class="tab" onclick="showPage('menu-items')">菜品审核</button>
       <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
       <button id="tab-coupons" class="tab" onclick="showPage('coupons')">Coupons</button>
@@ -3248,6 +3250,13 @@ ADMIN_HTML = r'''
         <tbody id="storeApplications"></tbody>
       </table>
     </section>
+    <section id="page-deleted-stores" class="page">
+      <h2>删除餐厅</h2>
+      <table>
+        <thead><tr><th>店铺</th><th>负责人</th><th>经营/地址</th><th>证件/收款</th><th>照片</th><th>删除时间</th></tr></thead>
+        <tbody id="deletedStoreApplications"></tbody>
+      </table>
+    </section>
     <section id="page-menu-items" class="page">
       <h2>菜品审核</h2>
       <table>
@@ -3299,7 +3308,7 @@ ADMIN_HTML = r'''
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    let state = { orders: [], food_orders: [], accounts: [], rider_registrations: [], messages: [], payments: [], store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
+    let state = { orders: [], food_orders: [], accounts: [], rider_registrations: [], messages: [], payments: [], store_applications: [], deleted_store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
     let currentPage = "payments";
     let tabBadges = { payments: 0, orders: 0, accounts: 0, "rider-registrations": 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
     let selectedServiceConversationId = null;
@@ -3323,6 +3332,7 @@ ADMIN_HTML = r'''
       "rider-registrations": "骑手资料",
       service: "Customer Service",
       stores: "店铺注册",
+      "deleted-stores": "删除餐厅",
       "menu-items": "菜品审核",
       settlements: "结算",
       coupons: "Coupons",
@@ -3910,6 +3920,7 @@ ADMIN_HTML = r'''
         document.getElementById("settlements").innerHTML = `<tr><td colspan="7" class="muted">暂无结算记录</td></tr>`;
       }
       renderStoreApplications();
+      renderDeletedStoreApplications();
       renderFoodMenuItems();
       renderCoupons();
       renderServiceChat();
@@ -4092,6 +4103,60 @@ ADMIN_HTML = r'''
       }).join("");
       if (!applications.length) {
         table.innerHTML = `<tr><td colspan="7" class="muted">暂无店铺注册</td></tr>`;
+      }
+    }
+
+    function renderDeletedStoreApplications() {
+      const table = document.getElementById("deletedStoreApplications");
+      if (!table) return;
+      const q = document.getElementById("q").value.toLowerCase();
+      const applications = sortByDateDesc(
+        (state.deleted_store_applications || []).filter(item => JSON.stringify(item).toLowerCase().includes(q)),
+        ["deleted_at", "created_at"]
+      );
+      table.innerHTML = applications.map(application => {
+        const licenses = (application.license_urls || []).slice(0, 3).map(url =>
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="营业执照"></a>`
+        ).join("");
+        const menus = (application.menu_urls || []).slice(0, 10).map(url =>
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="菜单"></a>`
+        ).join("");
+        const photos = (application.photo_urls || []).slice(0, 10).map(url =>
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(url)}" alt="店铺照片"></a>`
+        ).join("");
+        const nrcFront = application.owner_nrc_front_url
+          ? `<a href="${escapeHtml(application.owner_nrc_front_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.owner_nrc_front_url)}" alt="负责人NRC正面"></a>`
+          : `<span class="muted">未上传正面</span>`;
+        const nrcBack = application.owner_nrc_back_url
+          ? `<a href="${escapeHtml(application.owner_nrc_back_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.owner_nrc_back_url)}" alt="负责人NRC反面"></a>`
+          : `<span class="muted">未上传反面</span>`;
+        const nrc = `<div><span class="muted">正面</span><br>${nrcFront}</div><div style="margin-top:4px;"><span class="muted">反面</span><br>${nrcBack}</div>`;
+        const payment = application.payment_qr_url
+          ? `<a href="${escapeHtml(application.payment_qr_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.payment_qr_url)}" alt="收款码"></a>`
+          : `<span class="muted">${escapeHtml(application.bank_account_name || "未填写名字")}<br>${escapeHtml(application.bank_account_number || application.bank_account || "未填写账号")}</span>`;
+        const signatureDishImage = application.signature_dish_image_url
+          ? `<a href="${escapeHtml(application.signature_dish_image_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(application.signature_dish_image_url)}" alt="招牌菜图片"></a>`
+          : `<span class="muted">未上传</span>`;
+        const restaurantTypes = (application.restaurant_types || []).join(" / ");
+        const deletedAt = application.deleted_at ? new Date(application.deleted_at).toLocaleString() : "";
+        return `
+          <tr>
+            <td><strong>${escapeHtml(application.store_name)}</strong><br><span class="muted">${escapeHtml(new Date(application.created_at).toLocaleString())}</span></td>
+            <td>${escapeHtml(application.owner_name)}<br><span class="muted">${escapeHtml(application.primary_phone)} / ${escapeHtml(application.secondary_phone)}</span><br>${displayAccount(application.user_phone)}</td>
+            <td>${escapeHtml((application.service_types || []).join(" / "))}${restaurantTypes ? `<br><span class="muted">${escapeHtml(restaurantTypes)}</span>` : ""}<br><span class="muted">${escapeHtml(application.store_address || "未填写地址")}</span>${application.store_location ? `<br><span class="muted">Location: ${escapeHtml(application.store_location)}</span>` : ""}</td>
+            <td>
+              <div><span class="muted">营业执照</span><br>${licenses || `<span class="muted">未上传</span>`}</div>
+              <div style="margin-top:6px;"><span class="muted">负责人NRC</span><br>${nrc}</div>
+              <div style="margin-top:6px;"><span class="muted">收款资料</span><br>${payment}</div>
+              <div style="margin-top:6px;"><span class="muted">招牌菜图片</span><br>${signatureDishImage}</div>
+              <div style="margin-top:6px;"><span class="muted">菜单</span><br>${menus || `<span class="muted">未上传</span>`}</div>
+            </td>
+            <td>${photos || `<span class="muted">无照片</span>`}</td>
+            <td><span class="pill">已删除</span><br><span class="muted">${escapeHtml(deletedAt)}</span></td>
+          </tr>`;
+      }).join("");
+      if (!applications.length) {
+        table.innerHTML = `<tr><td colspan="6" class="muted">暂无删除餐厅</td></tr>`;
       }
     }
 
@@ -6044,6 +6109,7 @@ def admin_data(key: str = Query(default="")) -> dict:
     messages_data = load_admin_chat_messages()
     payments_data = load_admin_prepaid_payments()
     store_applications_data = load_admin_store_applications(db_path, signed_gcs_read_url)
+    deleted_store_applications_data = load_admin_deleted_store_applications(db_path, signed_gcs_read_url)
     food_menu_items_data = load_admin_menu_items(db_path, signed_gcs_read_url)
     food_orders_data = load_admin_food_orders(db_path, signed_gcs_read_url)
     rider_registrations_data = load_admin_rider_registrations()
@@ -6055,6 +6121,7 @@ def admin_data(key: str = Query(default="")) -> dict:
         "messages": messages_data,
         "payments": payments_data,
         "store_applications": store_applications_data,
+        "deleted_store_applications": deleted_store_applications_data,
         "food_menu_items": food_menu_items_data,
         "food_orders": food_orders_data,
         "coupons": coupons_data,
