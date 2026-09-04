@@ -1736,13 +1736,24 @@ def create_food_router(
             ).fetchall()
         return [_signed_application(_application_from_row(row), sign_url) for row in rows]
 
-    @router.put("/stores/my-application", response_model=FoodStoreApplicationResponse)
-    def update_my_store_application(
+    def _update_my_store_application(
+        connection: sqlite3.Connection,
         request: FoodStoreApplicationRequest,
-        authorization: str | None = Header(default=None),
+        *,
+        user_phone: str,
+        application_id: str | None,
     ) -> FoodStoreApplicationResponse:
-        user_phone = require_account_phone(authorization)
-        with connect_db() as connection:
+        if application_id:
+            row = connection.execute(
+                """
+                SELECT payload, status, rejection_reason, reviewed_at
+                FROM food_store_applications
+                WHERE id = ? AND user_phone = ?
+                LIMIT 1
+                """,
+                (application_id, user_phone),
+            ).fetchone()
+        else:
             row = connection.execute(
                 """
                 SELECT payload, status, rejection_reason, reviewed_at
@@ -1753,35 +1764,88 @@ def create_food_router(
                 """,
                 (user_phone,),
             ).fetchone()
-            if row is None:
-                raise HTTPException(status_code=404, detail="没有店铺资料")
-            existing = _application_from_row(row)
-            if existing.status not in {"confirmed", "rejected"}:
-                raise HTTPException(status_code=400, detail="店铺资料审核中，暂时不能修改")
-            application = _build_store_application(
-                request,
-                application_id=existing.id,
-                user_phone=user_phone,
-                status=existing.status,
-                rejection_reason=existing.rejection_reason,
-                reviewed_at=existing.reviewed_at,
-                created_at=existing.created_at,
-            )
+        if row is None:
+            raise HTTPException(status_code=404, detail="没有店铺资料")
+        existing = _application_from_row(row)
+        if existing.status not in {"confirmed", "rejected"}:
+            raise HTTPException(status_code=400, detail="店铺资料审核中，暂时不能修改")
+        application = _build_store_application(
+            request,
+            application_id=existing.id,
+            user_phone=user_phone,
+            status=existing.status,
+            rejection_reason=existing.rejection_reason,
+            reviewed_at=existing.reviewed_at,
+            created_at=existing.created_at,
+        )
+        application_payload = json.dumps(application.model_dump(mode="json"), ensure_ascii=False)
+        connection.execute(
+            """
+            UPDATE food_store_applications
+            SET store_name = ?, owner_name = ?, primary_phone = ?,
+                secondary_phone = ?, payload = ?
+            WHERE id = ? AND user_phone = ?
+            """,
+            (
+                application.store_name,
+                application.owner_name,
+                application.primary_phone,
+                application.secondary_phone,
+                application_payload,
+                application.id,
+                user_phone,
+            ),
+        )
+        if application.status == "confirmed":
+            service_types = application.service_types or []
+            restaurant_types = application.restaurant_types or []
+            image_url = str(application.signature_dish_image_url or "")
+            if not image_url and application.photo_urls:
+                image_url = str(application.photo_urls[0])
             connection.execute(
                 """
-                UPDATE food_store_applications
-                SET store_name = ?, owner_name = ?, primary_phone = ?,
-                    secondary_phone = ?, payload = ?
+                UPDATE food_restaurants
+                SET name = ?, description = ?, image_url = ?, payload = ?
                 WHERE id = ?
                 """,
                 (
                     application.store_name,
-                    application.owner_name,
-                    application.primary_phone,
-                    application.secondary_phone,
-                    json.dumps(application.model_dump(mode="json"), ensure_ascii=False),
+                    " / ".join([*service_types, *restaurant_types]),
+                    image_url,
+                    application_payload,
                     application.id,
                 ),
+            )
+        return application
+
+    @router.put("/stores/my-applications/{application_id}", response_model=FoodStoreApplicationResponse)
+    def update_my_store_application_by_id(
+        application_id: str,
+        request: FoodStoreApplicationRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodStoreApplicationResponse:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            application = _update_my_store_application(
+                connection,
+                request,
+                user_phone=user_phone,
+                application_id=application_id,
+            )
+        return _signed_application(application, sign_url)
+
+    @router.put("/stores/my-application", response_model=FoodStoreApplicationResponse)
+    def update_my_store_application(
+        request: FoodStoreApplicationRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodStoreApplicationResponse:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            application = _update_my_store_application(
+                connection,
+                request,
+                user_phone=user_phone,
+                application_id=None,
             )
         return _signed_application(application, sign_url)
 
