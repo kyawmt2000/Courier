@@ -1720,6 +1720,9 @@ def upload_folder(value: str) -> str:
         "food store signature dish": "food store signature dish",
         "food menu item": "food menu item",
         "food store payment": "food store payment",
+        "food payment": "food-payments",
+        "food payments": "food-payments",
+        "food-payments": "food-payments",
         "rider deposit": "rider deposit",
         "rider deposit proof": "rider deposit",
         "rider registration": "rider registration",
@@ -1727,7 +1730,7 @@ def upload_folder(value: str) -> str:
         "user settlement": "user settlement",
     }
     if normalized not in folders:
-        raise HTTPException(status_code=400, detail="不支持的上传文件夹")
+        raise HTTPException(status_code=400, detail="Unsupported upload folder.")
     return folders[normalized]
 
 
