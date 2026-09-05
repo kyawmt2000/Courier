@@ -1,4 +1,5 @@
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -7,9 +8,10 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Header, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
+logger = logging.getLogger("courier-api.food")
 
 
 class FoodRestaurantResponse(BaseModel):
@@ -1071,7 +1073,27 @@ def create_food_router(
         return connection
 
     def food_order_from_row(row: sqlite3.Row) -> FoodOrderResponse:
-        return FoodOrderResponse(**json.loads(row["payload"] or "{}"))
+        payload = json.loads(row["payload"] or "{}")
+        payload.setdefault("delivery_city", "")
+        payload.setdefault("delivery_township", "")
+        payload.setdefault("fulfillment_type", "delivery")
+        payload.setdefault("payment_method", "")
+        payload.setdefault("payment_status", "not_required")
+        payload.setdefault("phone_no", "")
+        payload.setdefault("secondary_phone_no", "")
+        payload.setdefault("subtotal_mmk", 0)
+        payload.setdefault("delivery_fee_mmk", 0)
+        payload.setdefault("discount_mmk", 0)
+        payload.setdefault("goods_amount", 0)
+        payload.setdefault("voucher_code", "")
+        payload.setdefault("items", [])
+        payload.setdefault("note", "")
+        payload.setdefault("restaurant_name", "")
+        payload.setdefault("restaurant_location", "")
+        payload.setdefault("restaurant_city", "")
+        payload.setdefault("restaurant_township", "")
+        payload.setdefault("rider_deposit_status", "not_required")
+        return FoodOrderResponse(**payload)
 
     def enrich_food_order_items(connection: sqlite3.Connection, order: FoodOrderResponse) -> FoodOrderResponse:
         enriched_items: list[FoodOrderItemRequest] = []
@@ -1585,7 +1607,12 @@ def create_food_router(
                 """,
                 (rider_phone,),
             ).fetchall()
-            orders = [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
+            orders: list[FoodOrderResponse] = []
+            for row in rows:
+                try:
+                    orders.append(enrich_food_order_items(connection, food_order_from_row(row)))
+                except (json.JSONDecodeError, TypeError, ValidationError):
+                    logger.exception("Skipping invalid rider food order row for rider %s", rider_phone)
             if not requested_city:
                 return orders
             return [
@@ -1624,8 +1651,8 @@ def create_food_router(
                     "status": "accepted",
                     "rider_name": rider_name,
                     "rider_phone": rider_phone,
-                    "rider_deposit_status": "unpaid",
-                    "rider_deposit_due_at": (datetime.now(timezone.utc) + RIDER_DEPOSIT_CONFIRM_WINDOW).isoformat(),
+                    "rider_deposit_status": "not_required",
+                    "rider_deposit_due_at": None,
                     "rider_deposit_submitted_at": None,
                     "rider_deposit_proof_url": None,
                     "accepted_at": datetime.now(timezone.utc).isoformat(),
@@ -1690,7 +1717,7 @@ def create_food_router(
             order = food_order_from_row(row)
             if order.rider_phone != rider_phone:
                 raise HTTPException(status_code=403, detail="只能更新自己的外卖订单")
-            if order.rider_deposit_status != "confirmed":
+            if order.rider_deposit_status not in {"not_required", "confirmed"}:
                 raise HTTPException(status_code=403, detail="平台确认骑手押金后才能开始取件配送")
             now = datetime.now(timezone.utc).isoformat()
             updates = {"status": request.status}
