@@ -31,6 +31,7 @@ from food import (
     AdminUpdateFoodMenuItemRequest,
     AdminUpdateFoodStoreApplicationRequest,
     create_food_router,
+    delete_admin_food_order,
     delete_admin_menu_item,
     delete_admin_store_application,
     init_food_storage,
@@ -2219,6 +2220,69 @@ def load_order_record(order_id: str) -> tuple[OrderResponse, str, str | None] | 
     return order_from_row(row), row["user_phone"], row["rider_phone"]
 
 
+def delete_admin_order_record(order_id: str) -> dict:
+    record = load_order_record(order_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="订单不存在")
+
+    order, user_phone, _ = record
+    image_urls = [
+        order.goods_image_url,
+        order.payment_proof_url,
+        order.rider_deposit_proof_url,
+        order.rider_settlement_qr_url,
+        order.user_settlement_qr_url,
+    ]
+
+    with connect_db() as connection:
+        payment_rows = connection.execute(
+            """
+            SELECT payload
+            FROM prepaid_payments
+            WHERE id = ?
+               OR json_extract(payload, '$.dinger_transaction_num') = ?
+               OR json_extract(payload, '$.dinger_form_token') = ?
+            """,
+            (
+                order.kpay_transaction_id or "",
+                order.kpay_transaction_id or "",
+                order.kpay_transaction_id or "",
+            ),
+        ).fetchall()
+        for row in payment_rows:
+            try:
+                payment = PrepaidPaymentResponse.model_validate_json(row["payload"])
+                image_urls.append(payment.payment_proof_url)
+            except ValidationError:
+                logger.exception("Skipping invalid prepaid payment payload while deleting order %s", order_id)
+
+        connection.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+        if order.kpay_transaction_id:
+            connection.execute(
+                """
+                DELETE FROM prepaid_payments
+                WHERE id = ?
+                   OR json_extract(payload, '$.dinger_transaction_num') = ?
+                   OR json_extract(payload, '$.dinger_form_token') = ?
+                """,
+                (order.kpay_transaction_id, order.kpay_transaction_id, order.kpay_transaction_id),
+            )
+        connection.execute(
+            "DELETE FROM delivery_promotion_redemptions WHERE order_id = ? OR payment_id = ?",
+            (order_id, order.kpay_transaction_id or ""),
+        )
+        notification_patterns = [f"%{order_id}%"]
+        if order.kpay_transaction_id:
+            notification_patterns.append(f"%{order.kpay_transaction_id}%")
+        for pattern in notification_patterns:
+            connection.execute("DELETE FROM app_notifications WHERE key LIKE ?", (pattern,))
+
+    for image_url in dict.fromkeys(url for url in image_urls if url):
+        delete_gcs_url(image_url)
+
+    return {"status": "deleted", "id": order_id, "user_phone": user_phone}
+
+
 def rider_has_active_delivery_order(rider_phone: str) -> bool:
     with connect_db() as connection:
         row = connection.execute(
@@ -3842,6 +3906,7 @@ ADMIN_HTML = r'''
             ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}', this)">${prepaid ? "确认用户付款" : "确认送货费"}</button>` : ""}
             ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}', this)">确认骑手押金</button>` : ""}
             ${canReleaseTimedOutOrder(order) ? `<button onclick="event.stopPropagation(); releaseTimedOutOrder('${order.id}', this)">释放给其他骑手</button>` : ""}
+            <button class="danger" onclick="event.stopPropagation(); deleteOrder('${order.id}', this)">删除</button>
           </td>
         </tr>`;
     }
@@ -4108,6 +4173,7 @@ ADMIN_HTML = r'''
             ${paymentStatus === "pending" ? `<button onclick="confirmFoodUserPayment('${order.id}', this)">确认付款</button><button class="danger" onclick="rejectFoodUserPayment('${order.id}', this)">拒绝付款</button>` : ""}
             ${order.rider_deposit_status === "pending" ? `<button onclick="confirmFoodRiderDeposit('${order.id}', this)">确认骑手押金</button>` : ""}
             <button onclick="saveFoodOrder('${order.id}', this)">保存</button>
+            <button class="danger" onclick="deleteFoodOrder('${order.id}', this)">删除</button>
           </td>
         </tr>`;
     }
@@ -4737,6 +4803,7 @@ ADMIN_HTML = r'''
         ${order.user_payment_status !== "confirmed" ? `<button onclick="confirmUserPayment('${order.id}', this)">确认收到送货费</button>` : ""}
         ${canReleaseTimedOutOrder(order) ? `<button onclick="releaseTimedOutOrder('${order.id}', this)">释放给其他骑手</button>` : ""}
         <button onclick="saveOrder('${order.id}', this)">保存订单状态</button>
+        <button class="danger" onclick="deleteOrder('${order.id}', this)">删除订单</button>
       `;
     }
 
@@ -4808,6 +4875,33 @@ ADMIN_HTML = r'''
       }
     }
 
+    async function deleteOrder(id, button) {
+      const order = state.orders.find(item => item.id === id);
+      const shortId = (order?.id || id).slice(0, 6).toUpperCase();
+      if (!confirm(`确定删除订单 #${shortId}？后台记录、相关付款记录和 GCS 图片都会删除。`)) return;
+      setButtonBusy(button, true, "删除中...");
+      try {
+        const response = await fetch(`/admin/orders/${id}?key=${keyParam()}`, { method: "DELETE" });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        state.orders = (state.orders || []).filter(item => item.id !== id);
+        state.payments = (state.payments || []).filter(item => item.id !== order?.kpay_transaction_id);
+        if (activeDetailId === id) {
+          activeDetailId = null;
+          document.getElementById("detailSection").classList.add("hidden");
+          document.getElementById("detail").innerHTML = "";
+        }
+        render();
+        showToast("订单已删除");
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "删除失败", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
     async function patchFoodOrder(id, body, button, successMessage) {
       setButtonBusy(button, true);
       try {
@@ -4833,6 +4927,27 @@ ADMIN_HTML = r'''
       } catch (error) {
         showToast(error.message || "Request failed", "error");
         return null;
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function deleteFoodOrder(id, button) {
+      const order = state.food_orders.find(item => item.id === id);
+      const shortId = (order?.id || id).slice(0, 6).toUpperCase();
+      if (!confirm(`确定删除外卖订单 #${shortId}？后台记录和 GCS 图片都会删除。`)) return;
+      setButtonBusy(button, true, "删除中...");
+      try {
+        const response = await fetch(`/admin/food/orders/${id}?key=${keyParam()}`, { method: "DELETE" });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        state.food_orders = (state.food_orders || []).filter(item => item.id !== id);
+        render();
+        showToast("外卖订单已删除");
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "删除失败", "error");
       } finally {
         setButtonBusy(button, false);
       }
@@ -6341,6 +6456,12 @@ def admin_update_food_order(
     return update_admin_food_order(db_path, order_id, request, signed_gcs_read_url)
 
 
+@app.delete("/admin/food/orders/{order_id}")
+def admin_delete_food_order(order_id: str, key: str = Query(default="")) -> dict:
+    require_admin_key(key)
+    return delete_admin_food_order(db_path, order_id, delete_gcs_url)
+
+
 @app.delete("/admin/food/menu-items/{menu_item_id}")
 def admin_delete_food_menu_item(menu_item_id: str, key: str = Query(default="")) -> dict:
     require_admin_key(key)
@@ -6511,6 +6632,13 @@ def admin_update_order(
     updated = order.model_copy(update=updates)
     save_order(updated, user_phone=user_phone, rider_phone=next_rider_phone)
     return order_for_response(updated, rider_phone=next_rider_phone)
+
+
+@app.delete("/admin/orders/{order_id}")
+def admin_delete_order(order_id: str, key: str = Query(default="")) -> dict:
+    require_admin_key(key)
+    process_order_timeouts()
+    return delete_admin_order_record(order_id)
 
 
 @app.post("/auth/login", response_model=LoginResponse)
