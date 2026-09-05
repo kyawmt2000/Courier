@@ -853,6 +853,34 @@ def update_admin_food_order(
         return _food_order_for_admin(connection, admin_row, sign_url)
 
 
+def delete_admin_food_order(
+    db_path: Path,
+    order_id: str,
+    delete_url: DeleteUrl | None = None,
+) -> dict:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+            (order_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="外卖订单不存在")
+
+        order = _food_order_from_payload(row["payload"])
+        image_urls = [
+            order.payment_proof_url,
+            order.rider_deposit_proof_url,
+        ]
+        connection.execute("DELETE FROM food_orders WHERE id = ?", (order_id,))
+
+    if delete_url:
+        for image_url in dict.fromkeys(url for url in image_urls if url):
+            delete_url(image_url)
+
+    return {"status": "deleted", "id": order_id}
+
+
 def update_admin_store_application(
     db_path: Path,
     application_id: str,
