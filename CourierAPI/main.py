@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives import padding as symmetric_padding
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from food import (
     AdminUpdateFoodOrderRequest,
@@ -1908,7 +1908,18 @@ def order_for_response(order: OrderResponse, rider_phone: str | None = None) -> 
 
 
 def order_from_row(row: sqlite3.Row) -> OrderResponse:
-    return OrderResponse.model_validate(json.loads(row["payload"]))
+    payload = json.loads(row["payload"] or "{}")
+    payload.setdefault("note", "")
+    payload.setdefault("delivery_fee", payload.get("price", 0))
+    payload.setdefault("platform_delivery_fee", 0)
+    payload.setdefault("rider_delivery_fee", 0)
+    payload.setdefault("payment_mode", "cod")
+    payload.setdefault("goods_amount", 0)
+    payload.setdefault("user_payment_status", "not_required")
+    payload.setdefault("rider_deposit_status", "unpaid")
+    payload.setdefault("settlement_status", "pending")
+    payload.setdefault("promotion_applied", False)
+    return OrderResponse.model_validate(payload)
 
 
 def prepaid_payment_from_row(row: sqlite3.Row) -> PrepaidPaymentResponse:
@@ -2176,12 +2187,15 @@ def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
                 """,
                 (rider_phone,),
             ).fetchall()
-    orders = [
-        order
-        for row in rows
-        for order in [order_from_row(row)]
-        if order.status != "matching" or app_data_visible_to_account(row["user_phone"], order.created_at)
-    ]
+    orders = []
+    for row in rows:
+        try:
+            order = order_from_row(row)
+        except (json.JSONDecodeError, TypeError, ValidationError):
+            logger.exception("Skipping invalid rider order row for rider %s", rider_phone)
+            continue
+        if order.status != "matching" or app_data_visible_to_account(row["user_phone"], order.created_at):
+            orders.append(order)
     return [
         order
         for order in orders
