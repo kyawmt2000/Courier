@@ -1198,7 +1198,10 @@ def create_food_router(
             order.restaurant_city,
             order.delivery_city,
         ]
-        return any(city.strip().casefold() == normalized_city for city in candidate_cities if city.strip())
+        known_cities = [city.strip().casefold() for city in candidate_cities if city.strip()]
+        if not known_cities:
+            return True
+        return any(city == normalized_city for city in known_cities)
 
     @router.get("/restaurants", response_model=list[FoodRestaurantResponse])
     def list_restaurants() -> list[FoodRestaurantResponse]:
