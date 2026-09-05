@@ -1186,6 +1186,20 @@ def create_food_router(
         if notify_user:
             notify_user(order.user_phone, f"food-order-{order.id}-{key_suffix}", title, message)
 
+    def food_order_matches_rider_city(order: FoodOrderResponse, requested_city: str) -> bool:
+        normalized_city = requested_city.strip().casefold()
+        if not normalized_city:
+            return True
+        if order.rider_phone:
+            return True
+        if order.status != "pending":
+            return False
+        candidate_cities = [
+            order.restaurant_city,
+            order.delivery_city,
+        ]
+        return any(city.strip().casefold() == normalized_city for city in candidate_cities if city.strip())
+
     @router.get("/restaurants", response_model=list[FoodRestaurantResponse])
     def list_restaurants() -> list[FoodRestaurantResponse]:
         with connect_db() as connection:
@@ -1646,11 +1660,7 @@ def create_food_router(
             return [
                 order
                 for order in orders
-                if order.rider_phone == rider_phone
-                or (
-                    order.status == "pending"
-                    and order.restaurant_city.strip().casefold() == requested_city.casefold()
-                )
+                if order.rider_phone == rider_phone or food_order_matches_rider_city(order, requested_city)
             ]
 
     @router.post("/rider/orders/{order_id}/accept", response_model=FoodOrderResponse)
