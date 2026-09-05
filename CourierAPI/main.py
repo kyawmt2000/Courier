@@ -3047,6 +3047,7 @@ ADMIN_HTML = r'''
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .chat { max-height: 360px; overflow: auto; }
     .chat img { max-width: 180px; max-height: 180px; object-fit: contain; border-radius: 8px; background: #f3f4f6; margin-top: 8px; }
+    img:not(#imagePreviewImg) { cursor: zoom-in; }
     .conversation-list { display: grid; gap: 8px; }
     .conversation-row { width: 100%; text-align: left; background: #fff; color: #111827; border: 1px solid #e5e7eb; }
     .conversation-row.active { border-color: #111827; background: #111827; color: #fff; }
@@ -3093,6 +3094,12 @@ ADMIN_HTML = r'''
     .modal-head h3 { margin: 0; font-size: 16px; }
     .modal-close { width: auto; min-width: 44px; padding: 8px 12px; background: #fff; color: #111827; border-color: #d1d5db; }
     .modal-body { padding: 18px; display: grid; gap: 14px; }
+    .image-modal { background: rgba(17, 24, 39, .74); }
+    .image-modal .modal-card { width: min(1120px, 100%); max-height: 90vh; background: #111827; color: #fff; overflow: hidden; }
+    .image-modal .modal-head { background: #111827; border-bottom-color: rgba(255,255,255,.12); }
+    .image-modal .modal-close { background: transparent; color: #fff; border-color: rgba(255,255,255,.32); }
+    .image-preview-body { padding: 14px; }
+    .image-preview-body img { display: block; width: 100%; max-height: calc(90vh - 86px); object-fit: contain; border-radius: 8px; background: #0b1220; }
     .confirm-card { width: min(360px, 100%); }
     .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
     .confirm-actions .secondary { background: #fff; color: #111827; border-color: #d1d5db; }
@@ -3111,7 +3118,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v20</span>
+    <span class="version">orders-ui-v21</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -3303,6 +3310,17 @@ ADMIN_HTML = r'''
           <button class="secondary" onclick="resolveRejectConfirmation(false)">考虑</button>
           <button onclick="resolveRejectConfirmation(true)">确认</button>
         </div>
+      </div>
+    </div>
+  </div>
+  <div id="imageModal" class="modal-backdrop image-modal" onclick="closeImagePreview()">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <h3 id="imagePreviewTitle">图片预览</h3>
+        <button class="modal-close" onclick="closeImagePreview()">关闭</button>
+      </div>
+      <div class="modal-body image-preview-body">
+        <img id="imagePreviewImg" src="" alt="图片预览">
       </div>
     </div>
   </div>
@@ -3562,6 +3580,25 @@ ADMIN_HTML = r'''
       toast.classList.add("show");
       clearTimeout(showToast.timer);
       showToast.timer = setTimeout(() => toast.classList.remove("show"), 2600);
+    }
+
+    function openImagePreview(url, title = "图片预览") {
+      if (!url) return;
+      const modal = document.getElementById("imageModal");
+      const image = document.getElementById("imagePreviewImg");
+      const heading = document.getElementById("imagePreviewTitle");
+      if (!modal || !image) return;
+      image.src = url;
+      image.alt = title || "图片预览";
+      if (heading) heading.textContent = title || "图片预览";
+      modal.classList.add("show");
+    }
+
+    function closeImagePreview() {
+      const modal = document.getElementById("imageModal");
+      const image = document.getElementById("imagePreviewImg");
+      if (modal) modal.classList.remove("show");
+      if (image) image.src = "";
     }
 
     function askRejectConfirmation(message = "确定要拒绝吗？") {
@@ -4997,8 +5034,21 @@ ADMIN_HTML = r'''
       }, 450);
     });
     document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && document.getElementById("imageModal")?.classList.contains("show")) {
+        closeImagePreview();
+        return;
+      }
       if (event.key === "Escape" && selectedAccountPhone) closeAccountModal();
     });
+    document.addEventListener("click", event => {
+      const image = event.target.closest("img");
+      if (!image || image.id === "imagePreviewImg") return;
+      const url = image.currentSrc || image.src;
+      if (!url) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openImagePreview(url, image.alt || image.title || "图片预览");
+    }, true);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && autoRefreshEnabled) loadData({ silent: true, fromAuto: true });
     });
