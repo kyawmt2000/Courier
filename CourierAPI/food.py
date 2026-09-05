@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -704,7 +705,28 @@ def load_admin_menu_items(db_path: Path, sign_url: SignUrl | None = None) -> lis
 
 
 def _food_order_from_payload(payload: str | None) -> FoodOrderResponse:
-    return FoodOrderResponse(**json.loads(payload or "{}"))
+    data = json.loads(payload or "{}")
+    data.setdefault("delivery_city", "")
+    data.setdefault("delivery_township", "")
+    data.setdefault("fulfillment_type", "delivery")
+    data.setdefault("payment_method", "")
+    data.setdefault("payment_status", "not_required")
+    data.setdefault("phone_no", "")
+    data.setdefault("secondary_phone_no", "")
+    data.setdefault("subtotal_mmk", 0)
+    data.setdefault("delivery_fee_mmk", 0)
+    data.setdefault("discount_mmk", 0)
+    data.setdefault("goods_amount", 0)
+    data.setdefault("voucher_code", "")
+    data.setdefault("items", [])
+    data.setdefault("note", "")
+    data.setdefault("restaurant_name", "")
+    data.setdefault("restaurant_location", "")
+    data.setdefault("restaurant_city", "")
+    data.setdefault("restaurant_township", "")
+    data.setdefault("rider_deposit_status", "not_required")
+    data.setdefault("created_at", "")
+    return FoodOrderResponse(**data)
 
 
 def _food_order_payload(order: FoodOrderResponse) -> str:
@@ -1121,6 +1143,7 @@ def create_food_router(
         payload.setdefault("restaurant_city", "")
         payload.setdefault("restaurant_township", "")
         payload.setdefault("rider_deposit_status", "not_required")
+        payload.setdefault("created_at", row["created_at"] if "created_at" in row.keys() else "")
         return FoodOrderResponse(**payload)
 
     def enrich_food_order_items(connection: sqlite3.Connection, order: FoodOrderResponse) -> FoodOrderResponse:
@@ -1187,7 +1210,10 @@ def create_food_router(
             notify_user(order.user_phone, f"food-order-{order.id}-{key_suffix}", title, message)
 
     def food_order_matches_rider_city(order: FoodOrderResponse, requested_city: str) -> bool:
-        normalized_city = requested_city.strip().casefold()
+        def normalized(value: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "", value.strip().casefold())
+
+        normalized_city = normalized(requested_city)
         if not normalized_city:
             return True
         if order.rider_phone:
@@ -1198,10 +1224,10 @@ def create_food_router(
             order.restaurant_city,
             order.delivery_city,
         ]
-        known_cities = [city.strip().casefold() for city in candidate_cities if city.strip()]
+        known_cities = [normalized(city) for city in candidate_cities if city.strip()]
         if not known_cities:
             return True
-        return any(city == normalized_city for city in known_cities)
+        return any(city == normalized_city or city in normalized_city or normalized_city in city for city in known_cities)
 
     @router.get("/restaurants", response_model=list[FoodRestaurantResponse])
     def list_restaurants() -> list[FoodRestaurantResponse]:
@@ -1627,8 +1653,8 @@ def create_food_router(
                 SELECT payload
                 FROM food_orders
                 WHERE restaurant_id IN ({placeholders})
-                  AND payment_status != 'pending'
                   AND status != 'payment_pending'
+                  AND COALESCE(json_extract(payload, '$.payment_status'), 'not_required') != 'pending'
                 ORDER BY created_at DESC
                 """,
                 tuple(restaurant_ids),
@@ -1647,7 +1673,10 @@ def create_food_router(
                 """
                 SELECT payload
                 FROM food_orders
-                WHERE (status = 'pending' AND payment_status != 'pending') OR rider_phone = ?
+                WHERE (
+                    status = 'pending'
+                    AND COALESCE(json_extract(payload, '$.payment_status'), 'not_required') != 'pending'
+                ) OR rider_phone = ?
                 ORDER BY created_at DESC
                 """,
                 (rider_phone,),
