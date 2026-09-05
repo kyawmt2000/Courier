@@ -87,6 +87,7 @@ class CreateFoodOrderRequest(BaseModel):
     delivery_lng: float | None = None
     fulfillment_type: str = "delivery"
     payment_method: str = ""
+    payment_proof_url: str | None = None
     phone_no: str = ""
     secondary_phone_no: str = ""
     subtotal_mmk: float = 0
@@ -106,6 +107,9 @@ class FoodOrderResponse(BaseModel):
     delivery_township: str = ""
     fulfillment_type: str = "delivery"
     payment_method: str = ""
+    payment_proof_url: str | None = None
+    payment_status: str = "not_required"
+    payment_feedback: str | None = None
     phone_no: str = ""
     secondary_phone_no: str = ""
     subtotal_mmk: float = 0
@@ -167,6 +171,8 @@ class FoodRiderDepositTransferRequest(BaseModel):
 class AdminUpdateFoodOrderRequest(BaseModel):
     status: str | None = None
     rider_deposit_status: str | None = None
+    payment_status: str | None = None
+    payment_feedback: str | None = None
 
 
 class FoodStoreApplicationRequest(BaseModel):
@@ -740,6 +746,8 @@ def _food_order_for_admin(
     order = _enrich_food_order_items(connection, _food_order_from_payload(row["payload"]))
     if sign_url and order.rider_deposit_proof_url:
         order = order.model_copy(update={"rider_deposit_proof_url": sign_url(order.rider_deposit_proof_url)})
+    if sign_url and order.payment_proof_url:
+        order = order.model_copy(update={"payment_proof_url": sign_url(order.payment_proof_url)})
     data = order.model_dump(mode="json")
     data["user_phone"] = row["user_phone"]
     data["rider_phone"] = row["rider_phone"]
@@ -800,9 +808,15 @@ def update_admin_food_order(
             for name, value in {
                 "status": request.status,
                 "rider_deposit_status": request.rider_deposit_status,
+                "payment_status": request.payment_status,
+                "payment_feedback": request.payment_feedback,
             }.items()
             if value is not None
         }
+        if request.payment_status == "confirmed" and order.status == "payment_pending":
+            updates["status"] = "pending"
+        if request.payment_status == "rejected":
+            updates["status"] = "cancelled"
         if request.rider_deposit_status == "confirmed":
             updates["rider_deposit_due_at"] = None
         updated = _enrich_food_order_items(connection, order.model_copy(update=updates))
@@ -1546,6 +1560,8 @@ def create_food_router(
                 SELECT payload
                 FROM food_orders
                 WHERE restaurant_id IN ({placeholders})
+                  AND payment_status != 'pending'
+                  AND status != 'payment_pending'
                 ORDER BY created_at DESC
                 """,
                 tuple(restaurant_ids),
@@ -1564,7 +1580,7 @@ def create_food_router(
                 """
                 SELECT payload
                 FROM food_orders
-                WHERE status = 'pending' OR rider_phone = ?
+                WHERE (status = 'pending' AND payment_status != 'pending') OR rider_phone = ?
                 ORDER BY created_at DESC
                 """,
                 (rider_phone,),
@@ -2028,6 +2044,10 @@ def create_food_router(
                         discount_mmk = float(coupon_row["discount_mmk"] or 0)
                     discount_mmk = min(discount_mmk, request.subtotal_mmk)
 
+            is_qr_pay = request.payment_method.strip().casefold() == "qr pay"
+            payment_proof_url = (request.payment_proof_url or "").strip()
+            if is_qr_pay and not payment_proof_url:
+                raise HTTPException(status_code=400, detail="请先上传付款截图")
             order = FoodOrderResponse(
                 id=str(uuid4()),
                 user_phone=user_phone,
@@ -2039,6 +2059,8 @@ def create_food_router(
                 delivery_lng=request.delivery_lng,
                 fulfillment_type=request.fulfillment_type,
                 payment_method=request.payment_method,
+                payment_proof_url=payment_proof_url or None,
+                payment_status="pending" if is_qr_pay else "not_required",
                 phone_no=phone_no,
                 secondary_phone_no=secondary_phone_no,
                 subtotal_mmk=request.subtotal_mmk,
@@ -2046,7 +2068,7 @@ def create_food_router(
                 discount_mmk=discount_mmk,
                 goods_amount=request.subtotal_mmk - discount_mmk,
                 voucher_code=voucher_code,
-                status="pending",
+                status="payment_pending" if is_qr_pay else "pending",
                 items=request.items,
                 note=request.note,
                 restaurant_name=restaurant_payload.get("store_name") or "",
