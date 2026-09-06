@@ -3237,6 +3237,7 @@ ADMIN_HTML = r'''
       <button id="tab-deleted-stores" class="tab" onclick="showPage('deleted-stores')">删除餐厅</button>
       <button id="tab-menu-items" class="tab" onclick="showPage('menu-items')">菜品审核</button>
       <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
+      <button id="tab-food-settlements" class="tab" onclick="showPage('food-settlements')">外卖结算</button>
       <button id="tab-coupons" class="tab" onclick="showPage('coupons')">Coupons</button>
     </div>
   </header>
@@ -3297,6 +3298,13 @@ ADMIN_HTML = r'''
       <table>
         <thead><tr><th>订单</th><th>用户/骑手</th><th>金额</th><th>收款资料</th><th>二维码</th><th>结算状态</th><th>操作</th></tr></thead>
         <tbody id="settlements"></tbody>
+      </table>
+    </section>
+    <section id="page-food-settlements" class="page">
+      <h2>外卖结算</h2>
+      <table>
+        <thead><tr><th>外卖订单</th><th>用户/骑手</th><th>金额</th><th>收款资料</th><th>二维码</th><th>结算状态</th><th>操作</th></tr></thead>
+        <tbody id="foodSettlements"></tbody>
       </table>
     </section>
     <section id="page-coupons" class="page">
@@ -3409,7 +3417,7 @@ ADMIN_HTML = r'''
   <script>
     let state = { orders: [], food_orders: [], accounts: [], rider_registrations: [], messages: [], payments: [], store_applications: [], deleted_store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
     let currentPage = "payments";
-    let tabBadges = { payments: 0, orders: 0, accounts: 0, "rider-registrations": 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
+    let tabBadges = { payments: 0, orders: 0, accounts: 0, "rider-registrations": 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, "food-settlements": 0, coupons: 0 };
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
@@ -3423,7 +3431,7 @@ ADMIN_HTML = r'''
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
-    const pages = ["payments","food-orders","accounts","rider-registrations","service","stores","menu-items","settlements","coupons"];
+    const pages = ["payments","food-orders","accounts","rider-registrations","service","stores","menu-items","settlements","food-settlements","coupons"];
     const pageTitles = {
       payments: "订单",
       "food-orders": "外卖订单",
@@ -3434,6 +3442,7 @@ ADMIN_HTML = r'''
       "deleted-stores": "删除餐厅",
       "menu-items": "菜品审核",
       settlements: "结算",
+      "food-settlements": "外卖结算",
       coupons: "Coupons",
     };
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
@@ -3555,6 +3564,12 @@ ADMIN_HTML = r'''
           if (order[field]) settlementEvents.push(`${order.id}:${field}:${order[field]}`);
         });
       });
+      const foodSettlementEvents = [];
+      (data.food_orders || []).forEach(order => {
+        ["rider_settlement_requested_at","rider_settlement_paid_at"].forEach(field => {
+          if (order[field]) foodSettlementEvents.push(`${order.id}:${field}:${order[field]}`);
+        });
+      });
       return {
         orders: new Set((data.orders || []).map(item => item.id).filter(Boolean)),
         payments: new Set((data.payments || []).map(item => item.id).filter(Boolean)),
@@ -3563,11 +3578,12 @@ ADMIN_HTML = r'''
         messages: new Set((data.messages || []).map(item => item.id).filter(Boolean)),
         stores: new Set((data.store_applications || []).map(item => `${item.id}:${item.status}:${item.rejection_reason || ""}`).filter(Boolean)),
         menuItems: new Set((data.food_menu_items || []).map(item => `${item.id}:${item.status}:${item.rejection_reason || ""}`).filter(Boolean)),
-        settlements: new Set(settlementEvents)
+        settlements: new Set(settlementEvents),
+        foodSettlements: new Set(foodSettlementEvents)
       };
     }
     function rememberNewItems(nextState) {
-      if (!hasLoadedOnce) return { orders: 0, payments: 0, accounts: 0, riderRegistrations: 0, settlements: 0, messages: 0, stores: 0, menuItems: 0 };
+      if (!hasLoadedOnce) return { orders: 0, payments: 0, accounts: 0, riderRegistrations: 0, settlements: 0, foodSettlements: 0, messages: 0, stores: 0, menuItems: 0 };
       const previous = identitySets();
       const freshOrders = (nextState.orders || []).filter(item => item.id && !previous.orders.has(item.id));
       const freshPayments = (nextState.payments || []).filter(item => item.id && !previous.payments.has(item.id));
@@ -3578,11 +3594,14 @@ ADMIN_HTML = r'''
       const freshMenuItems = Array.from(identitySets(nextState).menuItems).filter(item => !previous.menuItems.has(item));
       const nextSettlementEvents = Array.from(identitySets(nextState).settlements);
       const freshSettlements = nextSettlementEvents.filter(item => !previous.settlements.has(item));
+      const nextFoodSettlementEvents = Array.from(identitySets(nextState).foodSettlements);
+      const freshFoodSettlements = nextFoodSettlementEvents.filter(item => !previous.foodSettlements.has(item));
       freshOrders.forEach(() => incrementTabBadge("payments"));
       freshPayments.forEach(() => incrementTabBadge("payments"));
       if (freshAccounts.length) incrementTabBadge("accounts", freshAccounts.length);
       if (freshRiderRegistrations.length) incrementTabBadge("rider-registrations", freshRiderRegistrations.length);
       if (freshSettlements.length) incrementTabBadge("settlements", freshSettlements.length);
+      if (freshFoodSettlements.length) incrementTabBadge("food-settlements", freshFoodSettlements.length);
       if (freshMessages.length) incrementTabBadge("service", freshMessages.length);
       if (freshStores.length) incrementTabBadge("stores", freshStores.length);
       if (freshMenuItems.length) incrementTabBadge("menu-items", freshMenuItems.length);
@@ -3604,6 +3623,7 @@ ADMIN_HTML = r'''
         accounts: freshAccounts.length,
         riderRegistrations: freshRiderRegistrations.length,
         settlements: freshSettlements.length,
+        foodSettlements: freshFoodSettlements.length,
         messages: freshMessages.length,
         stores: freshStores.length,
         menuItems: freshMenuItems.length
@@ -3856,7 +3876,7 @@ ADMIN_HTML = r'''
         if (activeDetailId && state.orders.some(order => order.id === activeDetailId)) {
           showDetail(activeDetailId);
         }
-        const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.riderRegistrations + fresh.settlements + fresh.messages + fresh.stores + fresh.menuItems;
+        const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.riderRegistrations + fresh.settlements + fresh.foodSettlements + fresh.messages + fresh.stores + fresh.menuItems;
         if (freshCount) {
           const parts = [];
           if (fresh.orders) parts.push(`${fresh.orders} 个新订单`);
@@ -3866,6 +3886,7 @@ ADMIN_HTML = r'''
           if (fresh.stores) parts.push(`${fresh.stores} 条店铺注册`);
           if (fresh.menuItems) parts.push(`${fresh.menuItems} 个菜品`);
           if (fresh.settlements) parts.push(`${fresh.settlements} 条新结算`);
+          if (fresh.foodSettlements) parts.push(`${fresh.foodSettlements} 条外卖结算`);
           if (fresh.messages) parts.push(`${fresh.messages} 条新消息`);
           showToast(parts.join(" / "));
         } else if (!silent) {
@@ -4039,6 +4060,7 @@ ADMIN_HTML = r'''
       if (!settlementRows.length) {
         document.getElementById("settlements").innerHTML = `<tr><td colspan="7" class="muted">暂无结算记录</td></tr>`;
       }
+      renderFoodSettlements();
       renderStoreApplications();
       renderDeletedStoreApplications();
       renderFoodMenuItems();
@@ -4057,6 +4079,36 @@ ADMIN_HTML = r'''
       table.innerHTML = orders.map(order => foodOrderTableRow(order)).join("");
       if (!orders.length) {
         table.innerHTML = `<tr><td colspan="9" class="muted">暂无外卖订单</td></tr>`;
+      }
+    }
+
+    function renderFoodSettlements() {
+      const table = document.getElementById("foodSettlements");
+      if (!table) return;
+      const q = document.getElementById("q").value.toLowerCase();
+      const orders = sortByDateDesc((state.food_orders || []).filter(order =>
+        order.rider_settlement_qr_url &&
+        JSON.stringify(order).toLowerCase().includes(q)
+      ), [
+        "rider_settlement_requested_at",
+        "rider_settlement_paid_at",
+        "completed_at",
+        "created_at"
+      ]);
+      table.innerHTML = orders.map(order => `
+        <tr>
+          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
+          <td>配送费：${Number(order.delivery_fee_mmk || 0).toLocaleString()} MMK<br><span class="muted">外卖金额：${Number(order.goods_amount || 0).toLocaleString()} MMK</span></td>
+          <td>${foodSettlementInfo(order)}</td>
+          <td>${foodSettlementQRCodes(order)}</td>
+          <td><span class="pill">${label(order.settlement_status || "pending")}</span>${foodSettlementPaidTimes(order)}</td>
+          <td>
+            ${order.rider_settlement_qr_url && !["paid_to_rider","completed"].includes(order.settlement_status || "pending") ? `<button onclick="confirmFoodRiderSettlement('${order.id}', this)">确认已转账骑手</button>` : ""}
+          </td>
+        </tr>`).join("");
+      if (!orders.length) {
+        table.innerHTML = `<tr><td colspan="7" class="muted">暂无外卖结算记录</td></tr>`;
       }
     }
 
@@ -4849,6 +4901,22 @@ ADMIN_HTML = r'''
       return images.length ? images.join("") : `<span class="muted">未提交</span>`;
     }
 
+    function foodSettlementPaidTimes(order) {
+      return order.rider_settlement_paid_at
+        ? `<br><span class="muted">送货费：${escapeHtml(new Date(order.rider_settlement_paid_at).toLocaleString())}</span>`
+        : "";
+    }
+
+    function foodSettlementInfo(order) {
+      return `骑手收款：${escapeHtml(order.rider_settlement_name || "未提交")}${order.rider_settlement_requested_at ? `<br><span class="muted">提醒：${escapeHtml(new Date(order.rider_settlement_requested_at).toLocaleString())}</span>` : ""}`;
+    }
+
+    function foodSettlementQRCodes(order) {
+      return order.rider_settlement_qr_url
+        ? `<div><span class="muted">外卖送货费</span><br><img class="thumb" src="${escapeHtml(order.rider_settlement_qr_url)}" alt="外卖骑手收款二维码"></div>`
+        : `<span class="muted">未提交</span>`;
+    }
+
     async function patchOrder(id, body, button, successMessage) {
       setButtonBusy(button, true);
       try {
@@ -4959,6 +5027,10 @@ ADMIN_HTML = r'''
 
     async function confirmFoodUserPayment(id, button) {
       await patchFoodOrder(id, { payment_status: "confirmed", payment_feedback: "" }, button, "外卖用户付款已确认");
+    }
+
+    async function confirmFoodRiderSettlement(id, button = null) {
+      await patchFoodOrder(id, { settlement_status: "paid_to_rider" }, button, "外卖骑手结算已确认");
     }
 
     async function rejectFoodUserPayment(id, button) {
