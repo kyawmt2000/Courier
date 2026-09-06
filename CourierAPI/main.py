@@ -3270,7 +3270,7 @@ ADMIN_HTML = r'''
           <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
           <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
         </colgroup>
-        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>菜品</th><th>用户付款</th><th>骑手押金</th><th>餐厅/地址</th><th>操作</th></tr></thead>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>菜品</th><th>骑手付款</th><th>骑手押金</th><th>餐厅/地址</th><th>操作</th></tr></thead>
         <tbody id="foodOrders"></tbody>
       </table>
     </section>
@@ -4207,9 +4207,9 @@ ADMIN_HTML = r'''
       const proof = order.rider_deposit_proof_url
         ? `<a href="${escapeHtml(order.rider_deposit_proof_url)}" target="_blank" rel="noopener"><img src="${escapeHtml(order.rider_deposit_proof_url)}" alt="骑手押金截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;"></a>`
         : `<span class="muted">无截图</span>`;
-      const paymentProof = order.payment_proof_url
-        ? `<img src="${escapeHtml(order.payment_proof_url)}" alt="用户付款截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">`
-        : `<span class="muted">${order.payment_method === "QR Pay" ? "无截图" : "无需截图"}</span>`;
+      const riderSettlementQr = order.rider_settlement_qr_url
+        ? `<a href="${escapeHtml(order.rider_settlement_qr_url)}" target="_blank" rel="noopener"><img class="thumb" src="${escapeHtml(order.rider_settlement_qr_url)}" alt="骑手付款二维码"></a>`
+        : `<span class="muted">骑手未提交</span>`;
       const paymentStatus = order.payment_status || (order.payment_method === "QR Pay" ? "pending" : "not_required");
       return `
         <tr>
@@ -4218,7 +4218,7 @@ ADMIN_HTML = r'''
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">付款：${escapeHtml(label(paymentStatus))}</span>${order.payment_feedback ? `<br><span class="muted">反馈：${escapeHtml(order.payment_feedback)}</span>` : ""}</td>
           <td>外卖：${Number(order.goods_amount || 0).toLocaleString()} MMK<br><span class="muted">配送费：${Number(order.delivery_fee_mmk || 0).toLocaleString()} MMK</span></td>
           <td>${items}</td>
-          <td>${paymentProof}<br><span class="pill">${escapeHtml(label(paymentStatus))}</span><br><span class="muted">${escapeHtml(order.payment_method || "")}</span></td>
+          <td>${riderSettlementQr}<br><span class="pill">${escapeHtml(label(order.settlement_status || "pending"))}</span></td>
           <td>${proof}<br><span class="pill">${riderDepositLabel(order.rider_deposit_status)}</span><br><span class="muted">押金 ${Number(order.goods_amount || 0).toLocaleString()} MMK</span></td>
           <td><b>${escapeHtml(order.restaurant_name || "餐厅")}</b><br>${escapeHtml(order.restaurant_location || "")}<br><span class="muted">送达：${escapeHtml(order.delivery_address || "")}</span></td>
           <td>
