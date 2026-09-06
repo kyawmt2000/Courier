@@ -36,6 +36,7 @@ class FoodMenuItemResponse(BaseModel):
     description: str = ""
     price_mmk: float
     original_price_mmk: float | None = None
+    option_names: list[str] = Field(default_factory=list)
     click_count: int = 0
     image_url: str | None = None
     is_available: bool = True
@@ -52,6 +53,7 @@ class CreateFoodMenuItemRequest(BaseModel):
     description: str = ""
     price_mmk: float = Field(ge=0)
     original_price_mmk: float | None = Field(default=None, ge=0)
+    option_names: list[str] = Field(default_factory=list)
     image_url: str = Field(min_length=1)
 
 
@@ -62,6 +64,7 @@ class UpdateFoodMenuItemRequest(BaseModel):
     description: str = ""
     price_mmk: float = Field(ge=0)
     original_price_mmk: float | None = Field(default=None, ge=0)
+    option_names: list[str] = Field(default_factory=list)
     image_url: str = Field(min_length=1)
 
 
@@ -73,6 +76,7 @@ class FoodOrderItemRequest(BaseModel):
     menu_item_id: str
     quantity: int = Field(ge=1, le=99)
     note: str = ""
+    selected_option: str = ""
     menu_item_name: str = ""
     price_mmk: float | None = None
 
@@ -648,6 +652,9 @@ def _menu_item_from_row(row: sqlite3.Row, sign_url: SignUrl | None = None) -> Fo
     payload = json.loads(row["payload"] or "{}")
     image_url = row["image_url"]
     original_price_mmk = payload.get("original_price_mmk")
+    option_names = payload.get("option_names")
+    if not isinstance(option_names, list):
+        option_names = []
     return FoodMenuItemResponse(
         id=row["id"],
         restaurant_id=row["restaurant_id"],
@@ -656,6 +663,7 @@ def _menu_item_from_row(row: sqlite3.Row, sign_url: SignUrl | None = None) -> Fo
         description=row["description"],
         price_mmk=row["price_mmk"],
         original_price_mmk=original_price_mmk if original_price_mmk is not None else row["price_mmk"],
+        option_names=[str(option).strip() for option in option_names if str(option).strip()],
         click_count=int(payload.get("click_count", 0) or 0),
         image_url=sign_url(image_url) if sign_url else image_url,
         is_available=bool(row["is_available"]),
@@ -664,6 +672,23 @@ def _menu_item_from_row(row: sqlite3.Row, sign_url: SignUrl | None = None) -> Fo
         reviewed_at=row["reviewed_at"],
         created_at=row["created_at"],
     )
+
+
+def _clean_menu_option_names(values: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        option = str(value).strip()
+        if not option:
+            continue
+        key = option.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(option[:60])
+        if len(cleaned) >= 20:
+            break
+    return cleaned
 
 
 def load_admin_store_applications(db_path: Path, sign_url: SignUrl | None = None) -> list[dict]:
@@ -768,13 +793,14 @@ def _enrich_food_order_items(connection: sqlite3.Connection, order: FoodOrderRes
             enriched_items.append(
                 order_item.model_copy(
                     update={
+                        "selected_option": order_item.selected_option.strip()[:60],
                         "menu_item_name": row["name"] or order_item.menu_item_name,
                         "price_mmk": float(row["price_mmk"] or 0),
                     }
                 )
             )
         else:
-            enriched_items.append(order_item)
+            enriched_items.append(order_item.model_copy(update={"selected_option": order_item.selected_option.strip()[:60]}))
     return order.model_copy(update={"items": enriched_items})
 
 
@@ -1194,13 +1220,14 @@ def create_food_router(
                 enriched_items.append(
                     order_item.model_copy(
                         update={
+                            "selected_option": order_item.selected_option.strip()[:60],
                             "menu_item_name": row["name"] or order_item.menu_item_name,
                             "price_mmk": float(row["price_mmk"] or 0),
                         }
                     )
                 )
             else:
-                enriched_items.append(order_item)
+                enriched_items.append(order_item.model_copy(update={"selected_option": order_item.selected_option.strip()[:60]}))
         update: dict[str, object] = {"items": enriched_items}
         restaurant_row = connection.execute(
             """
@@ -1348,6 +1375,7 @@ def create_food_router(
         description = request.description.strip()
         price_mmk = request.price_mmk
         original_price_mmk = request.original_price_mmk if request.original_price_mmk is not None else price_mmk
+        option_names = _clean_menu_option_names(request.option_names)
         image_url = request.image_url.strip()
         if not category:
             raise HTTPException(status_code=400, detail="请填写菜品类型")
@@ -1395,6 +1423,7 @@ def create_food_router(
                 description=description,
                 price_mmk=price_mmk,
                 original_price_mmk=original_price_mmk,
+                option_names=option_names,
                 click_count=0,
                 image_url=image_url,
                 is_available=False,
@@ -1433,6 +1462,7 @@ def create_food_router(
         category = request.category.strip()
         title = request.title.strip()
         description = request.description.strip()
+        option_names = _clean_menu_option_names(request.option_names)
         image_url = request.image_url.strip()
         if not category:
             raise HTTPException(status_code=400, detail="请填写菜品类型")
@@ -1478,6 +1508,7 @@ def create_food_router(
                     "description": description,
                     "price_mmk": request.price_mmk,
                     "original_price_mmk": original_price_mmk,
+                    "option_names": option_names,
                     "image_url": image_url,
                 }
             )
