@@ -1546,12 +1546,15 @@ def create_food_router(
             )
             is_discounted = item.original_price_mmk is not None and item.price_mmk < item.original_price_mmk
         if notify_restaurant_update and existing_item.status == "confirmed" and is_discounted and not was_discounted:
-            notify_restaurant_update(
-                item.id,
-                item.restaurant_id,
-                "Restaurant update",
-                f"{store_name} has a discount: {item.name}.",
-            )
+            try:
+                notify_restaurant_update(
+                    item.id,
+                    item.restaurant_id,
+                    "Restaurant update",
+                    f"{store_name} has a discount: {item.name}.",
+                )
+            except Exception:
+                logger.exception("Restaurant update notification failed for menu item %s", item.id)
         if sign_url and item.image_url:
             item = item.model_copy(update={"image_url": sign_url(item.image_url)})
         return item
