@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -65,7 +66,7 @@ class UpdateFoodMenuItemRequest(BaseModel):
     price_mmk: float = Field(ge=0)
     original_price_mmk: float | None = Field(default=None, ge=0)
     option_names: list[str] = Field(default_factory=list)
-    image_url: str = Field(min_length=1)
+    image_url: str = ""
 
 
 class UpdateFoodMenuAvailabilityRequest(BaseModel):
@@ -689,6 +690,16 @@ def _clean_menu_option_names(values: list[str]) -> list[str]:
         if len(cleaned) >= 20:
             break
     return cleaned
+
+
+def _stored_image_url(value: str | None) -> str:
+    url = (value or "").strip()
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
 
 
 def load_admin_store_applications(db_path: Path, sign_url: SignUrl | None = None) -> list[dict]:
@@ -1376,7 +1387,7 @@ def create_food_router(
         price_mmk = request.price_mmk
         original_price_mmk = request.original_price_mmk if request.original_price_mmk is not None else price_mmk
         option_names = _clean_menu_option_names(request.option_names)
-        image_url = request.image_url.strip()
+        image_url = _stored_image_url(request.image_url)
         if not category:
             raise HTTPException(status_code=400, detail="请填写菜品类型")
         if category in PROMOTIONAL_MENU_CATEGORIES:
@@ -1463,16 +1474,13 @@ def create_food_router(
         title = request.title.strip()
         description = request.description.strip()
         option_names = _clean_menu_option_names(request.option_names)
-        image_url = request.image_url.strip()
+        requested_image_url = _stored_image_url(request.image_url)
         if not category:
             raise HTTPException(status_code=400, detail="请填写菜品类型")
         if category in PROMOTIONAL_MENU_CATEGORIES:
             raise HTTPException(status_code=400, detail="请选择普通菜品类型")
         if not title:
             raise HTTPException(status_code=400, detail="请填写菜品标题")
-        if not image_url:
-            raise HTTPException(status_code=400, detail="请上传菜品图片")
-
         with connect_db() as connection:
             row = connection.execute(
                 """
@@ -1490,6 +1498,9 @@ def create_food_router(
                 raise HTTPException(status_code=404, detail="菜品不存在")
 
             existing_item = _menu_item_from_row(row)
+            image_url = requested_image_url or (existing_item.image_url or "")
+            if not image_url:
+                raise HTTPException(status_code=400, detail="请上传菜品图片")
             if request.original_price_mmk is not None:
                 original_price_mmk = request.original_price_mmk
                 if request.price_mmk > original_price_mmk:
