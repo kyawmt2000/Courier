@@ -190,6 +190,7 @@ class AdminUpdateFoodOrderRequest(BaseModel):
     rider_deposit_status: str | None = None
     payment_status: str | None = None
     payment_feedback: str | None = None
+    settlement_status: str | None = None
 
 
 class FoodStoreApplicationRequest(BaseModel):
@@ -787,6 +788,8 @@ def _food_order_for_admin(
         order = order.model_copy(update={"rider_deposit_proof_url": sign_url(order.rider_deposit_proof_url)})
     if sign_url and order.payment_proof_url:
         order = order.model_copy(update={"payment_proof_url": sign_url(order.payment_proof_url)})
+    if sign_url and order.rider_settlement_qr_url:
+        order = order.model_copy(update={"rider_settlement_qr_url": sign_url(order.rider_settlement_qr_url)})
     data = order.model_dump(mode="json")
     data["user_phone"] = row["user_phone"]
     data["rider_phone"] = row["rider_phone"]
@@ -849,15 +852,28 @@ def update_admin_food_order(
                 "rider_deposit_status": request.rider_deposit_status,
                 "payment_status": request.payment_status,
                 "payment_feedback": request.payment_feedback,
+                "settlement_status": request.settlement_status,
             }.items()
             if value is not None
         }
+        now = datetime.now(timezone.utc).isoformat()
         if request.payment_status == "confirmed" and order.status == "payment_pending":
             updates["status"] = "pending"
         if request.payment_status == "rejected":
             updates["status"] = "cancelled"
         if request.rider_deposit_status == "confirmed":
             updates["rider_deposit_due_at"] = None
+        if request.settlement_status in {"paid_to_rider", "completed"} and not order.rider_settlement_paid_at:
+            updates["rider_settlement_paid_at"] = now
+        if request.settlement_status in {"paid_to_rider", "completed"} and not order.rider_settlement_bill_created_at:
+            rider_amount = order.rider_settlement_bill_amount or order.delivery_fee_mmk
+            updates["rider_settlement_bill_title"] = "外卖送货费已结算"
+            updates["rider_settlement_bill_message"] = (
+                f"外卖订单 #{order.id[:6].upper()} 送货费 {rider_amount:,.0f} MMK "
+                "已结算给骑手，请查收。"
+            )
+            updates["rider_settlement_bill_amount"] = rider_amount
+            updates["rider_settlement_bill_created_at"] = now
         updated = _enrich_food_order_items(connection, order.model_copy(update=updates))
         connection.execute(
             """
@@ -908,6 +924,7 @@ def delete_admin_food_order(
         image_urls = [
             order.payment_proof_url,
             order.rider_deposit_proof_url,
+            order.rider_settlement_qr_url,
         ]
         connection.execute("DELETE FROM food_orders WHERE id = ?", (order_id,))
 
