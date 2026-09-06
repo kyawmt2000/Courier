@@ -142,6 +142,15 @@ class FoodOrderResponse(BaseModel):
     rider_lat: float | None = None
     rider_lng: float | None = None
     rider_location_updated_at: str | None = None
+    settlement_status: str = "pending"
+    rider_settlement_name: str | None = None
+    rider_settlement_qr_url: str | None = None
+    rider_settlement_requested_at: str | None = None
+    rider_settlement_paid_at: str | None = None
+    rider_settlement_bill_title: str | None = None
+    rider_settlement_bill_message: str | None = None
+    rider_settlement_bill_amount: float | None = None
+    rider_settlement_bill_created_at: str | None = None
     created_at: str
 
 
@@ -169,6 +178,11 @@ class FoodUpdateRiderLocationRequest(BaseModel):
 
 class FoodRiderDepositTransferRequest(BaseModel):
     payment_proof_url: str | None = None
+
+
+class FoodRiderSettlementRequest(BaseModel):
+    name: str
+    qr_url: str
 
 
 class AdminUpdateFoodOrderRequest(BaseModel):
@@ -725,6 +739,7 @@ def _food_order_from_payload(payload: str | None) -> FoodOrderResponse:
     data.setdefault("restaurant_city", "")
     data.setdefault("restaurant_township", "")
     data.setdefault("rider_deposit_status", "not_required")
+    data.setdefault("settlement_status", "pending")
     data.setdefault("created_at", "")
     return FoodOrderResponse(**data)
 
@@ -1143,6 +1158,7 @@ def create_food_router(
         payload.setdefault("restaurant_city", "")
         payload.setdefault("restaurant_township", "")
         payload.setdefault("rider_deposit_status", "not_required")
+        payload.setdefault("settlement_status", "pending")
         payload.setdefault("created_at", row["created_at"] if "created_at" in row.keys() else "")
         return FoodOrderResponse(**payload)
 
@@ -1774,7 +1790,7 @@ def create_food_router(
         authorization: str | None = Header(default=None),
     ) -> FoodOrderResponse:
         rider_phone = require_account_phone(authorization)
-        allowed_statuses = {"picking_up", "delivering", "completed"}
+        allowed_statuses = {"accepted", "picking_up", "delivering", "completed"}
         if request.status not in allowed_statuses:
             raise HTTPException(status_code=400, detail="外卖订单状态不正确")
         with connect_db() as connection:
@@ -1791,10 +1807,18 @@ def create_food_router(
                 raise HTTPException(status_code=403, detail="平台确认骑手押金后才能开始取件配送")
             now = datetime.now(timezone.utc).isoformat()
             updates = {"status": request.status}
-            if request.status == "picking_up":
-                updates["pickup_started_at"] = now
+            if request.status == "accepted":
+                updates.update(
+                    {
+                        "pickup_started_at": None,
+                        "delivery_started_at": None,
+                        "completed_at": None,
+                    }
+                )
+            elif request.status == "picking_up":
+                updates.update({"pickup_started_at": now, "delivery_started_at": None, "completed_at": None})
             elif request.status == "delivering":
-                updates["delivery_started_at"] = now
+                updates.update({"delivery_started_at": now, "completed_at": None})
             elif request.status == "completed":
                 updates["completed_at"] = now
             order = order.model_copy(update=updates)
@@ -1843,6 +1867,43 @@ def create_food_router(
         if first_location:
             notify_food_order_user(order, "rider-location", "Rider location available", "You can now track your food rider on the map.")
         return order
+
+    @router.post("/rider/orders/{order_id}/settlement", response_model=FoodOrderResponse)
+    def request_food_rider_settlement(
+        order_id: str,
+        request: FoodRiderSettlementRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodOrderResponse:
+        rider_phone = require_account_phone(authorization)
+        name = request.name.strip()
+        qr_url = request.qr_url.strip()
+        if not name or not qr_url:
+            raise HTTPException(status_code=400, detail="请上传收款二维码")
+        with connect_db() as connection:
+            row = connection.execute(
+                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                (order_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="外卖订单不存在")
+            order = food_order_from_row(row)
+            if order.rider_phone != rider_phone:
+                raise HTTPException(status_code=403, detail="只能提交自己的外卖订单结算")
+            if order.status != "completed":
+                raise HTTPException(status_code=400, detail="外卖订单完成后才能提交结算")
+            if order.settlement_status in {"paid_to_rider", "completed"}:
+                return enrich_food_order_items(connection, order)
+            order = order.model_copy(
+                update={
+                    "rider_settlement_name": name,
+                    "rider_settlement_qr_url": qr_url,
+                    "rider_settlement_requested_at": datetime.now(timezone.utc).isoformat(),
+                    "settlement_status": "pending",
+                }
+            )
+            order = enrich_food_order_items(connection, order)
+            save_food_order(connection, order)
+            return order
 
     @router.get("/stores/my-application", response_model=FoodStoreApplicationResponse | None)
     def my_store_application(authorization: str | None = Header(default=None)) -> FoodStoreApplicationResponse | None:
