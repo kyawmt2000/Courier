@@ -1935,6 +1935,10 @@ def create_food_router(
                 FROM food_orders
                 WHERE (
                     status = 'pending'
+                    AND rider_phone IS NULL
+                    AND COALESCE(json_extract(payload, '$.rider_account_phone'), '') = ''
+                    AND COALESCE(json_extract(payload, '$.rider_phone'), '') = ''
+                    AND COALESCE(json_extract(payload, '$.accepted_at'), '') = ''
                     AND COALESCE(json_extract(payload, '$.payment_status'), 'not_required') != 'pending'
                 ) OR rider_phone = ?
                 ORDER BY created_at DESC
