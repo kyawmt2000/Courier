@@ -150,6 +150,7 @@ class FoodOrderResponse(BaseModel):
     delivery_lat: float | None = None
     delivery_lng: float | None = None
     rider_name: str | None = None
+    rider_account_phone: str | None = None
     rider_phone: str | None = None
     rider_deposit_status: str = "not_required"
     rider_deposit_due_at: str | None = None
@@ -796,6 +797,7 @@ def _food_order_from_payload(payload: str | None) -> FoodOrderResponse:
     data.setdefault("restaurant_location", "")
     data.setdefault("restaurant_city", "")
     data.setdefault("restaurant_township", "")
+    data.setdefault("rider_account_phone", None)
     data.setdefault("rider_deposit_status", "not_required")
     data.setdefault("settlement_status", "pending")
     data.setdefault("review_rating", None)
@@ -813,6 +815,15 @@ def _food_order_payload(order: FoodOrderResponse) -> str:
 
 def _is_valid_food_order_phone(phone: str) -> bool:
     return phone.isdigit() and len(phone) in (9, 11)
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    cleaned = (value or "").strip()
+    return cleaned or None
+
+
+def _looks_like_oauth_account(value: str | None) -> bool:
+    return bool(value and value.startswith("oauth:"))
 
 
 def _enrich_food_order_items(connection: sqlite3.Connection, order: FoodOrderResponse) -> FoodOrderResponse:
@@ -1238,6 +1249,7 @@ def create_food_router(
         payload.setdefault("restaurant_location", "")
         payload.setdefault("restaurant_city", "")
         payload.setdefault("restaurant_township", "")
+        payload.setdefault("rider_account_phone", None)
         payload.setdefault("rider_deposit_status", "not_required")
         payload.setdefault("settlement_status", "pending")
         payload.setdefault("review_rating", None)
@@ -1291,9 +1303,30 @@ def create_food_router(
                     "restaurant_township": restaurant_payload.get("store_township") or order.restaurant_township or "",
                 }
             )
+        rider_account_phone = order.rider_account_phone or (order.rider_phone if _looks_like_oauth_account(order.rider_phone) else None)
+        if rider_account_phone:
+            rider_row = connection.execute(
+                """
+                SELECT rider_name, phone_no
+                FROM rider_registrations
+                WHERE account_phone = ? AND status = 'approved'
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (rider_account_phone,),
+            ).fetchone()
+            if rider_row:
+                update.update(
+                    {
+                        "rider_account_phone": rider_account_phone,
+                        "rider_phone": _clean_optional_text(rider_row["phone_no"]) or order.rider_phone,
+                        "rider_name": _clean_optional_text(rider_row["rider_name"]) or order.rider_name,
+                    }
+                )
         return order.model_copy(update=update)
 
     def save_food_order(connection: sqlite3.Connection, order: FoodOrderResponse) -> None:
+        stored_rider_account = order.rider_account_phone or order.rider_phone
         connection.execute(
             """
             UPDATE food_orders
@@ -1302,7 +1335,7 @@ def create_food_router(
             """,
             (
                 order.status,
-                order.rider_phone,
+                stored_rider_account,
                 json.dumps(order.model_dump(mode="json"), ensure_ascii=False),
                 order.id,
             ),
@@ -1319,7 +1352,7 @@ def create_food_router(
         normalized_city = normalized(requested_city)
         if not normalized_city:
             return True
-        if order.rider_phone:
+        if order.rider_account_phone or order.rider_phone:
             return True
         if order.status != "pending":
             return False
