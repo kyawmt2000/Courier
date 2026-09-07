@@ -398,6 +398,8 @@ class DistanceEstimateResponse(BaseModel):
 class AcceptOrderRequest(BaseModel):
     rider_name: str
     rider_phone: str | None = None
+    rider_lat: float | None = None
+    rider_lng: float | None = None
 
 
 class UpdateOrderStatusRequest(BaseModel):
@@ -7477,6 +7479,10 @@ def accept_order(
             "delivery_started_at": None,
             **clear_delivery_timeout_update(),
         }
+        if request.rider_lat is not None and request.rider_lng is not None:
+            updates["rider_lat"] = request.rider_lat
+            updates["rider_lng"] = request.rider_lng
+            updates["rider_location_updated_at"] = datetime.now(timezone.utc)
         if order.rider_deposit_status != "not_required":
             updates["rider_deposit_due_at"] = rider_deposit_due_at()
             updates["rider_deposit_submitted_at"] = None
