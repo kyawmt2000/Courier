@@ -1660,6 +1660,14 @@ def order_chat_conversation_id(order_id: str) -> str:
     return f"order:{order_id.strip().lower()}"
 
 
+def food_order_chat_conversation_id(order_id: str) -> str:
+    return f"food-order:{order_id.strip().lower()}"
+
+
+def food_merchant_chat_conversation_id(order_id: str) -> str:
+    return f"food-merchant-order:{order_id.strip().lower()}"
+
+
 def order_chat_id_from_conversation(conversation_id: str) -> str | None:
     normalized = conversation_id.strip().lower()
     if normalized.startswith("order:"):
@@ -1678,11 +1686,81 @@ def order_chat_conversation_aliases(conversation_id: str) -> list[str]:
     return list(dict.fromkeys([canonical, canonical.upper(), order_id, order_id.upper()]))
 
 
+def food_chat_info_from_conversation(conversation_id: str) -> tuple[str, str] | None:
+    normalized = conversation_id.strip().lower()
+    if normalized.startswith("food-merchant-order:"):
+        order_id = normalized.removeprefix("food-merchant-order:").strip()
+        return (order_id, "merchant") if order_id else None
+    if normalized.startswith("food-order:"):
+        order_id = normalized.removeprefix("food-order:").strip()
+        return (order_id, "user") if order_id else None
+    return None
+
+
+def food_order_chat_conversation_aliases(conversation_id: str) -> list[str]:
+    food_info = food_chat_info_from_conversation(conversation_id)
+    if not food_info:
+        return [conversation_id.strip().lower()]
+    order_id, target = food_info
+    canonical = (
+        food_merchant_chat_conversation_id(order_id)
+        if target == "merchant"
+        else food_order_chat_conversation_id(order_id)
+    )
+    return list(dict.fromkeys([canonical, canonical.upper()]))
+
+
+def load_food_chat_record(order_id: str) -> tuple[str, str | None, str | None] | None:
+    with connect_db() as connection:
+        row = connection.execute(
+            """
+            SELECT food_orders.user_phone,
+                   food_orders.rider_phone,
+                   food_orders.payload,
+                   store.user_phone AS merchant_phone
+            FROM food_orders
+            LEFT JOIN food_store_applications store ON store.id = food_orders.restaurant_id
+            WHERE food_orders.id = ?
+            LIMIT 1
+            """,
+            (order_id,),
+        ).fetchone()
+    if not row:
+        return None
+    payload = json.loads(row["payload"] or "{}")
+    rider_account_phone = payload.get("rider_account_phone") or row["rider_phone"]
+    return row["user_phone"], clean_optional_text(rider_account_phone), clean_optional_text(row["merchant_phone"])
+
+
 def require_order_chat_conversation_id(
     conversation_id: str,
     account_phone: str,
     sender_type: ChatSenderType | None = None,
 ) -> str:
+    food_info = food_chat_info_from_conversation(conversation_id)
+    if food_info:
+        order_id, target = food_info
+        record = load_food_chat_record(order_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="外卖订单不存在")
+        user_phone, rider_phone, merchant_phone = record
+        if target == "merchant":
+            if account_phone not in {rider_phone, merchant_phone}:
+                raise HTTPException(status_code=403, detail="不能查看这个商家聊天")
+            if sender_type == "rider" and account_phone != rider_phone:
+                raise HTTPException(status_code=403, detail="骑手只能用骑手身份发送订单消息")
+            if sender_type == "user" and account_phone != merchant_phone:
+                raise HTTPException(status_code=403, detail="商家只能用用户身份发送商家消息")
+            return food_merchant_chat_conversation_id(order_id)
+
+        if account_phone not in {user_phone, rider_phone}:
+            raise HTTPException(status_code=403, detail="不能查看这个订单聊天")
+        if sender_type == "user" and account_phone != user_phone:
+            raise HTTPException(status_code=403, detail="用户只能用用户身份发送订单消息")
+        if sender_type == "rider" and account_phone != rider_phone:
+            raise HTTPException(status_code=403, detail="骑手只能用骑手身份发送订单消息")
+        return food_order_chat_conversation_id(order_id)
+
     order_id = order_chat_id_from_conversation(conversation_id)
     if not order_id:
         return account_conversation_id(conversation_id, None, account_phone)
@@ -6883,6 +6961,51 @@ def list_chat_messages(
                 conversation_ids.append("main")
             for row in order_rows:
                 conversation_ids.extend(order_chat_conversation_aliases(f"order:{row['id']}"))
+
+            if hidden_before:
+                food_rows = connection.execute(
+                    """
+                    SELECT food_orders.id,
+                           food_orders.user_phone,
+                           food_orders.rider_phone,
+                           food_orders.payload,
+                           store.user_phone AS merchant_phone
+                    FROM food_orders
+                    LEFT JOIN food_store_applications store ON store.id = food_orders.restaurant_id
+                    WHERE (
+                        food_orders.user_phone = ?
+                        OR food_orders.rider_phone = ?
+                        OR COALESCE(json_extract(food_orders.payload, '$.rider_account_phone'), '') = ?
+                        OR store.user_phone = ?
+                    )
+                      AND food_orders.created_at > ?
+                    """,
+                    (phone, phone, phone, phone, hidden_before),
+                ).fetchall()
+            else:
+                food_rows = connection.execute(
+                    """
+                    SELECT food_orders.id,
+                           food_orders.user_phone,
+                           food_orders.rider_phone,
+                           food_orders.payload,
+                           store.user_phone AS merchant_phone
+                    FROM food_orders
+                    LEFT JOIN food_store_applications store ON store.id = food_orders.restaurant_id
+                    WHERE food_orders.user_phone = ?
+                       OR food_orders.rider_phone = ?
+                       OR COALESCE(json_extract(food_orders.payload, '$.rider_account_phone'), '') = ?
+                       OR store.user_phone = ?
+                    """,
+                    (phone, phone, phone, phone),
+                ).fetchall()
+            for row in food_rows:
+                payload = json.loads(row["payload"] or "{}")
+                rider_account_phone = clean_optional_text(payload.get("rider_account_phone") or row["rider_phone"])
+                if phone == row["user_phone"] or phone == rider_account_phone:
+                    conversation_ids.extend(food_order_chat_conversation_aliases(f"food-order:{row['id']}"))
+                if phone == rider_account_phone or phone == row["merchant_phone"]:
+                    conversation_ids.extend(food_order_chat_conversation_aliases(f"food-merchant-order:{row['id']}"))
 
             if hidden_before:
                 message_rows = connection.execute(
