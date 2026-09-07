@@ -4037,7 +4037,7 @@ ADMIN_HTML = r'''
       ]);
       document.getElementById("settlements").innerHTML = settlementRows.map(order => `
         <tr>
-          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td><strong>#${escapeHtml(order.id.slice(0, 8).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td>${deliveryFeeCell(order)}</td>
           <td>${settlementInfo(order)}</td>
@@ -4088,7 +4088,7 @@ ADMIN_HTML = r'''
       ]);
       table.innerHTML = orders.map(order => `
         <tr>
-          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td><strong>#${escapeHtml(order.id.slice(0, 8).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td>配送费：${Number(order.delivery_fee_mmk || 0).toLocaleString()} MMK<br><span class="muted">外卖金额：${Number(order.goods_amount || 0).toLocaleString()} MMK</span></td>
           <td>${foodSettlementInfo(order)}</td>
@@ -4204,7 +4204,7 @@ ADMIN_HTML = r'''
       const paymentStatus = order.payment_status || (order.payment_method === "QR Pay" ? "pending" : "not_required");
       return `
         <tr>
-          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td><strong>#${escapeHtml(order.id.slice(0, 8).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
           <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}${customerPhones ? `<br><span class="muted">客户电话：${escapeHtml(customerPhones)}</span>` : ""}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">付款：${escapeHtml(label(paymentStatus))}</span>${order.payment_feedback ? `<br><span class="muted">反馈：${escapeHtml(order.payment_feedback)}</span>` : ""}</td>
           <td>外卖：${Number(order.goods_amount || 0).toLocaleString()} MMK<br><span class="muted">配送费：${Number(order.delivery_fee_mmk || 0).toLocaleString()} MMK</span></td>
