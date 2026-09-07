@@ -101,9 +101,23 @@ class CreateFoodOrderRequest(BaseModel):
     subtotal_mmk: float = 0
     delivery_fee_mmk: float = 0
     discount_mmk: float = 0
+    goods_amount: float = 0
     voucher_code: str = ""
     items: list[FoodOrderItemRequest] = Field(default_factory=list)
     note: str = ""
+
+
+class FoodOrderPreparationStatusRequest(BaseModel):
+    preparation_status: str
+
+
+class FoodOrderReviewRequest(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    comment: str = ""
+
+
+class FoodOrderReviewReplyRequest(BaseModel):
+    reply: str
 
 
 class FoodOrderResponse(BaseModel):
@@ -126,6 +140,7 @@ class FoodOrderResponse(BaseModel):
     goods_amount: float = 0
     voucher_code: str = ""
     status: str
+    preparation_status: str | None = None
     items: list[FoodOrderItemRequest]
     note: str = ""
     restaurant_name: str = ""
@@ -156,6 +171,11 @@ class FoodOrderResponse(BaseModel):
     rider_settlement_bill_message: str | None = None
     rider_settlement_bill_amount: float | None = None
     rider_settlement_bill_created_at: str | None = None
+    review_rating: int | None = None
+    review_comment: str | None = None
+    reviewed_by_user_at: str | None = None
+    restaurant_reply: str | None = None
+    restaurant_replied_at: str | None = None
     created_at: str
 
 
@@ -769,6 +789,7 @@ def _food_order_from_payload(payload: str | None) -> FoodOrderResponse:
     data.setdefault("discount_mmk", 0)
     data.setdefault("goods_amount", 0)
     data.setdefault("voucher_code", "")
+    data.setdefault("preparation_status", None)
     data.setdefault("items", [])
     data.setdefault("note", "")
     data.setdefault("restaurant_name", "")
@@ -777,6 +798,11 @@ def _food_order_from_payload(payload: str | None) -> FoodOrderResponse:
     data.setdefault("restaurant_township", "")
     data.setdefault("rider_deposit_status", "not_required")
     data.setdefault("settlement_status", "pending")
+    data.setdefault("review_rating", None)
+    data.setdefault("review_comment", None)
+    data.setdefault("reviewed_by_user_at", None)
+    data.setdefault("restaurant_reply", None)
+    data.setdefault("restaurant_replied_at", None)
     data.setdefault("created_at", "")
     return FoodOrderResponse(**data)
 
@@ -1205,6 +1231,7 @@ def create_food_router(
         payload.setdefault("discount_mmk", 0)
         payload.setdefault("goods_amount", 0)
         payload.setdefault("voucher_code", "")
+        payload.setdefault("preparation_status", None)
         payload.setdefault("items", [])
         payload.setdefault("note", "")
         payload.setdefault("restaurant_name", "")
@@ -1213,6 +1240,11 @@ def create_food_router(
         payload.setdefault("restaurant_township", "")
         payload.setdefault("rider_deposit_status", "not_required")
         payload.setdefault("settlement_status", "pending")
+        payload.setdefault("review_rating", None)
+        payload.setdefault("review_comment", None)
+        payload.setdefault("reviewed_by_user_at", None)
+        payload.setdefault("restaurant_reply", None)
+        payload.setdefault("restaurant_replied_at", None)
         payload.setdefault("created_at", row["created_at"] if "created_at" in row.keys() else "")
         return FoodOrderResponse(**payload)
 
@@ -1740,6 +1772,102 @@ def create_food_router(
                 tuple(restaurant_ids),
             ).fetchall()
             return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
+
+    @router.post("/stores/orders/{order_id}/preparation", response_model=FoodOrderResponse)
+    def update_store_food_order_preparation(
+        order_id: str,
+        request: FoodOrderPreparationStatusRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodOrderResponse:
+        user_phone = require_account_phone(authorization)
+        preparation_status = request.preparation_status.strip()
+        if preparation_status not in {"preparing", "ready"}:
+            raise HTTPException(status_code=400, detail="备餐状态不正确")
+        with connect_db() as connection:
+            row = connection.execute(
+                """
+                SELECT food_orders.payload
+                FROM food_orders
+                JOIN food_store_applications store ON store.id = food_orders.restaurant_id
+                WHERE food_orders.id = ? AND store.user_phone = ? AND store.status = 'confirmed'
+                LIMIT 1
+                """,
+                (order_id, user_phone),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="外卖订单不存在")
+            order = food_order_from_row(row)
+            if order.status in {"completed", "cancelled"}:
+                raise HTTPException(status_code=400, detail="订单已结束")
+            order = order.model_copy(update={"preparation_status": preparation_status})
+            order = enrich_food_order_items(connection, order)
+            save_food_order(connection, order)
+            return order
+
+    @router.post("/orders/{order_id}/review", response_model=FoodOrderResponse)
+    def submit_food_order_review(
+        order_id: str,
+        request: FoodOrderReviewRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodOrderResponse:
+        user_phone = require_account_phone(authorization)
+        comment = request.comment.strip()[:1000]
+        with connect_db() as connection:
+            row = connection.execute(
+                "SELECT payload FROM food_orders WHERE id = ? AND user_phone = ? LIMIT 1",
+                (order_id, user_phone),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="外卖订单不存在")
+            order = food_order_from_row(row)
+            if order.status != "completed":
+                raise HTTPException(status_code=400, detail="订单完成后可以评价")
+            order = order.model_copy(
+                update={
+                    "review_rating": request.rating,
+                    "review_comment": comment,
+                    "reviewed_by_user_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            order = enrich_food_order_items(connection, order)
+            save_food_order(connection, order)
+            return order
+
+    @router.post("/stores/orders/{order_id}/review-reply", response_model=FoodOrderResponse)
+    def reply_food_order_review(
+        order_id: str,
+        request: FoodOrderReviewReplyRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodOrderResponse:
+        user_phone = require_account_phone(authorization)
+        reply = request.reply.strip()[:1000]
+        if not reply:
+            raise HTTPException(status_code=400, detail="请填写回复")
+        with connect_db() as connection:
+            row = connection.execute(
+                """
+                SELECT food_orders.payload
+                FROM food_orders
+                JOIN food_store_applications store ON store.id = food_orders.restaurant_id
+                WHERE food_orders.id = ? AND store.user_phone = ? AND store.status = 'confirmed'
+                LIMIT 1
+                """,
+                (order_id, user_phone),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="外卖订单不存在")
+            order = food_order_from_row(row)
+            if order.review_rating is None and not (order.review_comment or "").strip():
+                raise HTTPException(status_code=400, detail="暂无评价")
+            order = order.model_copy(
+                update={
+                    "restaurant_reply": reply,
+                    "restaurant_replied_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            order = enrich_food_order_items(connection, order)
+            save_food_order(connection, order)
+            return order
 
     @router.get("/rider/orders", response_model=list[FoodOrderResponse])
     def list_rider_food_orders(
@@ -2288,7 +2416,7 @@ def create_food_router(
                 subtotal_mmk=request.subtotal_mmk,
                 delivery_fee_mmk=request.delivery_fee_mmk,
                 discount_mmk=discount_mmk,
-                goods_amount=request.subtotal_mmk - discount_mmk,
+                goods_amount=request.goods_amount if request.goods_amount > 0 else request.subtotal_mmk,
                 voucher_code=voucher_code,
                 status="payment_pending" if is_qr_pay else "pending",
                 items=request.items,
