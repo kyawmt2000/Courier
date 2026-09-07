@@ -2253,7 +2253,7 @@ def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
             rows = connection.execute(
                 """
                 SELECT user_phone, payload FROM orders
-                WHERE status = 'matching'
+                WHERE (status = 'matching' AND rider_phone IS NULL)
                    OR (rider_phone = ? AND created_at > ?)
                 ORDER BY created_at DESC
                 """,
@@ -2263,7 +2263,7 @@ def load_rider_orders(rider_phone: str) -> list[OrderResponse]:
             rows = connection.execute(
                 """
                 SELECT user_phone, payload FROM orders
-                WHERE status = 'matching'
+                WHERE (status = 'matching' AND rider_phone IS NULL)
                    OR rider_phone = ?
                 ORDER BY created_at DESC
                 """,
