@@ -943,7 +943,7 @@ def update_admin_food_order(
             rider_amount = order.rider_settlement_bill_amount or order.delivery_fee_mmk
             updates["rider_settlement_bill_title"] = "送货费已转，请查收"
             updates["rider_settlement_bill_message"] = (
-                f"外卖订单 #{order.id[:6].upper()} 送货费 {rider_amount:,.0f} MMK "
+                f"外卖订单 #{order.id[:8].upper()} 送货费 {rider_amount:,.0f} MMK "
                 "已转给骑手，请查收。"
             )
             updates["rider_settlement_bill_amount"] = rider_amount
