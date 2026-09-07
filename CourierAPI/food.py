@@ -1341,6 +1341,18 @@ def create_food_router(
             ),
         )
 
+    def is_visible_to_restaurant(order: FoodOrderResponse) -> bool:
+        return (
+            order.status != "payment_pending"
+            and order.payment_status != "pending"
+            and (
+                bool((order.rider_account_phone or "").strip())
+                or bool((order.rider_phone or "").strip())
+                or bool((order.accepted_at or "").strip())
+                or order.status in {"accepted", "picking_up", "delivering", "completed"}
+            )
+        )
+
     def notify_food_order_user(order: FoodOrderResponse, key_suffix: str, title: str, message: str) -> None:
         if notify_user:
             notify_user(order.user_phone, f"food-order-{order.id}-{key_suffix}", title, message)
@@ -1798,6 +1810,13 @@ def create_food_router(
                 WHERE restaurant_id IN ({placeholders})
                   AND status != 'payment_pending'
                   AND COALESCE(json_extract(payload, '$.payment_status'), 'not_required') != 'pending'
+                  AND (
+                    COALESCE(rider_phone, '') != ''
+                    OR COALESCE(json_extract(payload, '$.rider_account_phone'), '') != ''
+                    OR COALESCE(json_extract(payload, '$.rider_phone'), '') != ''
+                    OR COALESCE(json_extract(payload, '$.accepted_at'), '') != ''
+                    OR status IN ('accepted', 'picking_up', 'delivering', 'completed')
+                  )
                 ORDER BY created_at DESC
                 """,
                 tuple(restaurant_ids),
@@ -1828,6 +1847,8 @@ def create_food_router(
             if not row:
                 raise HTTPException(status_code=404, detail="外卖订单不存在")
             order = food_order_from_row(row)
+            if not is_visible_to_restaurant(order):
+                raise HTTPException(status_code=404, detail="外卖订单不存在")
             if order.status in {"completed", "cancelled"}:
                 raise HTTPException(status_code=400, detail="订单已结束")
             order = order.model_copy(update={"preparation_status": preparation_status})
