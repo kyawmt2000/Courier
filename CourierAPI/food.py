@@ -191,6 +191,8 @@ def _restaurant_location_text(payload: dict[str, object]) -> str:
 class FoodAcceptOrderRequest(BaseModel):
     rider_name: str = Field(min_length=1)
     rider_phone: str | None = None
+    rider_lat: float | None = None
+    rider_lng: float | None = None
 
 
 class FoodUpdateOrderStatusRequest(BaseModel):
@@ -1990,6 +1992,11 @@ def create_food_router(
                     "rider_deposit_submitted_at": None,
                     "rider_deposit_proof_url": None,
                     "accepted_at": datetime.now(timezone.utc).isoformat(),
+                    "rider_lat": request.rider_lat,
+                    "rider_lng": request.rider_lng,
+                    "rider_location_updated_at": datetime.now(timezone.utc).isoformat()
+                    if request.rider_lat is not None and request.rider_lng is not None
+                    else None,
                 }
             )
             order = enrich_food_order_items(connection, order)
