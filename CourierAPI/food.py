@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,9 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError
 
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
+UNACCEPTED_FOOD_ORDER_EXPIRATION = timedelta(
+    hours=float(os.getenv("UNACCEPTED_FOOD_ORDER_EXPIRATION_HOURS", "1") or 1)
+)
 logger = logging.getLogger("courier-api.food")
 
 
@@ -926,6 +930,22 @@ def _food_order_payload(order: FoodOrderResponse) -> str:
     return json.dumps(order.model_dump(mode="json"), ensure_ascii=False)
 
 
+def delete_expired_unaccepted_food_orders(connection: sqlite3.Connection) -> None:
+    cutoff = datetime.now(timezone.utc) - UNACCEPTED_FOOD_ORDER_EXPIRATION
+    connection.execute(
+        """
+        DELETE FROM food_orders
+        WHERE status IN ('pending', 'payment_pending')
+          AND rider_phone IS NULL
+          AND COALESCE(json_extract(payload, '$.rider_account_phone'), '') = ''
+          AND COALESCE(json_extract(payload, '$.rider_phone'), '') = ''
+          AND COALESCE(json_extract(payload, '$.accepted_at'), '') = ''
+          AND created_at <= ?
+        """,
+        (cutoff.isoformat(),),
+    )
+
+
 def _is_valid_food_order_phone(phone: str) -> bool:
     return phone.isdigit() and len(phone) in (9, 11)
 
@@ -994,6 +1014,7 @@ def load_admin_food_orders(
 ) -> list[dict]:
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
+        delete_expired_unaccepted_food_orders(connection)
         rows = connection.execute(
             """
             SELECT
@@ -1948,6 +1969,7 @@ def create_food_router(
     def list_food_orders(authorization: str | None = Header(default=None)) -> list[FoodOrderResponse]:
         user_phone = require_account_phone(authorization)
         with connect_db() as connection:
+            delete_expired_unaccepted_food_orders(connection)
             rows = connection.execute(
                 """
                 SELECT user_phone, payload
@@ -1966,6 +1988,7 @@ def create_food_router(
     ) -> list[FoodOrderResponse]:
         user_phone = require_account_phone(authorization)
         with connect_db() as connection:
+            delete_expired_unaccepted_food_orders(connection)
             selected_restaurant_id = (restaurant_id or "").strip()
             if selected_restaurant_id:
                 application_rows = connection.execute(
@@ -2276,6 +2299,7 @@ def create_food_router(
         rider_phone = require_account_phone(authorization)
         requested_city = (city or "").strip()
         with connect_db() as connection:
+            delete_expired_unaccepted_food_orders(connection)
             rows = connection.execute(
                 """
                 SELECT payload
@@ -2320,6 +2344,7 @@ def create_food_router(
             rider_name = getattr(rider_registration, "rider_name", "").strip() or rider_name
             display_rider_phone = _clean_optional_text(getattr(rider_registration, "phone_no", None)) or display_rider_phone
         with connect_db() as connection:
+            delete_expired_unaccepted_food_orders(connection)
             row = connection.execute(
                 "SELECT payload, rider_phone FROM food_orders WHERE id = ? LIMIT 1",
                 (order_id,),
