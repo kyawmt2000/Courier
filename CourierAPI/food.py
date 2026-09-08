@@ -117,10 +117,32 @@ class FoodOrderPreparationStatusRequest(BaseModel):
 class FoodOrderReviewRequest(BaseModel):
     rating: int = Field(ge=1, le=5)
     comment: str = ""
+    image_urls: list[str] = Field(default_factory=list)
 
 
 class FoodOrderReviewReplyRequest(BaseModel):
     reply: str
+
+
+class FoodReviewReactionRequest(BaseModel):
+    reaction: str
+
+
+class FoodReviewResponse(BaseModel):
+    id: str
+    order_id: str | None = None
+    restaurant_id: str
+    user_phone: str
+    rating: int = 5
+    comment: str = ""
+    image_urls: list[str] = Field(default_factory=list)
+    image_count: int = 0
+    like_count: int = 0
+    dislike_count: int = 0
+    user_reaction: str | None = None
+    restaurant_reply: str | None = None
+    restaurant_replied_at: str | None = None
+    created_at: str
 
 
 class FoodOrderResponse(BaseModel):
@@ -559,6 +581,34 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
         """
     )
     connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS food_reviews (
+            id TEXT PRIMARY KEY,
+            order_id TEXT,
+            restaurant_id TEXT NOT NULL,
+            user_phone TEXT NOT NULL,
+            rating INTEGER NOT NULL DEFAULT 5,
+            comment TEXT NOT NULL DEFAULT '',
+            image_count INTEGER NOT NULL DEFAULT 0,
+            restaurant_reply TEXT,
+            restaurant_replied_at TEXT,
+            payload TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS food_review_reactions (
+            review_id TEXT NOT NULL,
+            user_phone TEXT NOT NULL,
+            reaction TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (review_id, user_phone)
+        )
+        """
+    )
+    connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_food_menu_restaurant "
         "ON food_menu_items (restaurant_id, is_available)"
     )
@@ -569,6 +619,14 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_food_orders_status_created "
         "ON food_orders (status, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_food_reviews_restaurant_created "
+        "ON food_reviews (restaurant_id, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_food_reviews_order "
+        "ON food_reviews (order_id)"
     )
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(food_orders)").fetchall()}
     if "rider_phone" not in columns:
@@ -1401,6 +1459,55 @@ def create_food_router(
             ),
         )
 
+    def food_review_from_row(
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        user_phone: str | None = None,
+    ) -> FoodReviewResponse:
+        payload = json.loads(row["payload"] or "{}")
+        image_urls = payload.get("image_urls") or []
+        if sign_url:
+            image_urls = [sign_url(url) or url for url in image_urls]
+        counts = connection.execute(
+            """
+            SELECT
+                SUM(CASE WHEN reaction = 'like' THEN 1 ELSE 0 END) AS like_count,
+                SUM(CASE WHEN reaction = 'dislike' THEN 1 ELSE 0 END) AS dislike_count
+            FROM food_review_reactions
+            WHERE review_id = ?
+            """,
+            (row["id"],),
+        ).fetchone()
+        user_reaction = None
+        if user_phone:
+            reaction_row = connection.execute(
+                """
+                SELECT reaction
+                FROM food_review_reactions
+                WHERE review_id = ? AND user_phone = ?
+                LIMIT 1
+                """,
+                (row["id"], user_phone),
+            ).fetchone()
+            if reaction_row:
+                user_reaction = reaction_row["reaction"]
+        return FoodReviewResponse(
+            id=row["id"],
+            order_id=row["order_id"],
+            restaurant_id=row["restaurant_id"],
+            user_phone=row["user_phone"],
+            rating=int(row["rating"] or 5),
+            comment=row["comment"] or "",
+            image_urls=image_urls,
+            image_count=int(row["image_count"] or len(image_urls)),
+            like_count=int(counts["like_count"] or 0) if counts else 0,
+            dislike_count=int(counts["dislike_count"] or 0) if counts else 0,
+            user_reaction=user_reaction,
+            restaurant_reply=row["restaurant_reply"],
+            restaurant_replied_at=row["restaurant_replied_at"],
+            created_at=row["created_at"],
+        )
+
     def food_order_belongs_to_rider(order: FoodOrderResponse, rider_phone: str) -> bool:
         return rider_phone in {
             _clean_optional_text(order.rider_account_phone),
@@ -1945,6 +2052,10 @@ def create_food_router(
     ) -> FoodOrderResponse:
         user_phone = require_account_phone(authorization)
         comment = request.comment.strip()[:1000]
+        image_urls = [_stored_image_url(url) for url in request.image_urls]
+        image_urls = [url for url in image_urls if url]
+        if len(image_urls) != 1:
+            raise HTTPException(status_code=400, detail="评价必须上传 1 张图片")
         with connect_db() as connection:
             row = connection.execute(
                 "SELECT payload FROM food_orders WHERE id = ? AND user_phone = ? LIMIT 1",
@@ -1955,6 +2066,7 @@ def create_food_router(
             order = food_order_from_row(row)
             if order.status != "completed":
                 raise HTTPException(status_code=400, detail="订单完成后可以评价")
+            created_at = datetime.now(timezone.utc).isoformat()
             order = order.model_copy(
                 update={
                     "review_rating": request.rating,
@@ -1963,8 +2075,154 @@ def create_food_router(
                 }
             )
             order = enrich_food_order_items(connection, order)
+            existing_review = connection.execute(
+                """
+                SELECT id
+                FROM food_reviews
+                WHERE order_id = ? AND user_phone = ?
+                LIMIT 1
+                """,
+                (order.id, user_phone),
+            ).fetchone()
+            review_payload = {
+                "image_urls": image_urls,
+                "image_count": len(image_urls),
+            }
+            if existing_review:
+                connection.execute(
+                    """
+                    UPDATE food_reviews
+                    SET rating = ?, comment = ?, image_count = ?, payload = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        request.rating,
+                        comment,
+                        len(image_urls),
+                        json.dumps(review_payload, ensure_ascii=False),
+                        existing_review["id"],
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO food_reviews (
+                        id, order_id, restaurant_id, user_phone, rating, comment,
+                        image_count, payload, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        order.id,
+                        order.restaurant_id,
+                        user_phone,
+                        request.rating,
+                        comment,
+                        len(image_urls),
+                        json.dumps(review_payload, ensure_ascii=False),
+                        created_at,
+                    ),
+                )
             save_food_order(connection, order)
             return order
+
+    @router.get("/restaurants/{restaurant_id}/reviews", response_model=list[FoodReviewResponse])
+    def list_food_restaurant_reviews(
+        restaurant_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> list[FoodReviewResponse]:
+        user_phone = None
+        if authorization:
+            user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, order_id, restaurant_id, user_phone, rating, comment, image_count,
+                       restaurant_reply, restaurant_replied_at, payload, created_at
+                FROM food_reviews
+                WHERE restaurant_id = ?
+                ORDER BY created_at DESC
+                """,
+                (restaurant_id,),
+            ).fetchall()
+            return [food_review_from_row(connection, row, user_phone) for row in rows]
+
+    @router.post("/reviews/{review_id}/reaction", response_model=FoodReviewResponse)
+    def react_food_review(
+        review_id: str,
+        request: FoodReviewReactionRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodReviewResponse:
+        user_phone = require_account_phone(authorization)
+        reaction = request.reaction.strip()
+        if reaction not in {"like", "dislike", ""}:
+            raise HTTPException(status_code=400, detail="评价反馈不正确")
+        with connect_db() as connection:
+            row = connection.execute(
+                """
+                SELECT id, order_id, restaurant_id, user_phone, rating, comment, image_count,
+                       restaurant_reply, restaurant_replied_at, payload, created_at
+                FROM food_reviews
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (review_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="评价不存在")
+            if reaction:
+                connection.execute(
+                    """
+                    INSERT INTO food_review_reactions (review_id, user_phone, reaction, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(review_id, user_phone)
+                    DO UPDATE SET reaction = excluded.reaction, created_at = excluded.created_at
+                    """,
+                    (review_id, user_phone, reaction, datetime.now(timezone.utc).isoformat()),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM food_review_reactions WHERE review_id = ? AND user_phone = ?",
+                    (review_id, user_phone),
+                )
+            return food_review_from_row(connection, row, user_phone)
+
+    @router.delete("/reviews/{review_id}", response_model=dict)
+    def delete_food_review(
+        review_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            row = connection.execute(
+                "SELECT id, order_id, user_phone FROM food_reviews WHERE id = ? LIMIT 1",
+                (review_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="评价不存在")
+            if row["user_phone"] != user_phone:
+                raise HTTPException(status_code=403, detail="只能删除自己的评价")
+            order_id = row["order_id"]
+            if order_id:
+                order_row = connection.execute(
+                    "SELECT payload FROM food_orders WHERE id = ? AND user_phone = ? LIMIT 1",
+                    (order_id, user_phone),
+                ).fetchone()
+                if order_row:
+                    order = food_order_from_row(order_row).model_copy(
+                        update={
+                            "review_rating": None,
+                            "review_comment": None,
+                            "reviewed_by_user_at": None,
+                            "restaurant_reply": None,
+                            "restaurant_replied_at": None,
+                        }
+                    )
+                    save_food_order(connection, order)
+            connection.execute("DELETE FROM food_review_reactions WHERE review_id = ?", (review_id,))
+            connection.execute("DELETE FROM food_reviews WHERE id = ?", (review_id,))
+            return {"status": "deleted", "id": review_id}
 
     @router.post("/stores/orders/{order_id}/review-reply", response_model=FoodOrderResponse)
     def reply_food_order_review(
@@ -1999,6 +2257,14 @@ def create_food_router(
                 }
             )
             order = enrich_food_order_items(connection, order)
+            connection.execute(
+                """
+                UPDATE food_reviews
+                SET restaurant_reply = ?, restaurant_replied_at = ?
+                WHERE order_id = ?
+                """,
+                (order.restaurant_reply, order.restaurant_replied_at, order.id),
+            )
             save_food_order(connection, order)
             return order
 
