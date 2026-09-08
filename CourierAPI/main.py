@@ -61,6 +61,9 @@ CURRENT_TERMS_VERSION = "2026-08-24-off-platform"
 RIDER_CANCEL_DELIVERY_PENALTY_MMK = float(os.getenv("RIDER_CANCEL_DELIVERY_PENALTY_MMK", "1000") or 1000)
 USER_CANCEL_DELIVERY_PENALTY_MMK = float(os.getenv("USER_CANCEL_DELIVERY_PENALTY_MMK", "1000") or 1000)
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
+UNACCEPTED_PARCEL_ORDER_EXPIRATION = timedelta(
+    hours=float(os.getenv("UNACCEPTED_PARCEL_ORDER_EXPIRATION_HOURS", "3") or 3)
+)
 ACCEPTED_PICKUP_START_TIMEOUT = timedelta(
     minutes=int(os.getenv("ACCEPTED_PICKUP_START_TIMEOUT_MINUTES", "30") or 30)
 )
@@ -1804,6 +1807,9 @@ def upload_folder(value: str) -> str:
         "food payment": "food-payments",
         "food payments": "food-payments",
         "food-payments": "food-payments",
+        "food review": "food-reviews",
+        "food reviews": "food-reviews",
+        "food-reviews": "food-reviews",
         "rider deposit": "rider deposit",
         "rider deposit proof": "rider deposit",
         "rider registration": "rider registration",
@@ -2576,8 +2582,23 @@ def process_delivery_timeout_orders() -> None:
 
 
 def process_order_timeouts() -> None:
+    delete_expired_unaccepted_orders()
     release_expired_rider_deposit_orders()
     process_delivery_timeout_orders()
+
+
+def delete_expired_unaccepted_orders() -> None:
+    cutoff = datetime.now(timezone.utc) - UNACCEPTED_PARCEL_ORDER_EXPIRATION
+    with connect_db() as connection:
+        connection.execute(
+            """
+            DELETE FROM orders
+            WHERE status = 'matching'
+              AND rider_phone IS NULL
+              AND created_at <= ?
+            """,
+            (cutoff.isoformat(),),
+        )
 
 
 def sync_orders_for_prepaid_payment(payment: PrepaidPaymentResponse) -> None:
