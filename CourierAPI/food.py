@@ -1252,6 +1252,11 @@ def create_food_router(
         payload.setdefault("restaurant_city", "")
         payload.setdefault("restaurant_township", "")
         payload.setdefault("rider_account_phone", None)
+        if "rider_phone" in row.keys() and not payload.get("rider_account_phone"):
+            stored_rider_phone = _clean_optional_text(row["rider_phone"])
+            payload_rider_phone = _clean_optional_text(payload.get("rider_phone"))
+            if stored_rider_phone and stored_rider_phone != payload_rider_phone:
+                payload["rider_account_phone"] = stored_rider_phone
         payload.setdefault("rider_deposit_status", "not_required")
         payload.setdefault("settlement_status", "pending")
         payload.setdefault("review_rating", None)
@@ -1342,6 +1347,12 @@ def create_food_router(
                 order.id,
             ),
         )
+
+    def food_order_belongs_to_rider(order: FoodOrderResponse, rider_phone: str) -> bool:
+        return rider_phone in {
+            _clean_optional_text(order.rider_account_phone),
+            _clean_optional_text(order.rider_phone),
+        }
 
     def is_visible_to_restaurant(order: FoodOrderResponse) -> bool:
         return (
@@ -1969,12 +1980,14 @@ def create_food_router(
     ) -> FoodOrderResponse:
         rider_phone = require_account_phone(authorization)
         rider_name = request.rider_name
+        display_rider_phone = _clean_optional_text(request.rider_phone) or rider_phone
         if require_approved_rider:
             rider_registration = require_approved_rider(rider_phone)
             rider_name = getattr(rider_registration, "rider_name", "").strip() or rider_name
+            display_rider_phone = _clean_optional_text(getattr(rider_registration, "phone_no", None)) or display_rider_phone
         with connect_db() as connection:
             row = connection.execute(
-                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                "SELECT payload, rider_phone FROM food_orders WHERE id = ? LIMIT 1",
                 (order_id,),
             ).fetchone()
             if not row:
@@ -1986,7 +1999,8 @@ def create_food_router(
                 update={
                     "status": "accepted",
                     "rider_name": rider_name,
-                    "rider_phone": rider_phone,
+                    "rider_account_phone": rider_phone,
+                    "rider_phone": display_rider_phone,
                     "rider_deposit_status": "not_required",
                     "rider_deposit_due_at": None,
                     "rider_deposit_submitted_at": None,
@@ -2013,13 +2027,13 @@ def create_food_router(
         rider_phone = require_account_phone(authorization)
         with connect_db() as connection:
             row = connection.execute(
-                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                "SELECT payload, rider_phone FROM food_orders WHERE id = ? LIMIT 1",
                 (order_id,),
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="外卖订单不存在")
             order = food_order_from_row(row)
-            if order.rider_phone != rider_phone:
+            if not food_order_belongs_to_rider(order, rider_phone):
                 raise HTTPException(status_code=403, detail="不能更新其他骑手的押金状态")
             if order.rider_deposit_status == "confirmed":
                 return enrich_food_order_items(connection, order)
@@ -2050,13 +2064,13 @@ def create_food_router(
             raise HTTPException(status_code=400, detail="外卖订单状态不正确")
         with connect_db() as connection:
             row = connection.execute(
-                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                "SELECT payload, rider_phone FROM food_orders WHERE id = ? LIMIT 1",
                 (order_id,),
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="外卖订单不存在")
             order = food_order_from_row(row)
-            if order.rider_phone != rider_phone:
+            if not food_order_belongs_to_rider(order, rider_phone):
                 raise HTTPException(status_code=403, detail="只能更新自己的外卖订单")
             if order.rider_deposit_status not in {"not_required", "confirmed"}:
                 raise HTTPException(status_code=403, detail="平台确认骑手押金后才能开始取件配送")
@@ -2080,11 +2094,13 @@ def create_food_router(
             order = enrich_food_order_items(connection, order)
             save_food_order(connection, order)
         title_by_status = {
+            "accepted": "Rider accepted",
             "picking_up": "Rider is picking up food",
             "delivering": "Rider is delivering food",
             "completed": "Food delivered",
         }
         message_by_status = {
+            "accepted": "Your rider accepted your food order.",
             "picking_up": "Your rider is heading to the restaurant.",
             "delivering": "Your rider picked up the food and is on the way.",
             "completed": "Your food order has been completed.",
@@ -2101,13 +2117,13 @@ def create_food_router(
         rider_phone = require_account_phone(authorization)
         with connect_db() as connection:
             row = connection.execute(
-                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                "SELECT payload, rider_phone FROM food_orders WHERE id = ? LIMIT 1",
                 (order_id,),
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="外卖订单不存在")
             order = food_order_from_row(row)
-            if order.rider_phone != rider_phone:
+            if not food_order_belongs_to_rider(order, rider_phone):
                 raise HTTPException(status_code=403, detail="只能更新自己的外卖订单")
             first_location = order.rider_location_updated_at is None
             order = order.model_copy(
@@ -2136,13 +2152,13 @@ def create_food_router(
             raise HTTPException(status_code=400, detail="请上传收款二维码")
         with connect_db() as connection:
             row = connection.execute(
-                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                "SELECT payload, rider_phone FROM food_orders WHERE id = ? LIMIT 1",
                 (order_id,),
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="外卖订单不存在")
             order = food_order_from_row(row)
-            if order.rider_phone != rider_phone:
+            if not food_order_belongs_to_rider(order, rider_phone):
                 raise HTTPException(status_code=403, detail="只能提交自己的外卖订单结算")
             if order.status != "completed":
                 raise HTTPException(status_code=400, detail="外卖订单完成后才能提交结算")
