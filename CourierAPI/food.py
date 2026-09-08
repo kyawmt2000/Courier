@@ -124,6 +124,12 @@ class FoodOrderReviewRequest(BaseModel):
     image_urls: list[str] = Field(default_factory=list)
 
 
+class FoodRestaurantReviewRequest(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    comment: str = ""
+    image_urls: list[str] = Field(default_factory=list)
+
+
 class FoodOrderReviewReplyRequest(BaseModel):
     reply: str
 
@@ -1593,9 +1599,11 @@ def create_food_router(
                                )
                                ELSE 0
                            END
-                       ), 0) AS discount_percent
+                       ), 0) AS discount_percent,
+                       COALESCE(AVG(review.rating), json_extract(store.payload, '$.rating'), 5.0) AS average_rating
                 FROM food_store_applications store
                 LEFT JOIN food_menu_items item ON item.restaurant_id = store.id
+                LEFT JOIN food_reviews review ON review.restaurant_id = store.id
                 WHERE store.status = 'confirmed'
                   AND json_extract(store.payload, '$.deleted_at') IS NULL
                   AND EXISTS (
@@ -1639,7 +1647,7 @@ def create_food_router(
                     business_hours_open=business_hours_open,
                     business_hours_close=business_hours_close,
                     discount_percent=int(row["discount_percent"] or 0),
-                    rating=float(payload.get("rating") or 5.0),
+                    rating=round(float(row["average_rating"] or payload.get("rating") or 5.0), 1),
                     distance_km=round(distance_km, 2) if distance_km is not None else None,
                     delivery_fee_mmk=delivery_fee_mmk,
                 )
@@ -2149,6 +2157,68 @@ def create_food_router(
                 )
             save_food_order(connection, order)
             return order
+
+    @router.post("/restaurants/{restaurant_id}/review", response_model=FoodReviewResponse)
+    def submit_food_restaurant_review(
+        restaurant_id: str,
+        request: FoodRestaurantReviewRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodReviewResponse:
+        user_phone = require_account_phone(authorization)
+        comment = request.comment.strip()[:1000]
+        image_urls = [_stored_image_url(url) for url in request.image_urls]
+        image_urls = [url for url in image_urls if url]
+        if len(image_urls) != 1:
+            raise HTTPException(status_code=400, detail="评价必须上传 1 张图片")
+        with connect_db() as connection:
+            restaurant = connection.execute(
+                """
+                SELECT id
+                FROM food_store_applications
+                WHERE id = ? AND status = 'confirmed'
+                  AND json_extract(payload, '$.deleted_at') IS NULL
+                LIMIT 1
+                """,
+                (restaurant_id,),
+            ).fetchone()
+            if not restaurant:
+                raise HTTPException(status_code=404, detail="餐厅不存在")
+            created_at = datetime.now(timezone.utc).isoformat()
+            review_id = str(uuid4())
+            review_payload = {
+                "image_urls": image_urls,
+                "image_count": len(image_urls),
+            }
+            connection.execute(
+                """
+                INSERT INTO food_reviews (
+                    id, order_id, restaurant_id, user_phone, rating, comment,
+                    image_count, payload, created_at
+                )
+                VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    restaurant_id,
+                    user_phone,
+                    request.rating,
+                    comment,
+                    len(image_urls),
+                    json.dumps(review_payload, ensure_ascii=False),
+                    created_at,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT id, order_id, restaurant_id, user_phone, rating, comment, image_count,
+                       restaurant_reply, restaurant_replied_at, payload, created_at
+                FROM food_reviews
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (review_id,),
+            ).fetchone()
+            return food_review_from_row(connection, row, user_phone)
 
     @router.get("/restaurants/{restaurant_id}/reviews", response_model=list[FoodReviewResponse])
     def list_food_restaurant_reviews(
