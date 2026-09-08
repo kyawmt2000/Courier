@@ -4632,20 +4632,20 @@ ADMIN_HTML = r'''
           const otherSide = order.user_phone === phone
             ? (accountName(order.rider_phone, order.rider_nickname || order.rider_name) || "未接单骑手")
             : (accountName(order.user_phone, order.user_nickname) || accountContact(order.user_phone, order.user_email));
-          return `订单 ${order.id.slice(0, 6).toUpperCase()} / 对方：${otherSide}`;
+          return `Parcel #${order.id.slice(0, 6).toUpperCase()} / 对方：${otherSide}`;
         }
       }
       if (conversationId.startsWith("food-merchant-order:")) {
         const orderId = conversationId.slice("food-merchant-order:".length);
         const order = state.food_orders.find(item => String(item.id || "").toLowerCase() === orderId.toLowerCase());
         const code = order ? order.id.slice(0, 8).toUpperCase() : orderId.slice(0, 8).toUpperCase();
-        return `外卖 ${code} / 商家聊天`;
+        return `Food #${code}`;
       }
       if (conversationId.startsWith("food-order:")) {
         const orderId = conversationId.slice("food-order:".length);
         const order = state.food_orders.find(item => String(item.id || "").toLowerCase() === orderId.toLowerCase());
         const code = order ? order.id.slice(0, 8).toUpperCase() : orderId.slice(0, 8).toUpperCase();
-        return `外卖 ${code} / 用户骑手聊天`;
+        return `Food #${code}`;
       }
       return conversationId;
     }
@@ -4659,13 +4659,13 @@ ADMIN_HTML = r'''
         return name && contact ? `${name} / ${contact}` : (name || contact || "账号会话");
       }
       if (raw.toLowerCase().startsWith("order:")) {
-        return `订单 ${raw.slice("order:".length, "order:".length + 6).toUpperCase()}`;
+        return `Parcel #${raw.slice("order:".length, "order:".length + 6).toUpperCase()}`;
       }
       if (raw.toLowerCase().startsWith("food-merchant-order:")) {
-        return `外卖商家 ${raw.slice("food-merchant-order:".length, "food-merchant-order:".length + 8).toUpperCase()}`;
+        return `Food #${raw.slice("food-merchant-order:".length, "food-merchant-order:".length + 8).toUpperCase()}`;
       }
       if (raw.toLowerCase().startsWith("food-order:")) {
-        return `外卖订单 ${raw.slice("food-order:".length, "food-order:".length + 8).toUpperCase()}`;
+        return `Food #${raw.slice("food-order:".length, "food-order:".length + 8).toUpperCase()}`;
       }
       return raw;
     }
