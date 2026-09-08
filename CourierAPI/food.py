@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,8 @@ class FoodRestaurantResponse(BaseModel):
     business_hours_close: str = "21:00"
     discount_percent: int = 0
     rating: float = 5.0
+    distance_km: float | None = None
+    delivery_fee_mmk: float | None = None
 
 
 class FoodMenuItemResponse(BaseModel):
@@ -186,6 +189,56 @@ def _restaurant_location_text(payload: dict[str, object]) -> str:
     if store_address and store_location:
         return f"{store_address}, Google Map Location: {store_location}"
     return store_address or store_location
+
+
+def _coordinate_from_text(text: object) -> tuple[float, float] | None:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return None
+    patterns = (
+        r"@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)",
+        r"\b(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        lat = float(match.group(1))
+        lng = float(match.group(2))
+        if -90 <= lat <= 90 and -180 <= lng <= 180:
+            return lat, lng
+    reverse_match = re.search(r"!2d(-?\d{1,3}(?:\.\d+)?)!3d(-?\d{1,2}(?:\.\d+)?)", normalized)
+    if reverse_match:
+        lng = float(reverse_match.group(1))
+        lat = float(reverse_match.group(2))
+        if -90 <= lat <= 90 and -180 <= lng <= 180:
+            return lat, lng
+    return None
+
+
+def _distance_km_between(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    earth_radius_km = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(d_lng / 2) ** 2
+    )
+    return earth_radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _food_delivery_fee_mmk(distance_km: float) -> float | None:
+    if distance_km < 0:
+        return None
+    if distance_km < 1:
+        return 800.0
+    if distance_km <= 2:
+        return 1000.0
+    if distance_km <= 3:
+        return 1200.0
+    return None
 
 
 class FoodAcceptOrderRequest(BaseModel):
@@ -1391,7 +1444,10 @@ def create_food_router(
         return any(city == normalized_city or city in normalized_city or normalized_city in city for city in known_cities)
 
     @router.get("/restaurants", response_model=list[FoodRestaurantResponse])
-    def list_restaurants() -> list[FoodRestaurantResponse]:
+    def list_restaurants(
+        user_lat: float | None = Query(default=None),
+        user_lng: float | None = Query(default=None),
+    ) -> list[FoodRestaurantResponse]:
         with connect_db() as connection:
             rows = connection.execute(
                 """
@@ -1428,6 +1484,16 @@ def create_food_router(
         restaurants: list[FoodRestaurantResponse] = []
         for row in rows:
             payload = json.loads(row["payload"] or "{}")
+            distance_km: float | None = None
+            delivery_fee_mmk: float | None = None
+            if user_lat is not None and user_lng is not None:
+                store_coordinate = _coordinate_from_text(payload.get("store_location"))
+                if store_coordinate is None:
+                    continue
+                distance_km = _distance_km_between(user_lat, user_lng, store_coordinate[0], store_coordinate[1])
+                delivery_fee_mmk = _food_delivery_fee_mmk(distance_km)
+                if delivery_fee_mmk is None:
+                    continue
             service_types = payload.get("service_types") or []
             restaurant_types = payload.get("restaurant_types") or []
             business_hours_open = _normalize_business_hour(payload.get("business_hours_open") or "09:00", "09:00")
@@ -1446,6 +1512,8 @@ def create_food_router(
                     business_hours_close=business_hours_close,
                     discount_percent=int(row["discount_percent"] or 0),
                     rating=float(payload.get("rating") or 5.0),
+                    distance_km=round(distance_km, 2) if distance_km is not None else None,
+                    delivery_fee_mmk=delivery_fee_mmk,
                 )
             )
         return restaurants
@@ -2421,6 +2489,8 @@ def create_food_router(
         delivery_township = request.delivery_township.strip()
         if request.fulfillment_type != "pickup":
             delivery_city, delivery_township = _validate_delivery_city_township(delivery_city, delivery_township)
+            if request.delivery_lat is None or request.delivery_lng is None:
+                raise HTTPException(status_code=400, detail="请使用 Find on Map 选择定位")
             if (
                 request.delivery_lat is not None
                 and request.delivery_lng is not None
@@ -2448,6 +2518,21 @@ def create_food_router(
             close_text = _normalize_business_hour(restaurant_payload.get("business_hours_close") or "21:00", "21:00")
             if not _is_restaurant_open(open_text, close_text):
                 raise HTTPException(status_code=400, detail="店铺已打烊，暂时不能下单")
+            delivery_fee_mmk = 0.0
+            if request.fulfillment_type != "pickup":
+                store_coordinate = _coordinate_from_text(restaurant_payload.get("store_location"))
+                if store_coordinate is None:
+                    raise HTTPException(status_code=400, detail="餐厅定位不完整，暂时不能配送")
+                delivery_distance_km = _distance_km_between(
+                    request.delivery_lat,
+                    request.delivery_lng,
+                    store_coordinate[0],
+                    store_coordinate[1],
+                )
+                calculated_delivery_fee = _food_delivery_fee_mmk(delivery_distance_km)
+                if calculated_delivery_fee is None:
+                    raise HTTPException(status_code=400, detail="餐厅距离超过 3km，暂时不能配送")
+                delivery_fee_mmk = calculated_delivery_fee
 
             discount_mmk = 0.0
             voucher_code = request.voucher_code.strip()
@@ -2493,7 +2578,7 @@ def create_food_router(
                 phone_no=phone_no,
                 secondary_phone_no=secondary_phone_no,
                 subtotal_mmk=request.subtotal_mmk,
-                delivery_fee_mmk=request.delivery_fee_mmk,
+                delivery_fee_mmk=delivery_fee_mmk,
                 discount_mmk=discount_mmk,
                 goods_amount=request.goods_amount if request.goods_amount > 0 else request.subtotal_mmk,
                 voucher_code=voucher_code,
