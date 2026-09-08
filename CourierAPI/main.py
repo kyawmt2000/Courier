@@ -4635,6 +4635,18 @@ ADMIN_HTML = r'''
           return `订单 ${order.id.slice(0, 6).toUpperCase()} / 对方：${otherSide}`;
         }
       }
+      if (conversationId.startsWith("food-merchant-order:")) {
+        const orderId = conversationId.slice("food-merchant-order:".length);
+        const order = state.food_orders.find(item => String(item.id || "").toLowerCase() === orderId.toLowerCase());
+        const code = order ? order.id.slice(0, 8).toUpperCase() : orderId.slice(0, 8).toUpperCase();
+        return `外卖 ${code} / 商家聊天`;
+      }
+      if (conversationId.startsWith("food-order:")) {
+        const orderId = conversationId.slice("food-order:".length);
+        const order = state.food_orders.find(item => String(item.id || "").toLowerCase() === orderId.toLowerCase());
+        const code = order ? order.id.slice(0, 8).toUpperCase() : orderId.slice(0, 8).toUpperCase();
+        return `外卖 ${code} / 用户骑手聊天`;
+      }
       return conversationId;
     }
 
@@ -4649,6 +4661,12 @@ ADMIN_HTML = r'''
       if (raw.toLowerCase().startsWith("order:")) {
         return `订单 ${raw.slice("order:".length, "order:".length + 6).toUpperCase()}`;
       }
+      if (raw.toLowerCase().startsWith("food-merchant-order:")) {
+        return `外卖商家 ${raw.slice("food-merchant-order:".length, "food-merchant-order:".length + 8).toUpperCase()}`;
+      }
+      if (raw.toLowerCase().startsWith("food-order:")) {
+        return `外卖订单 ${raw.slice("food-order:".length, "food-order:".length + 8).toUpperCase()}`;
+      }
       return raw;
     }
 
@@ -4660,6 +4678,12 @@ ADMIN_HTML = r'''
         ids.add(id);
         ids.add(`order:${id}`);
       });
+      (state.food_orders || []).forEach(order => {
+        const id = String(order.id || "").toLowerCase();
+        if (!id) return;
+        ids.add(`food-order:${id}`);
+        ids.add(`food-merchant-order:${id}`);
+      });
       return ids;
     }
 
@@ -4667,6 +4691,8 @@ ADMIN_HTML = r'''
       const raw = String(conversationId || "").toLowerCase();
       const orderIds = orderConversationIdSet();
       if (raw.startsWith("order:")) return raw;
+      if (raw.startsWith("food-order:")) return raw;
+      if (raw.startsWith("food-merchant-order:")) return raw;
       return orderIds.has(raw) ? `order:${raw}` : raw;
     }
 
@@ -4674,11 +4700,17 @@ ADMIN_HTML = r'''
       return orderConversationIdSet().has(String(conversationId || "").toLowerCase());
     }
 
-    function accountChatThreads(phone, relatedOrders) {
+    function accountChatThreads(phone, relatedOrders, relatedFoodOrders = []) {
       const conversationIds = new Set([`account:${phone}`.toLowerCase()]);
       relatedOrders.forEach(order => {
         conversationIds.add(String(order.id || "").toLowerCase());
         conversationIds.add(`order:${order.id}`.toLowerCase());
+      });
+      relatedFoodOrders.forEach(order => {
+        const id = String(order.id || "").toLowerCase();
+        if (!id) return;
+        conversationIds.add(`food-order:${id}`);
+        conversationIds.add(`food-merchant-order:${id}`);
       });
       const relatedMessages = (state.messages || []).filter(message => {
         const conversationId = String(message.conversation_id || "").toLowerCase();
@@ -4699,8 +4731,8 @@ ADMIN_HTML = r'''
         .sort((a, b) => b.latestAt - a.latestAt);
     }
 
-    function accountChatSection(phone, relatedOrders) {
-      const threads = accountChatThreads(phone, relatedOrders);
+    function accountChatSection(phone, relatedOrders, relatedFoodOrders = []) {
+      const threads = accountChatThreads(phone, relatedOrders, relatedFoodOrders);
       const content = threads.map(thread => `
         <div class="chat-thread">
           <div class="chat-thread-title">
@@ -4742,11 +4774,20 @@ ADMIN_HTML = r'''
       const placedOrders = (state.orders || []).filter(order => order.user_phone === selectedAccountPhone);
       const acceptedOrders = (state.orders || []).filter(order => order.rider_phone === selectedAccountPhone);
       const relatedOrders = Array.from(new Map([...placedOrders, ...acceptedOrders].map(order => [order.id, order])).values());
-      const chatThreads = accountChatThreads(selectedAccountPhone, relatedOrders);
+      const ownedStoreIds = new Set((state.store_applications || [])
+        .filter(store => store.user_phone === selectedAccountPhone)
+        .map(store => store.id));
+      const relatedFoodOrders = (state.food_orders || []).filter(order =>
+        order.user_phone === selectedAccountPhone ||
+        order.rider_phone === selectedAccountPhone ||
+        order.rider_account_phone === selectedAccountPhone ||
+        ownedStoreIds.has(order.restaurant_id)
+      );
+      const chatThreads = accountChatThreads(selectedAccountPhone, relatedOrders, relatedFoodOrders);
       const panelHtml = selectedAccountPanel === "accepted"
         ? accountOrdersPanel("他接的单", acceptedOrders, "骑手")
         : selectedAccountPanel === "chat"
-          ? accountChatSection(selectedAccountPhone, relatedOrders)
+          ? accountChatSection(selectedAccountPhone, relatedOrders, relatedFoodOrders)
           : accountOrdersPanel("他下的单", placedOrders, "发货人/用户");
       container.innerHTML = `
         <section>
