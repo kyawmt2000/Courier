@@ -157,6 +157,12 @@ class FoodReviewResponse(BaseModel):
     created_at: str
 
 
+class FoodReviewFeedResponse(FoodReviewResponse):
+    restaurant_name: str = ""
+    restaurant_image_url: str | None = None
+    restaurant_city: str = ""
+
+
 class FoodOrderResponse(BaseModel):
     id: str
     user_phone: str
@@ -2289,6 +2295,45 @@ def create_food_router(
                 (restaurant_id,),
             ).fetchall()
             return [food_review_from_row(connection, row, user_phone) for row in rows]
+
+    @router.get("/reviews", response_model=list[FoodReviewFeedResponse])
+    def list_food_review_feed(
+        authorization: str | None = Header(default=None),
+    ) -> list[FoodReviewFeedResponse]:
+        user_phone = None
+        if authorization:
+            user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            rows = connection.execute(
+                """
+                SELECT review.id, review.order_id, review.restaurant_id, review.user_phone,
+                       COALESCE(account.nickname, review.user_phone) AS user_name,
+                       review.rating, review.comment, review.image_count,
+                       review.restaurant_reply, review.restaurant_replied_at, review.payload,
+                       review.created_at, store.payload AS restaurant_payload
+                FROM food_reviews AS review
+                JOIN food_store_applications AS store ON store.id = review.restaurant_id
+                LEFT JOIN accounts AS account ON account.phone = review.user_phone
+                WHERE store.status = 'confirmed'
+                  AND json_extract(store.payload, '$.deleted_at') IS NULL
+                ORDER BY review.created_at DESC
+                LIMIT 100
+                """
+            ).fetchall()
+            feed: list[FoodReviewFeedResponse] = []
+            for row in rows:
+                review = food_review_from_row(connection, row, user_phone)
+                restaurant_payload = json.loads(row["restaurant_payload"] or "{}")
+                image_url = restaurant_payload.get("signature_dish_image_url") or (restaurant_payload.get("photo_urls") or [None])[0]
+                feed.append(
+                    FoodReviewFeedResponse(
+                        **review.model_dump(),
+                        restaurant_name=restaurant_payload.get("store_name") or "",
+                        restaurant_image_url=sign_url(image_url) if sign_url else image_url,
+                        restaurant_city=restaurant_payload.get("store_city") or "",
+                    )
+                )
+            return feed
 
     @router.post("/reviews/{review_id}/reaction", response_model=FoodReviewResponse)
     def react_food_review(
