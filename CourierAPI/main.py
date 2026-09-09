@@ -856,6 +856,8 @@ def init_storage() -> None:
         add_column_if_missing(connection, "coupons", "target_type", "TEXT NOT NULL DEFAULT 'all'")
         add_column_if_missing(connection, "coupons", "target_user_phone", "TEXT")
         add_column_if_missing(connection, "coupons", "target_email", "TEXT")
+        add_column_if_missing(connection, "coupons", "merchant_restaurant_id", "TEXT")
+        add_column_if_missing(connection, "coupons", "merchant_phone", "TEXT")
         add_column_if_missing(connection, "coupons", "is_active", "INTEGER NOT NULL DEFAULT 1")
         add_column_if_missing(connection, "coupons", "created_at", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(connection, "app_notifications", "user_phone", "TEXT NOT NULL DEFAULT ''")
