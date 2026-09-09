@@ -144,6 +144,7 @@ class FoodReviewResponse(BaseModel):
     order_id: str | None = None
     restaurant_id: str
     user_phone: str
+    user_name: str = ""
     rating: int = 5
     comment: str = ""
     image_urls: list[str] = Field(default_factory=list)
@@ -210,6 +211,7 @@ class FoodOrderResponse(BaseModel):
     rider_settlement_bill_created_at: str | None = None
     review_rating: int | None = None
     review_comment: str | None = None
+    review_image_urls: list[str] = Field(default_factory=list)
     reviewed_by_user_at: str | None = None
     restaurant_reply: str | None = None
     restaurant_replied_at: str | None = None
@@ -926,6 +928,7 @@ def _food_order_from_payload(payload: str | None) -> FoodOrderResponse:
     data.setdefault("settlement_status", "pending")
     data.setdefault("review_rating", None)
     data.setdefault("review_comment", None)
+    data.setdefault("review_image_urls", [])
     data.setdefault("reviewed_by_user_at", None)
     data.setdefault("restaurant_reply", None)
     data.setdefault("restaurant_replied_at", None)
@@ -1400,6 +1403,7 @@ def create_food_router(
         payload.setdefault("settlement_status", "pending")
         payload.setdefault("review_rating", None)
         payload.setdefault("review_comment", None)
+        payload.setdefault("review_image_urls", [])
         payload.setdefault("reviewed_by_user_at", None)
         payload.setdefault("restaurant_reply", None)
         payload.setdefault("restaurant_replied_at", None)
@@ -1471,6 +1475,26 @@ def create_food_router(
                 )
         return order.model_copy(update=update)
 
+    def enrich_food_order_review(connection: sqlite3.Connection, order: FoodOrderResponse) -> FoodOrderResponse:
+        row = connection.execute(
+            """
+            SELECT payload
+            FROM food_reviews
+            WHERE order_id = ?
+            LIMIT 1
+            """,
+            (order.id,),
+        ).fetchone()
+        image_urls = list(order.review_image_urls or [])
+        if row:
+            payload = json.loads(row["payload"] or "{}")
+            image_urls = payload.get("image_urls") or image_urls
+        if sign_url:
+            image_urls = [sign_url(url) or url for url in image_urls if url]
+        else:
+            image_urls = [url for url in image_urls if url]
+        return order.model_copy(update={"review_image_urls": image_urls})
+
     def save_food_order(connection: sqlite3.Connection, order: FoodOrderResponse) -> None:
         stored_rider_account = order.rider_account_phone or order.rider_phone
         connection.execute(
@@ -1524,6 +1548,11 @@ def create_food_router(
             order_id=row["order_id"],
             restaurant_id=row["restaurant_id"],
             user_phone=row["user_phone"],
+            user_name=(
+                _clean_optional_text(row["user_name"])
+                if "user_name" in row.keys()
+                else None
+            ) or row["user_phone"] or "",
             rating=int(row["rating"] or 5),
             comment=row["comment"] or "",
             image_urls=image_urls,
@@ -1990,7 +2019,10 @@ def create_food_router(
                 """,
                 (user_phone,),
             ).fetchall()
-            return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
+            return [
+                enrich_food_order_review(connection, enrich_food_order_items(connection, food_order_from_row(row)))
+                for row in rows
+            ]
 
     @router.get("/stores/orders", response_model=list[FoodOrderResponse])
     def list_store_food_orders(
@@ -2043,7 +2075,10 @@ def create_food_router(
                 """,
                 tuple(restaurant_ids),
             ).fetchall()
-            return [enrich_food_order_items(connection, food_order_from_row(row)) for row in rows]
+            return [
+                enrich_food_order_review(connection, enrich_food_order_items(connection, food_order_from_row(row)))
+                for row in rows
+            ]
 
     @router.post("/stores/orders/{order_id}/preparation", response_model=FoodOrderResponse)
     def update_store_food_order_preparation(
@@ -2105,6 +2140,7 @@ def create_food_router(
                 update={
                     "review_rating": request.rating,
                     "review_comment": comment,
+                    "review_image_urls": image_urls,
                     "reviewed_by_user_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -2213,10 +2249,14 @@ def create_food_router(
             )
             row = connection.execute(
                 """
-                SELECT id, order_id, restaurant_id, user_phone, rating, comment, image_count,
-                       restaurant_reply, restaurant_replied_at, payload, created_at
+                SELECT review.id, review.order_id, review.restaurant_id, review.user_phone,
+                       COALESCE(account.nickname, review.user_phone) AS user_name,
+                       review.rating, review.comment, review.image_count,
+                       review.restaurant_reply, review.restaurant_replied_at, review.payload, review.created_at
                 FROM food_reviews
-                WHERE id = ?
+                AS review
+                LEFT JOIN accounts AS account ON account.phone = review.user_phone
+                WHERE review.id = ?
                 LIMIT 1
                 """,
                 (review_id,),
@@ -2234,11 +2274,14 @@ def create_food_router(
         with connect_db() as connection:
             rows = connection.execute(
                 """
-                SELECT id, order_id, restaurant_id, user_phone, rating, comment, image_count,
-                       restaurant_reply, restaurant_replied_at, payload, created_at
-                FROM food_reviews
-                WHERE restaurant_id = ?
-                ORDER BY created_at DESC
+                SELECT review.id, review.order_id, review.restaurant_id, review.user_phone,
+                       COALESCE(account.nickname, review.user_phone) AS user_name,
+                       review.rating, review.comment, review.image_count,
+                       review.restaurant_reply, review.restaurant_replied_at, review.payload, review.created_at
+                FROM food_reviews AS review
+                LEFT JOIN accounts AS account ON account.phone = review.user_phone
+                WHERE review.restaurant_id = ?
+                ORDER BY review.created_at DESC
                 """,
                 (restaurant_id,),
             ).fetchall()
@@ -2257,10 +2300,13 @@ def create_food_router(
         with connect_db() as connection:
             row = connection.execute(
                 """
-                SELECT id, order_id, restaurant_id, user_phone, rating, comment, image_count,
-                       restaurant_reply, restaurant_replied_at, payload, created_at
-                FROM food_reviews
-                WHERE id = ?
+                SELECT review.id, review.order_id, review.restaurant_id, review.user_phone,
+                       COALESCE(account.nickname, review.user_phone) AS user_name,
+                       review.rating, review.comment, review.image_count,
+                       review.restaurant_reply, review.restaurant_replied_at, review.payload, review.created_at
+                FROM food_reviews AS review
+                LEFT JOIN accounts AS account ON account.phone = review.user_phone
+                WHERE review.id = ?
                 LIMIT 1
                 """,
                 (review_id,),
@@ -2310,6 +2356,7 @@ def create_food_router(
                         update={
                             "review_rating": None,
                             "review_comment": None,
+                            "review_image_urls": [],
                             "reviewed_by_user_at": None,
                             "restaurant_reply": None,
                             "restaurant_replied_at": None,
