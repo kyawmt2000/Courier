@@ -152,6 +152,26 @@ class FoodReviewReactionRequest(BaseModel):
     reaction: str
 
 
+class StoreCouponRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    start_date: str = Field(min_length=1, max_length=32)
+    end_date: str = Field(min_length=1, max_length=32)
+    min_cart_mmk: float = Field(default=0, ge=0)
+    discount_mmk: float = Field(ge=0)
+
+
+class StoreCouponResponse(BaseModel):
+    id: str
+    name: str
+    start_date: str
+    end_date: str
+    min_cart_mmk: float
+    discount_mmk: float
+    scope: str = "food"
+    is_active: bool = True
+    created_at: str
+
+
 class FoodReviewResponse(BaseModel):
     id: str
     order_id: str | None = None
@@ -1407,6 +1427,56 @@ def create_food_router(
         connection.row_factory = sqlite3.Row
         return connection
 
+    def store_coupon_from_row(row: sqlite3.Row) -> StoreCouponResponse:
+        return StoreCouponResponse(
+            id=row["id"],
+            name=row["name"],
+            start_date=row["start_date"],
+            end_date=row["end_date"],
+            min_cart_mmk=float(row["min_cart_mmk"] or 0),
+            discount_mmk=float(row["discount_mmk"] or 0),
+            scope=row["scope"] or "food",
+            is_active=bool(row["is_active"]),
+            created_at=row["created_at"],
+        )
+
+    def normalize_coupon_date(value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="请填写日期")
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+        except ValueError:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                return text
+            raise HTTPException(status_code=400, detail="日期格式无效")
+
+    def confirmed_store_row(connection: sqlite3.Connection, restaurant_id: str, user_phone: str) -> sqlite3.Row:
+        if restaurant_id.strip():
+            row = connection.execute(
+                """
+                SELECT id, store_name, user_phone
+                FROM food_store_applications
+                WHERE id = ? AND user_phone = ? AND status = 'confirmed'
+                LIMIT 1
+                """,
+                (restaurant_id.strip(), user_phone),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id, store_name, user_phone
+                FROM food_store_applications
+                WHERE user_phone = ? AND status = 'confirmed'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_phone,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=403, detail="店铺审核确认后才能操作")
+        return row
+
     def food_order_from_row(row: sqlite3.Row) -> FoodOrderResponse:
         payload = json.loads(row["payload"] or "{}")
         payload.setdefault("delivery_city", "")
@@ -2141,6 +2211,89 @@ def create_food_router(
                 enrich_food_order_review(connection, enrich_food_order_items(connection, food_order_from_row(row)))
                 for row in rows
             ]
+
+    @router.get("/stores/coupons", response_model=list[StoreCouponResponse])
+    def list_store_coupons(
+        restaurant_id: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> list[StoreCouponResponse]:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            store = confirmed_store_row(connection, restaurant_id or "", user_phone)
+            rows = connection.execute(
+                """
+                SELECT id, name, start_date, end_date, min_cart_mmk, discount_mmk, scope, is_active, created_at
+                FROM coupons
+                WHERE merchant_restaurant_id = ? AND merchant_phone = ?
+                ORDER BY created_at DESC
+                """,
+                (store["id"], user_phone),
+            ).fetchall()
+        return [store_coupon_from_row(row) for row in rows]
+
+    @router.post("/stores/coupons", response_model=StoreCouponResponse)
+    def create_store_coupon(
+        request: StoreCouponRequest,
+        restaurant_id: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> StoreCouponResponse:
+        user_phone = require_account_phone(authorization)
+        name = request.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="请填写 Coupon name")
+        if request.discount_mmk <= 0:
+            raise HTTPException(status_code=400, detail="请填写折扣金额")
+        start_date = normalize_coupon_date(request.start_date)
+        end_date = normalize_coupon_date(request.end_date)
+        if end_date < start_date:
+            raise HTTPException(status_code=400, detail="End Date 不能早于 Start Date")
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        with connect_db() as connection:
+            store = confirmed_store_row(connection, restaurant_id or "", user_phone)
+            duplicate = connection.execute(
+                """
+                SELECT id
+                FROM coupons
+                WHERE lower(name) = lower(?) AND is_active = 1
+                LIMIT 1
+                """,
+                (name,),
+            ).fetchone()
+            if duplicate:
+                raise HTTPException(status_code=400, detail="Coupon name 已存在")
+            coupon_id = str(uuid4())
+            connection.execute(
+                """
+                INSERT INTO coupons (
+                    id, name, start_date, end_date, min_cart_mmk, discount_mmk,
+                    discount_type, discount_percent, scope, target_type, target_user_phone,
+                    target_email, merchant_restaurant_id, merchant_phone, is_active, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'amount', NULL, 'food', 'all', NULL, NULL, ?, ?, 1, ?)
+                """,
+                (
+                    coupon_id,
+                    name,
+                    start_date,
+                    end_date,
+                    request.min_cart_mmk,
+                    request.discount_mmk,
+                    store["id"],
+                    user_phone,
+                    created_at,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT id, name, start_date, end_date, min_cart_mmk, discount_mmk, scope, is_active, created_at
+                FROM coupons
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (coupon_id,),
+            ).fetchone()
+        return store_coupon_from_row(row)
 
     @router.post("/stores/orders/{order_id}/preparation", response_model=FoodOrderResponse)
     def update_store_food_order_preparation(
