@@ -1810,8 +1810,10 @@ def create_food_router(
         with connect_db() as connection:
             row = connection.execute(
                 """
-                SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
-                       status, rejection_reason, reviewed_at, created_at, item.payload, store.payload AS store_payload
+                SELECT item.id, item.restaurant_id, item.name, item.description, item.price_mmk,
+                       item.image_url, item.is_available, item.status, item.rejection_reason,
+                       item.reviewed_at, item.created_at, item.payload,
+                       store.payload AS store_payload
                 FROM food_menu_items item
                 JOIN food_store_applications store ON store.id = item.restaurant_id
                 WHERE item.id = ? AND store.user_phone = ? AND store.status = 'confirmed'
@@ -1938,8 +1940,9 @@ def create_food_router(
         with connect_db() as connection:
             row = connection.execute(
                 """
-                SELECT id, restaurant_id, name, description, price_mmk, image_url, is_available,
-                       status, rejection_reason, reviewed_at, created_at, item.payload
+                SELECT item.id, item.restaurant_id, item.name, item.description, item.price_mmk,
+                       item.image_url, item.is_available, item.status, item.rejection_reason,
+                       item.reviewed_at, item.created_at, item.payload
                 FROM food_menu_items item
                 JOIN food_store_applications store ON store.id = item.restaurant_id
                 WHERE item.id = ? AND item.status = 'confirmed'
