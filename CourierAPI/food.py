@@ -32,6 +32,7 @@ class FoodRestaurantResponse(BaseModel):
     business_hours_close: str = "21:00"
     discount_percent: int = 0
     rating: float = 5.0
+    review_count: int = 0
     distance_km: float | None = None
     delivery_fee_mmk: float | None = None
 
@@ -1600,7 +1601,8 @@ def create_food_router(
                                ELSE 0
                            END
                        ), 0) AS discount_percent,
-                       COALESCE(AVG(review.rating), json_extract(store.payload, '$.rating'), 5.0) AS average_rating
+                       COALESCE(AVG(review.rating), json_extract(store.payload, '$.rating'), 5.0) AS average_rating,
+                       COUNT(DISTINCT review.id) AS review_count
                 FROM food_store_applications store
                 LEFT JOIN food_menu_items item ON item.restaurant_id = store.id
                 LEFT JOIN food_reviews review ON review.restaurant_id = store.id
@@ -1648,6 +1650,7 @@ def create_food_router(
                     business_hours_close=business_hours_close,
                     discount_percent=int(row["discount_percent"] or 0),
                     rating=round(float(row["average_rating"] or payload.get("rating") or 5.0), 1),
+                    review_count=int(row["review_count"] or 0),
                     distance_km=round(distance_km, 2) if distance_km is not None else None,
                     delivery_fee_mmk=delivery_fee_mmk,
                 )
