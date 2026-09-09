@@ -83,6 +83,7 @@ PLATFORM_KPAY_QR_IMAGE_URL = os.getenv(
     "PLATFORM_KPAY_QR_IMAGE_URL",
     "https://storage.googleapis.com/courierblink/platform-pay-qr.jpg",
 ).strip()
+PLATFORM_RECEIVE_QR_IMAGE_URL = os.getenv("RECEIVEQR", "").strip() or PLATFORM_KPAY_QR_IMAGE_URL
 PLATFORM_KPAY_ACCOUNT_NAME = os.getenv("PLATFORM_KPAY_ACCOUNT_NAME", "Blink").strip()
 PLATFORM_KPAY_ACCOUNT_NOTE = os.getenv("PLATFORM_KPAY_ACCOUNT_NOTE", "KPay Payment QR").strip()
 MAX_GOODS_AMOUNT_MMK = float(os.getenv("MAX_GOODS_AMOUNT_MMK", "200000") or 200000)
@@ -153,6 +154,7 @@ class EmptyResponse(BaseModel):
 
 class PlatformPaymentConfigResponse(BaseModel):
     kpay_qr_image_url: str | None = None
+    receiveqr: str | None = None
     kpay_account_name: str | None = None
     kpay_account_note: str | None = None
     max_goods_amount_mmk: float = 200000
@@ -6407,8 +6409,10 @@ def health_check() -> HealthResponse:
 @app.get("/config/payment", response_model=PlatformPaymentConfigResponse)
 def get_platform_payment_config() -> PlatformPaymentConfigResponse:
     hours = order_hours_status()
+    receive_qr_url = clean_optional_text(signed_gcs_read_url(PLATFORM_RECEIVE_QR_IMAGE_URL))
     return PlatformPaymentConfigResponse(
-        kpay_qr_image_url=clean_optional_text(signed_gcs_read_url(PLATFORM_KPAY_QR_IMAGE_URL)),
+        kpay_qr_image_url=receive_qr_url,
+        receiveqr=receive_qr_url,
         kpay_account_name=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NAME),
         kpay_account_note=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NOTE),
         max_goods_amount_mmk=MAX_GOODS_AMOUNT_MMK,
