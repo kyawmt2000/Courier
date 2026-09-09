@@ -135,6 +135,19 @@ class FoodOrderReviewReplyRequest(BaseModel):
     reply: str
 
 
+class FoodReviewCommentRequest(BaseModel):
+    comment: str
+
+
+class FoodReviewCommentResponse(BaseModel):
+    id: str
+    review_id: str
+    user_phone: str
+    user_name: str = ""
+    comment: str
+    created_at: str
+
+
 class FoodReviewReactionRequest(BaseModel):
     reaction: str
 
@@ -152,6 +165,7 @@ class FoodReviewResponse(BaseModel):
     like_count: int = 0
     dislike_count: int = 0
     user_reaction: str | None = None
+    comments: list[FoodReviewCommentResponse] = Field(default_factory=list)
     restaurant_reply: str | None = None
     restaurant_replied_at: str | None = None
     created_at: str
@@ -626,6 +640,21 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
             PRIMARY KEY (review_id, user_phone)
         )
         """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS food_review_comments (
+            id TEXT PRIMARY KEY,
+            review_id TEXT NOT NULL,
+            user_phone TEXT NOT NULL,
+            comment TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_food_review_comments_review "
+        "ON food_review_comments (review_id, created_at)"
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_food_menu_restaurant "
@@ -1549,6 +1578,29 @@ def create_food_router(
             ).fetchone()
             if reaction_row:
                 user_reaction = reaction_row["reaction"]
+        comment_rows = connection.execute(
+            """
+            SELECT comment.id, comment.review_id, comment.user_phone,
+                   COALESCE(account.nickname, comment.user_phone) AS user_name,
+                   comment.comment, comment.created_at
+            FROM food_review_comments AS comment
+            LEFT JOIN accounts AS account ON account.phone = comment.user_phone
+            WHERE comment.review_id = ?
+            ORDER BY comment.created_at ASC
+            """,
+            (row["id"],),
+        ).fetchall()
+        comments = [
+            FoodReviewCommentResponse(
+                id=comment_row["id"],
+                review_id=comment_row["review_id"],
+                user_phone=comment_row["user_phone"],
+                user_name=_clean_optional_text(comment_row["user_name"]) or comment_row["user_phone"] or "",
+                comment=comment_row["comment"] or "",
+                created_at=comment_row["created_at"],
+            )
+            for comment_row in comment_rows
+        ]
         return FoodReviewResponse(
             id=row["id"],
             order_id=row["order_id"],
@@ -1566,6 +1618,7 @@ def create_food_router(
             like_count=int(counts["like_count"] or 0) if counts else 0,
             dislike_count=int(counts["dislike_count"] or 0) if counts else 0,
             user_reaction=user_reaction,
+            comments=comments,
             restaurant_reply=row["restaurant_reply"],
             restaurant_replied_at=row["restaurant_replied_at"],
             created_at=row["created_at"],
@@ -2412,8 +2465,50 @@ def create_food_router(
                     )
                     save_food_order(connection, order)
             connection.execute("DELETE FROM food_review_reactions WHERE review_id = ?", (review_id,))
+            connection.execute("DELETE FROM food_review_comments WHERE review_id = ?", (review_id,))
             connection.execute("DELETE FROM food_reviews WHERE id = ?", (review_id,))
             return {"status": "deleted", "id": review_id}
+
+    @router.post("/reviews/{review_id}/comments", response_model=FoodReviewResponse)
+    def comment_food_review(
+        review_id: str,
+        request: FoodReviewCommentRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FoodReviewResponse:
+        user_phone = require_account_phone(authorization)
+        comment = request.comment.strip()[:1000]
+        if not comment:
+            raise HTTPException(status_code=400, detail="请填写评论")
+        with connect_db() as connection:
+            row = connection.execute(
+                """
+                SELECT review.id, review.order_id, review.restaurant_id, review.user_phone,
+                       COALESCE(account.nickname, review.user_phone) AS user_name,
+                       review.rating, review.comment, review.image_count,
+                       review.restaurant_reply, review.restaurant_replied_at, review.payload, review.created_at
+                FROM food_reviews AS review
+                LEFT JOIN accounts AS account ON account.phone = review.user_phone
+                WHERE review.id = ?
+                LIMIT 1
+                """,
+                (review_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="评价不存在")
+            connection.execute(
+                """
+                INSERT INTO food_review_comments (id, review_id, user_phone, comment, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid4()),
+                    review_id,
+                    user_phone,
+                    comment,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            return food_review_from_row(connection, row, user_phone)
 
     @router.post("/stores/orders/{order_id}/review-reply", response_model=FoodOrderResponse)
     def reply_food_order_review(
