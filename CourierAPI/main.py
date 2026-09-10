@@ -178,6 +178,10 @@ class AppUpdateConfigResponse(BaseModel):
     message: str | None = None
 
 
+class LaunchAdConfigResponse(BaseModel):
+    image_url: str | None = None
+
+
 class UserProfile(BaseModel):
     id: str
     phone: str
@@ -6429,6 +6433,19 @@ def get_platform_payment_config() -> PlatformPaymentConfigResponse:
         delivery_weight_fee_threshold_kg=DELIVERY_WEIGHT_FEE_THRESHOLD_KG,
         delivery_weight_extra_fee_mmk=DELIVERY_WEIGHT_EXTRA_FEE_MMK,
     )
+
+
+@app.get("/config/launch-ad", response_model=LaunchAdConfigResponse)
+def get_launch_ad_config(
+    app_type: str = Query(default="user"),
+) -> LaunchAdConfigResponse:
+    normalized = clean_optional_text(app_type).lower()
+    file_name = "riderads.jpg" if "rider" in normalized else "userads.jpg"
+    bucket_name = gcs_bucket_name()
+    default_url = f"https://storage.googleapis.com/{bucket_name}/{file_name}"
+    env_key = "RIDER_LAUNCH_AD_IMAGE_URL" if file_name == "riderads.jpg" else "USER_LAUNCH_AD_IMAGE_URL"
+    image_url = clean_optional_text(os.getenv(env_key)) or default_url
+    return LaunchAdConfigResponse(image_url=clean_optional_text(signed_gcs_read_url(image_url)))
 
 
 @app.get("/config/app-update", response_model=AppUpdateConfigResponse)
