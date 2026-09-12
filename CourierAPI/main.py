@@ -134,7 +134,7 @@ OrderStatus = Literal[
 
 ChatSenderType = Literal["user", "rider", "admin"]
 PaymentMode = Literal["cod", "prepaid"]
-PaymentStatus = Literal["not_required", "unpaid", "pending", "confirmed", "rejected"]
+PaymentStatus = Literal["not_required", "unpaid", "pending", "confirmed", "rejected", "refunded"]
 SettlementStatus = Literal["pending", "paid_to_user", "paid_to_rider", "completed"]
 CouponScope = Literal["food", "parcel", "both"]
 CouponTargetType = Literal["none", "all", "account"]
@@ -3308,7 +3308,7 @@ ADMIN_HTML = r'''
 <body>
   <header>
     <h1>快送后台</h1>
-    <span class="version">orders-ui-v21</span>
+    <span class="version">orders-ui-v22</span>
     <div class="toolbar">
       <input id="key" type="password" placeholder="后台密码" />
       <input id="q" placeholder="搜索订单/手机号/地址" />
@@ -3338,6 +3338,7 @@ ADMIN_HTML = r'''
       <button id="autoRefreshButton" class="auto-toggle" onclick="toggleAutoRefresh()">自动同步中</button>
       <button id="refreshButton" onclick="loadData()">刷新</button>
       <button id="tab-payments" class="tab active" onclick="showPage('payments')">订单</button>
+      <button id="tab-cancelled-orders" class="tab" onclick="showPage('cancelled-orders')">取消订单</button>
       <button id="tab-accounts" class="tab" onclick="showPage('accounts')">账号资料</button>
       <button id="tab-rider-registrations" class="tab" onclick="showPage('rider-registrations')">骑手资料</button>
       <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
@@ -3380,6 +3381,17 @@ ADMIN_HTML = r'''
         </colgroup>
         <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>菜品</th><th>骑手付款</th><th>骑手押金</th><th>餐厅/地址</th><th>操作</th></tr></thead>
         <tbody id="foodOrders"></tbody>
+      </table>
+    </section>
+    <section id="page-cancelled-orders" class="page">
+      <h2>取消订单</h2>
+      <table class="orders-table">
+        <colgroup>
+          <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
+          <col><col class="col-actions">
+        </colgroup>
+        <thead><tr><th>订单</th><th>用户/骑手</th><th>取消状态</th><th>金额</th><th>地址/原因</th><th>操作</th></tr></thead>
+        <tbody id="cancelledOrders"></tbody>
       </table>
     </section>
     <section id="detailSection" class="hidden">
@@ -3518,7 +3530,7 @@ ADMIN_HTML = r'''
   <script>
     let state = { orders: [], food_orders: [], accounts: [], rider_registrations: [], messages: [], payments: [], store_applications: [], deleted_store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
     let currentPage = "payments";
-    let tabBadges = { payments: 0, "food-orders": 0, orders: 0, accounts: 0, "rider-registrations": 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
+    let tabBadges = { payments: 0, "cancelled-orders": 0, "food-orders": 0, orders: 0, accounts: 0, "rider-registrations": 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
@@ -3532,9 +3544,10 @@ ADMIN_HTML = r'''
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
-    const pages = ["payments","accounts","rider-registrations","service","stores","menu-items","settlements","food-orders","coupons"];
+    const pages = ["payments","cancelled-orders","accounts","rider-registrations","service","stores","deleted-stores","menu-items","settlements","food-orders","coupons"];
     const pageTitles = {
       payments: "订单",
+      "cancelled-orders": "取消订单",
       "food-orders": "外卖结算",
       accounts: "账号资料",
       "rider-registrations": "骑手资料",
@@ -3546,13 +3559,13 @@ ADMIN_HTML = r'''
       coupons: "Coupons",
     };
     const statusOptions = ["matching","accepted","picking_up","delivering","completed","cancelled"];
-    const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected"];
+    const paymentOptions = ["not_required","unpaid","pending","confirmed","rejected","refunded"];
     const settlementOptions = ["pending","paid_to_user","paid_to_rider","completed"];
     const labels = {
       matching: "待接单", accepted: "已接单", picking_up: "取件中", delivering: "配送中", completed: "已完成", cancelled: "已取消",
       cod: "货到付款", prepaid: "货费已付款",
       payment_pending: "待确认付款",
-      not_required: "无需", unpaid: "未付", pending: "待确认", confirmed: "已确认", rejected: "已拒绝",
+      not_required: "无需", unpaid: "未付", pending: "待确认", confirmed: "已确认", rejected: "已拒绝", refunded: "Refund",
       paid_to_user: "已付用户", paid_to_rider: "已付骑手",
       food: "For Food", parcel: "For Parcel", both: "Both",
       male: "Male", female: "Female"
@@ -3565,6 +3578,7 @@ ADMIN_HTML = r'''
       if (value === "confirmed") return "平台已确认";
       if (value === "unpaid") return "骑手未转";
       if (value === "rejected") return "已拒绝";
+      if (value === "refunded") return "Refund";
       return label(value);
     }
     function money(value) { return `${Number(value || 0).toLocaleString()} MMK`; }
@@ -3697,6 +3711,7 @@ ADMIN_HTML = r'''
       const nextFoodSettlementEvents = Array.from(identitySets(nextState).foodSettlements);
       const freshFoodSettlements = nextFoodSettlementEvents.filter(item => !previous.foodSettlements.has(item));
       freshOrders.forEach(() => incrementTabBadge("payments"));
+      freshOrders.filter(item => item.status === "cancelled").forEach(() => incrementTabBadge("cancelled-orders"));
       freshPayments.forEach(() => incrementTabBadge("payments"));
       if (freshAccounts.length) incrementTabBadge("accounts", freshAccounts.length);
       if (freshRiderRegistrations.length) incrementTabBadge("rider-registrations", freshRiderRegistrations.length);
@@ -4090,12 +4105,14 @@ ADMIN_HTML = r'''
       const pendingPayments = payments.filter(payment => payment.status === "pending").length
         + orders.filter(order => order.user_payment_status === "pending" || order.rider_deposit_status === "pending").length;
       const completed = orders.filter(order => order.status === "completed").length;
+      const cancelled = orders.filter(order => order.status === "cancelled").length;
       const serviceCount = serviceConversations().length;
       summary.innerHTML = `
         <div class="summary-card"><span>待接单</span><strong>${pendingOrders}</strong></div>
         <div class="summary-card"><span>进行中</span><strong>${activeOrders}</strong></div>
         <div class="summary-card"><span>待确认付款/押金</span><strong>${pendingPayments}</strong></div>
         <div class="summary-card"><span>已完成</span><strong>${completed}</strong></div>
+        <div class="summary-card"><span>取消订单</span><strong>${cancelled}</strong></div>
         <div class="summary-card"><span>客服会话</span><strong>${serviceCount}</strong></div>
       `;
     }
@@ -4134,6 +4151,7 @@ ADMIN_HTML = r'''
       }
       renderAccountRows(accounts);
       renderAccountDetail();
+      renderCancelledOrders();
       renderRiderRegistrations();
       renderCouponAccountEmails();
       renderFoodOrders();
@@ -4166,6 +4184,78 @@ ADMIN_HTML = r'''
       renderFoodMenuItems();
       renderCoupons();
       renderServiceChat();
+    }
+
+    function renderCancelledOrders() {
+      const table = document.getElementById("cancelledOrders");
+      if (!table) return;
+      const q = document.getElementById("q").value.toLowerCase();
+      const parcelOrders = (state.orders || [])
+        .filter(order => order.status === "cancelled" && JSON.stringify(order).toLowerCase().includes(q))
+        .map(order => ({ kind: "parcel", order, created_at: order.cancelled_at || order.created_at }));
+      const foodOrders = (state.food_orders || [])
+        .filter(order => order.status === "cancelled" && JSON.stringify(order).toLowerCase().includes(q))
+        .map(order => ({ kind: "food", order, created_at: order.completed_at || order.created_at }));
+      const rows = sortByDateDesc([...parcelOrders, ...foodOrders]);
+      table.innerHTML = rows.map(row => row.kind === "food" ? cancelledFoodOrderRow(row.order) : cancelledOrderRow(row.order)).join("");
+      if (!rows.length) {
+        table.innerHTML = `<tr><td colspan="6" class="muted">暂无取消订单</td></tr>`;
+      }
+    }
+
+    function cancelledOrderRow(order) {
+      const actor = cancellationActorLabel(order.cancellation_actor);
+      return `
+        <tr${rowClass("order", order.id)} onclick="showDetail('${order.id}')">
+          <td><strong>#${escapeHtml(order.id.slice(0, 6).toUpperCase())}</strong><br><span class="pill">Parcel</span><br><span class="muted">${escapeHtml(new Date(order.cancelled_at || order.created_at).toLocaleString())}</span></td>
+          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
+          <td><span class="pill">${actor}</span><br><span class="muted">用户付款：${label(order.user_payment_status)}</span></td>
+          <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
+          <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span>${cancellationInfoHtml(order)}</td>
+          <td class="actions-cell">
+            ${canRefundOrder(order) ? `<button onclick="event.stopPropagation(); refundOrder('${order.id}', this)">Refund</button>` : `<span class="pill">${label(order.user_payment_status)}</span>`}
+            <button class="danger" onclick="event.stopPropagation(); deleteOrder('${order.id}', this)">删除</button>
+          </td>
+        </tr>`;
+    }
+
+    function cancelledFoodOrderRow(order) {
+      const paymentStatus = order.payment_status || (order.payment_method === "QR Pay" ? "pending" : "not_required");
+      return `
+        <tr${rowClass("food-order", order.id)}>
+          <td><strong>#${escapeHtml(order.id.slice(0, 8).toUpperCase())}</strong><br><span class="pill">Food</span><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+          <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
+          <td><span class="pill">${label(order.status)}</span><br><span class="muted">用户付款：${label(paymentStatus)}</span></td>
+          <td>配送费 ${money(order.delivery_fee_mmk)}<br><span class="muted">外卖金额 ${money(order.goods_amount)}</span></td>
+          <td class="address-cell">${escapeHtml(order.restaurant_name || "")}<br><span class="muted">${escapeHtml(order.delivery_address || "")}</span></td>
+          <td class="actions-cell">
+            ${canRefundFoodOrder(order) ? `<button onclick="event.stopPropagation(); refundFoodOrder('${order.id}', this)">Refund</button>` : `<span class="pill">${label(paymentStatus)}</span>`}
+            <button class="danger" onclick="event.stopPropagation(); deleteFoodOrder('${order.id}', this)">删除</button>
+          </td>
+        </tr>`;
+    }
+
+    function cancellationActorLabel(actor) {
+      if (actor === "user") return "用户取消";
+      if (actor === "rider") return "骑手取消";
+      if (actor === "admin") return "后台取消";
+      return "已取消";
+    }
+
+    function cancellationInfoHtml(order) {
+      const parts = [];
+      if (order.cancellation_reason) parts.push(`原因：${escapeHtml(order.cancellation_reason)}`);
+      if (order.cancellation_compensation_amount) parts.push(`赔偿：${money(order.cancellation_compensation_amount)}`);
+      return parts.length ? `<br><span class="muted">${parts.join(" / ")}</span>` : "";
+    }
+
+    function canRefundOrder(order) {
+      return order.status === "cancelled" && !["refunded", "not_required", "unpaid"].includes(order.user_payment_status || "not_required");
+    }
+
+    function canRefundFoodOrder(order) {
+      const paymentStatus = order.payment_status || "not_required";
+      return order.status === "cancelled" && !["refunded", "not_required", "unpaid"].includes(paymentStatus);
     }
 
     function renderFoodOrders() {
@@ -4987,6 +5077,7 @@ ADMIN_HTML = r'''
         <div class="row"><b>收货</b><span>${escapeHtml(order.dropoff_address)}</span></div>
         <div class="row"><b>备注</b><span>${escapeHtml(order.note || "")}</span></div>
         ${order.delivery_timeout_message ? `<div class="row"><b>超时提醒</b><span>${escapeHtml(order.delivery_timeout_message)}${order.delivery_timeout_created_at ? `<br><span class="muted">${escapeHtml(new Date(order.delivery_timeout_created_at).toLocaleString())}</span>` : ""}</span></div>` : ""}
+        ${order.cancellation_actor || order.cancellation_reason || order.cancelled_at ? `<div class="row"><b>取消订单</b><span>${cancellationActorLabel(order.cancellation_actor)}${order.cancellation_reason ? ` / ${escapeHtml(order.cancellation_reason)}` : ""}${order.cancelled_at ? `<br><span class="muted">${escapeHtml(new Date(order.cancelled_at).toLocaleString())}</span>` : ""}</span></div>` : ""}
         <div class="actions">
           <select id="status">${optionHtml(statusOptions, order.status)}</select>
           <select id="userPayment">${optionHtml(paymentOptions, order.user_payment_status)}</select>
@@ -5084,6 +5175,10 @@ ADMIN_HTML = r'''
       }
     }
 
+    async function refundOrder(id, button = null) {
+      await patchOrder(id, { user_payment_status: "refunded" }, button, "Refund 已保存");
+    }
+
     async function deleteOrder(id, button) {
       const order = state.orders.find(item => item.id === id);
       const shortId = (order?.id || id).slice(0, 6).toUpperCase();
@@ -5172,6 +5267,10 @@ ADMIN_HTML = r'''
 
     async function confirmFoodRiderSettlement(id, button = null) {
       await patchFoodOrder(id, { settlement_status: "paid_to_rider" }, button, "外卖结算已确认，骑手会收到提示");
+    }
+
+    async function refundFoodOrder(id, button = null) {
+      await patchFoodOrder(id, { payment_status: "refunded", payment_feedback: "Refund" }, button, "外卖 Refund 已保存");
     }
 
     async function rejectFoodUserPayment(id, button) {
@@ -6826,6 +6925,11 @@ def admin_update_order(
                 updates["delivery_started_at"] = now
         if request.status == "completed" and order.delivery_started_at is None:
             updates["delivery_started_at"] = now
+    elif request.status == "cancelled":
+        updates.update(clear_delivery_timeout_update())
+        updates["cancelled_at"] = order.cancelled_at or now
+        updates["cancellation_actor"] = order.cancellation_actor or "admin"
+        updates["cancellation_reason"] = order.cancellation_reason or "后台取消订单"
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_paid_at:
         updates["rider_settlement_paid_at"] = now
     if request.settlement_status in ("paid_to_rider", "completed") and not order.rider_settlement_bill_created_at:
@@ -7678,27 +7782,20 @@ def cancel_rider_order(
         if not app_data_visible_to_account(rider_phone, order.created_at):
             raise HTTPException(status_code=404, detail="订单不存在")
         if order.status in ("accepted", "picking_up", "delivering"):
-            released = order.model_copy(
+            now = datetime.now(timezone.utc)
+            cancelled = order.model_copy(
                 update={
-                    "status": "matching",
-                    "rider_name": None,
-                    "accepted_at": None,
-                    "rider_deposit_status": "unpaid" if order.rider_deposit_status != "not_required" else "not_required",
+                    "status": "cancelled",
                     "rider_deposit_due_at": None,
-                    "rider_deposit_submitted_at": None,
-                    "rider_deposit_proof_url": None,
-                    "rider_lat": None,
-                    "rider_lng": None,
-                    "rider_location_updated_at": None,
-                    "cancellation_actor": None,
-                    "cancellation_reason": None,
-                    "cancellation_compensation_amount": None,
-                    "cancelled_at": None,
+                    "cancellation_actor": "rider",
+                    "cancellation_reason": "骑手取消送货，需把货还给用户",
+                    "cancellation_compensation_amount": 0,
+                    "cancelled_at": now,
                     **clear_delivery_timeout_update(),
                 }
             )
-            save_order(released, user_phone=user_phone, rider_phone=None)
-            return order_for_response(released)
+            save_order(cancelled, user_phone=user_phone, rider_phone=stored_rider_phone)
+            return order_for_response(cancelled, rider_phone=stored_rider_phone)
         raise HTTPException(status_code=400, detail="这个订单当前不能取消送货")
     raise HTTPException(status_code=404, detail="订单不存在")
 
