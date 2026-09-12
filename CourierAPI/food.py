@@ -171,7 +171,7 @@ class StoreCouponResponse(BaseModel):
     min_cart_mmk: float
     discount_mmk: float
     discount_type: str = "amount"
-    discount_percent: float | None = None
+    discount_percent: int = 0
     menu_item_ids: list[str] = Field(default_factory=list)
     scope: str = "food"
     is_active: bool = True
@@ -1477,10 +1477,14 @@ def create_food_router(
         return connection
 
     def store_coupon_from_row(row: sqlite3.Row) -> StoreCouponResponse:
+        keys = row.keys()
         menu_item_ids_text = ""
-        if "menu_item_ids" in row.keys():
+        if "menu_item_ids" in keys:
             menu_item_ids_text = row["menu_item_ids"] or ""
         menu_item_ids = [item_id for item_id in menu_item_ids_text.split(",") if item_id]
+        discount_percent = 0
+        if "discount_percent" in keys and row["discount_percent"] is not None:
+            discount_percent = int(round(float(row["discount_percent"])))
         return StoreCouponResponse(
             id=row["id"],
             name=row["name"],
@@ -1488,14 +1492,10 @@ def create_food_router(
             end_date=row["end_date"],
             min_cart_mmk=float(row["min_cart_mmk"] or 0),
             discount_mmk=float(row["discount_mmk"] or 0),
-            discount_type=(row["discount_type"] if "discount_type" in row.keys() else "amount") or "amount",
-            discount_percent=(
-                float(row["discount_percent"])
-                if "discount_percent" in row.keys() and row["discount_percent"] is not None
-                else None
-            ),
+            discount_type=(row["discount_type"] if "discount_type" in keys else "amount") or "amount",
+            discount_percent=discount_percent,
             menu_item_ids=menu_item_ids,
-            scope=row["scope"] or "food",
+            scope=(row["scope"] if "scope" in keys else "food") or "food",
             is_active=bool(row["is_active"]),
             created_at=row["created_at"],
         )
@@ -2324,6 +2324,20 @@ def create_food_router(
         with connect_db() as connection:
             store = confirmed_store_row(connection, restaurant_id or "", user_phone)
             coupon_id = str(uuid4())
+            coupon = StoreCouponResponse(
+                id=coupon_id,
+                name=name,
+                start_date=start_date,
+                end_date=end_date,
+                min_cart_mmk=float(request.min_cart_mmk or 0),
+                discount_mmk=discount_mmk,
+                discount_type=discount_type,
+                discount_percent=int(round(float(discount_percent))) if discount_percent is not None else 0,
+                menu_item_ids=list(dict.fromkeys(menu_item_ids)),
+                scope="food",
+                is_active=True,
+                created_at=created_at,
+            )
             connection.execute(
                 """
                 INSERT INTO coupons (
@@ -2348,17 +2362,7 @@ def create_food_router(
                     created_at,
                 ),
             )
-            row = connection.execute(
-                """
-                SELECT id, name, start_date, end_date, min_cart_mmk, discount_mmk,
-                       discount_type, discount_percent, menu_item_ids, scope, is_active, created_at
-                FROM coupons
-                WHERE id = ?
-                LIMIT 1
-                """,
-                (coupon_id,),
-            ).fetchone()
-        return store_coupon_from_row(row)
+        return coupon
 
     @router.post("/stores/orders/{order_id}/preparation", response_model=FoodOrderResponse)
     def update_store_food_order_preparation(
