@@ -1599,6 +1599,16 @@ def clean_optional_text(value: str | None) -> str | None:
     return cleaned or None
 
 
+def stored_url(value: str | None) -> str | None:
+    cleaned = clean_optional_text(value)
+    if cleaned is None:
+        return None
+    parsed = urlparse(cleaned)
+    if not parsed.scheme or not parsed.netloc:
+        return cleaned
+    return parsed._replace(query="", fragment="").geturl()
+
+
 def phone_from_authorization(authorization: str | None) -> str | None:
     if not authorization:
         return None
@@ -2801,7 +2811,10 @@ def save_account(
         if clear_app_deleted_at:
             connection.execute("UPDATE accounts SET app_deleted_at = NULL WHERE phone = ?", (phone,))
         if nickname is not None:
-            sync_user_profile_name(connection, phone, previous_nickname, nickname)
+            try:
+                sync_user_profile_name(connection, phone, previous_nickname, nickname)
+            except Exception:
+                logger.exception("Profile name sync failed for %s", phone)
     return load_account_profile(phone) or user_profile_from_account(
         phone,
         email,
@@ -7168,8 +7181,8 @@ def update_account_profile(
     phone = require_account_phone(authorization)
     mark_account_app_role(phone, x_blink_app_role)
     nickname = clean_optional_text(request.nickname)
-    avatar_url = clean_optional_text(request.avatar_url)
-    payment_qr_url = clean_optional_text(request.payment_qr_url)
+    avatar_url = stored_url(request.avatar_url)
+    payment_qr_url = stored_url(request.payment_qr_url)
     if nickname is not None and len(nickname) > 40:
         raise HTTPException(status_code=400, detail="用户名最多 40 个字符")
     return save_account(
