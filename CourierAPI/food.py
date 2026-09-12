@@ -679,6 +679,29 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
         """
     )
     connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS coupons (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            min_cart_mmk REAL NOT NULL DEFAULT 0,
+            discount_mmk REAL NOT NULL DEFAULT 1000,
+            discount_type TEXT NOT NULL DEFAULT 'amount',
+            discount_percent REAL,
+            menu_item_ids TEXT NOT NULL DEFAULT '',
+            scope TEXT NOT NULL DEFAULT 'food',
+            target_type TEXT NOT NULL DEFAULT 'all',
+            target_user_phone TEXT,
+            target_email TEXT,
+            merchant_restaurant_id TEXT,
+            merchant_phone TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_food_review_comments_review "
         "ON food_review_comments (review_id, created_at)"
     )
@@ -737,6 +760,18 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
             connection.execute("ALTER TABLE coupons ADD COLUMN discount_percent REAL")
         if "menu_item_ids" not in coupon_columns:
             connection.execute("ALTER TABLE coupons ADD COLUMN menu_item_ids TEXT NOT NULL DEFAULT ''")
+        if "scope" not in coupon_columns:
+            connection.execute("ALTER TABLE coupons ADD COLUMN scope TEXT NOT NULL DEFAULT 'food'")
+        if "target_type" not in coupon_columns:
+            connection.execute("ALTER TABLE coupons ADD COLUMN target_type TEXT NOT NULL DEFAULT 'all'")
+        if "target_user_phone" not in coupon_columns:
+            connection.execute("ALTER TABLE coupons ADD COLUMN target_user_phone TEXT")
+        if "target_email" not in coupon_columns:
+            connection.execute("ALTER TABLE coupons ADD COLUMN target_email TEXT")
+        if "merchant_restaurant_id" not in coupon_columns:
+            connection.execute("ALTER TABLE coupons ADD COLUMN merchant_restaurant_id TEXT")
+        if "merchant_phone" not in coupon_columns:
+            connection.execute("ALTER TABLE coupons ADD COLUMN merchant_phone TEXT")
 
 
 def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
