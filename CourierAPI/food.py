@@ -157,7 +157,10 @@ class StoreCouponRequest(BaseModel):
     start_date: str = Field(min_length=1, max_length=32)
     end_date: str = Field(min_length=1, max_length=32)
     min_cart_mmk: float = Field(default=0, ge=0)
-    discount_mmk: float = Field(ge=0)
+    discount_mmk: float = Field(default=0, ge=0)
+    discount_type: str = "amount"
+    discount_percent: float | None = Field(default=None, gt=0, le=100)
+    menu_item_ids: list[str] = Field(default_factory=list)
 
 
 class StoreCouponResponse(BaseModel):
@@ -167,6 +170,9 @@ class StoreCouponResponse(BaseModel):
     end_date: str
     min_cart_mmk: float
     discount_mmk: float
+    discount_type: str = "amount"
+    discount_percent: float | None = None
+    menu_item_ids: list[str] = Field(default_factory=list)
     scope: str = "food"
     is_active: bool = True
     created_at: str
@@ -723,6 +729,14 @@ def init_food_storage(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE food_menu_items ADD COLUMN rejection_reason TEXT")
     if "reviewed_at" not in menu_columns:
         connection.execute("ALTER TABLE food_menu_items ADD COLUMN reviewed_at TEXT")
+    coupon_columns = {row["name"] for row in connection.execute("PRAGMA table_info(coupons)").fetchall()}
+    if coupon_columns:
+        if "discount_type" not in coupon_columns:
+            connection.execute("ALTER TABLE coupons ADD COLUMN discount_type TEXT NOT NULL DEFAULT 'amount'")
+        if "discount_percent" not in coupon_columns:
+            connection.execute("ALTER TABLE coupons ADD COLUMN discount_percent REAL")
+        if "menu_item_ids" not in coupon_columns:
+            connection.execute("ALTER TABLE coupons ADD COLUMN menu_item_ids TEXT NOT NULL DEFAULT ''")
 
 
 def _application_from_row(row: sqlite3.Row) -> FoodStoreApplicationResponse:
@@ -1428,6 +1442,10 @@ def create_food_router(
         return connection
 
     def store_coupon_from_row(row: sqlite3.Row) -> StoreCouponResponse:
+        menu_item_ids_text = ""
+        if "menu_item_ids" in row.keys():
+            menu_item_ids_text = row["menu_item_ids"] or ""
+        menu_item_ids = [item_id for item_id in menu_item_ids_text.split(",") if item_id]
         return StoreCouponResponse(
             id=row["id"],
             name=row["name"],
@@ -1435,6 +1453,13 @@ def create_food_router(
             end_date=row["end_date"],
             min_cart_mmk=float(row["min_cart_mmk"] or 0),
             discount_mmk=float(row["discount_mmk"] or 0),
+            discount_type=(row["discount_type"] if "discount_type" in row.keys() else "amount") or "amount",
+            discount_percent=(
+                float(row["discount_percent"])
+                if "discount_percent" in row.keys() and row["discount_percent"] is not None
+                else None
+            ),
+            menu_item_ids=menu_item_ids,
             scope=row["scope"] or "food",
             is_active=bool(row["is_active"]),
             created_at=row["created_at"],
@@ -2222,7 +2247,8 @@ def create_food_router(
             store = confirmed_store_row(connection, restaurant_id or "", user_phone)
             rows = connection.execute(
                 """
-                SELECT id, name, start_date, end_date, min_cart_mmk, discount_mmk, scope, is_active, created_at
+                SELECT id, name, start_date, end_date, min_cart_mmk, discount_mmk,
+                       discount_type, discount_percent, menu_item_ids, scope, is_active, created_at
                 FROM coupons
                 WHERE merchant_restaurant_id = ? AND merchant_phone = ?
                 ORDER BY created_at DESC
@@ -2241,8 +2267,19 @@ def create_food_router(
         name = request.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="请填写 Coupon name")
-        if request.discount_mmk <= 0:
-            raise HTTPException(status_code=400, detail="请填写折扣金额")
+        discount_type = request.discount_type if request.discount_type in {"amount", "percent"} else "amount"
+        discount_mmk = float(request.discount_mmk or 0)
+        discount_percent = request.discount_percent
+        if discount_type == "amount":
+            if discount_mmk <= 0:
+                raise HTTPException(status_code=400, detail="请填写折扣金额")
+            discount_percent = None
+        else:
+            if discount_percent is None or discount_percent <= 0 or discount_percent > 100:
+                raise HTTPException(status_code=400, detail="请填写 1-100 的折扣百分比")
+            discount_mmk = 0
+        menu_item_ids = [item_id.strip() for item_id in request.menu_item_ids if item_id.strip()]
+        menu_item_ids_text = ",".join(dict.fromkeys(menu_item_ids))
         start_date = normalize_coupon_date(request.start_date)
         end_date = normalize_coupon_date(request.end_date)
         if end_date < start_date:
@@ -2267,10 +2304,10 @@ def create_food_router(
                 """
                 INSERT INTO coupons (
                     id, name, start_date, end_date, min_cart_mmk, discount_mmk,
-                    discount_type, discount_percent, scope, target_type, target_user_phone,
+                    discount_type, discount_percent, menu_item_ids, scope, target_type, target_user_phone,
                     target_email, merchant_restaurant_id, merchant_phone, is_active, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'amount', NULL, 'food', 'all', NULL, NULL, ?, ?, 1, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'food', 'all', NULL, NULL, ?, ?, 1, ?)
                 """,
                 (
                     coupon_id,
@@ -2278,7 +2315,10 @@ def create_food_router(
                     start_date,
                     end_date,
                     request.min_cart_mmk,
-                    request.discount_mmk,
+                    discount_mmk,
+                    discount_type,
+                    discount_percent,
+                    menu_item_ids_text,
                     store["id"],
                     user_phone,
                     created_at,
@@ -2286,7 +2326,8 @@ def create_food_router(
             )
             row = connection.execute(
                 """
-                SELECT id, name, start_date, end_date, min_cart_mmk, discount_mmk, scope, is_active, created_at
+                SELECT id, name, start_date, end_date, min_cart_mmk, discount_mmk,
+                       discount_type, discount_percent, menu_item_ids, scope, is_active, created_at
                 FROM coupons
                 WHERE id = ?
                 LIMIT 1
@@ -3247,7 +3288,7 @@ def create_food_router(
                 today = datetime.now(ZoneInfo("Asia/Yangon")).date().isoformat()
                 coupon_row = connection.execute(
                     """
-                    SELECT name, min_cart_mmk, discount_mmk, discount_type, discount_percent
+                    SELECT name, min_cart_mmk, discount_mmk, discount_type, discount_percent, menu_item_ids
                     FROM coupons
                     WHERE lower(name) = lower(?)
                       AND is_active = 1
@@ -3259,11 +3300,21 @@ def create_food_router(
                     (voucher_code, today, today, user_phone),
                 ).fetchone()
                 if coupon_row and request.subtotal_mmk >= float(coupon_row["min_cart_mmk"] or 0):
+                    menu_item_ids_text = coupon_row["menu_item_ids"] or ""
+                    coupon_menu_item_ids = {item_id for item_id in menu_item_ids_text.split(",") if item_id}
+                    if not coupon_menu_item_ids or "ALL" in coupon_menu_item_ids:
+                        eligible_subtotal_mmk = request.subtotal_mmk
+                    else:
+                        eligible_subtotal_mmk = sum(
+                            float(item.price_mmk or 0) * item.quantity
+                            for item in request.items
+                            if item.menu_item_id in coupon_menu_item_ids
+                        )
                     if coupon_row["discount_type"] == "percent":
-                        discount_mmk = request.subtotal_mmk * float(coupon_row["discount_percent"] or 0) / 100
+                        discount_mmk = eligible_subtotal_mmk * float(coupon_row["discount_percent"] or 0) / 100
                     else:
                         discount_mmk = float(coupon_row["discount_mmk"] or 0)
-                    discount_mmk = min(discount_mmk, request.subtotal_mmk)
+                    discount_mmk = min(discount_mmk, eligible_subtotal_mmk)
 
             is_qr_pay = request.payment_method.strip().casefold() == "qr pay"
             payment_proof_url = (request.payment_proof_url or "").strip()
