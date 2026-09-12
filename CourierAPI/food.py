@@ -1468,7 +1468,7 @@ def create_food_router(
     def normalize_coupon_date(value: str) -> str:
         text = value.strip()
         if not text:
-            raise HTTPException(status_code=400, detail="请填写日期")
+            raise HTTPException(status_code=400, detail="Please enter a valid date.")
         try:
             return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
         except ValueError:
@@ -2266,39 +2266,28 @@ def create_food_router(
         user_phone = require_account_phone(authorization)
         name = request.name.strip()
         if not name:
-            raise HTTPException(status_code=400, detail="请填写 Coupon name")
+            raise HTTPException(status_code=400, detail="Please enter the coupon name.")
         discount_type = request.discount_type if request.discount_type in {"amount", "percent"} else "amount"
         discount_mmk = float(request.discount_mmk or 0)
         discount_percent = request.discount_percent
         if discount_type == "amount":
             if discount_mmk <= 0:
-                raise HTTPException(status_code=400, detail="请填写折扣金额")
+                raise HTTPException(status_code=400, detail="Please enter the discount amount.")
             discount_percent = None
         else:
             if discount_percent is None or discount_percent <= 0 or discount_percent > 100:
-                raise HTTPException(status_code=400, detail="请填写 1-100 的折扣百分比")
+                raise HTTPException(status_code=400, detail="Please enter a discount percent from 1 to 100.")
             discount_mmk = 0
         menu_item_ids = [item_id.strip() for item_id in request.menu_item_ids if item_id.strip()]
         menu_item_ids_text = ",".join(dict.fromkeys(menu_item_ids))
         start_date = normalize_coupon_date(request.start_date)
         end_date = normalize_coupon_date(request.end_date)
         if end_date < start_date:
-            raise HTTPException(status_code=400, detail="End Date 不能早于 Start Date")
+            raise HTTPException(status_code=400, detail="End Date cannot be earlier than Start Date.")
 
         created_at = datetime.now(timezone.utc).isoformat()
         with connect_db() as connection:
             store = confirmed_store_row(connection, restaurant_id or "", user_phone)
-            duplicate = connection.execute(
-                """
-                SELECT id
-                FROM coupons
-                WHERE lower(name) = lower(?) AND is_active = 1
-                LIMIT 1
-                """,
-                (name,),
-            ).fetchone()
-            if duplicate:
-                raise HTTPException(status_code=400, detail="Coupon name 已存在")
             coupon_id = str(uuid4())
             connection.execute(
                 """
