@@ -166,6 +166,8 @@ class PlatformPaymentConfigResponse(BaseModel):
     order_hours_message: str | None = None
     rider_cancel_delivery_penalty_mmk: float = 1000
     user_cancel_delivery_penalty_mmk: float = 1000
+    cash_on_delivery_require_deposit: bool = False
+    item_paid_require_deposit: bool = False
     delivery_weight_fee_threshold_kg: float = 7
     delivery_weight_extra_fee_mmk: float = 1000
 
@@ -519,6 +521,11 @@ class AdminOrderHoursRequest(BaseModel):
     start: str = "06:00"
     end: str = "01:00"
     timezone: str = "Asia/Yangon"
+
+
+class AdminDepositSettingsRequest(BaseModel):
+    cash_on_delivery_require_deposit: bool = False
+    item_paid_require_deposit: bool = False
 
 
 class CouponResponse(BaseModel):
@@ -910,6 +917,19 @@ def save_platform_setting(key: str, value: str) -> None:
             """,
             (key, value, datetime.now(timezone.utc).isoformat()),
         )
+
+
+def platform_setting_bool(key: str, default: bool = False) -> bool:
+    value = load_platform_settings().get(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def delivery_deposit_required(payment_mode: PaymentMode) -> bool:
+    if payment_mode == "cod":
+        return platform_setting_bool("cash_on_delivery_require_deposit", False)
+    return platform_setting_bool("item_paid_require_deposit", False)
 
 
 def normalize_order_hour(value: str, fallback: str) -> str:
@@ -3361,6 +3381,23 @@ ADMIN_HTML = r'''
       <button onclick="saveOrderHours(this)">保存</button>
       <span id="orderHoursStatus" class="settings-status">06:00 - 01:00</span>
     </section>
+    <section class="settings-panel">
+      <h2>骑手押金设置</h2>
+      <label>Cash on delivery require deposit
+        <select id="codRequireDeposit">
+          <option value="false">No</option>
+          <option value="true">Yes</option>
+        </select>
+      </label>
+      <label>Item Paid require deposit
+        <select id="itemPaidRequireDeposit">
+          <option value="false">No</option>
+          <option value="true">Yes</option>
+        </select>
+      </label>
+      <button onclick="saveDepositSettings(this)">保存</button>
+      <span id="depositSettingsStatus" class="settings-status">默认 No</span>
+    </section>
     <section id="page-payments" class="page active">
       <h2>订单</h2>
       <table class="orders-table">
@@ -3528,7 +3565,7 @@ ADMIN_HTML = r'''
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    let state = { orders: [], food_orders: [], accounts: [], rider_registrations: [], messages: [], payments: [], store_applications: [], deleted_store_applications: [], food_menu_items: [], coupons: [], order_hours: null };
+    let state = { orders: [], food_orders: [], accounts: [], rider_registrations: [], messages: [], payments: [], store_applications: [], deleted_store_applications: [], food_menu_items: [], coupons: [], order_hours: null, deposit_settings: null };
     let currentPage = "payments";
     let tabBadges = { payments: 0, "cancelled-orders": 0, "food-orders": 0, orders: 0, accounts: 0, "rider-registrations": 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
     let selectedServiceConversationId = null;
@@ -3951,6 +3988,45 @@ ADMIN_HTML = r'''
       }
     }
 
+    function renderDepositSettings() {
+      const settings = state.deposit_settings || {};
+      const cod = document.getElementById("codRequireDeposit");
+      const itemPaid = document.getElementById("itemPaidRequireDeposit");
+      const status = document.getElementById("depositSettingsStatus");
+      const codRequired = settings.cash_on_delivery_require_deposit === true;
+      const itemPaidRequired = settings.item_paid_require_deposit === true;
+      if (cod) cod.value = codRequired ? "true" : "false";
+      if (itemPaid) itemPaid.value = itemPaidRequired ? "true" : "false";
+      if (status) {
+        status.textContent = `COD: ${codRequired ? "Yes" : "No"} / Item Paid: ${itemPaidRequired ? "Yes" : "No"}`;
+      }
+    }
+
+    async function saveDepositSettings(button) {
+      const cod = document.getElementById("codRequireDeposit").value === "true";
+      const itemPaid = document.getElementById("itemPaidRequireDeposit").value === "true";
+      setButtonBusy(button, true, "保存中");
+      try {
+        const response = await fetch(`/admin/config/deposit-settings?key=${keyParam()}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cash_on_delivery_require_deposit: cod,
+            item_paid_require_deposit: itemPaid
+          })
+        });
+        if (!response.ok) throw new Error(await errorText(response));
+        const data = await response.json();
+        state.deposit_settings = data.deposit_settings;
+        renderDepositSettings();
+        showToast("骑手押金设置已保存");
+      } catch (error) {
+        showToast(error.message || "保存失败", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
     function upsertPayment(updated) {
       const index = state.payments.findIndex(payment => payment.id === updated.id);
       if (index >= 0) {
@@ -4119,6 +4195,7 @@ ADMIN_HTML = r'''
 
     function render() {
       renderOrderHours();
+      renderDepositSettings();
       const q = document.getElementById("q").value.toLowerCase();
       const orders = sortByDateDesc(state.orders.filter(order => JSON.stringify(order).toLowerCase().includes(q) && orderMatchesFilters(order)));
       const accounts = filteredAccounts();
@@ -6514,6 +6591,8 @@ def health_check() -> HealthResponse:
 @app.get("/config/payment", response_model=PlatformPaymentConfigResponse)
 def get_platform_payment_config() -> PlatformPaymentConfigResponse:
     hours = order_hours_status()
+    cash_on_delivery_require_deposit = platform_setting_bool("cash_on_delivery_require_deposit", False)
+    item_paid_require_deposit = platform_setting_bool("item_paid_require_deposit", False)
     receive_qr_url = clean_optional_text(signed_gcs_read_url(PLATFORM_RECEIVE_QR_IMAGE_URL))
     return PlatformPaymentConfigResponse(
         kpay_qr_image_url=receive_qr_url,
@@ -6529,6 +6608,8 @@ def get_platform_payment_config() -> PlatformPaymentConfigResponse:
         order_hours_message=clean_optional_text(str(hours["message"])) if hours["message"] else None,
         rider_cancel_delivery_penalty_mmk=RIDER_CANCEL_DELIVERY_PENALTY_MMK,
         user_cancel_delivery_penalty_mmk=USER_CANCEL_DELIVERY_PENALTY_MMK,
+        cash_on_delivery_require_deposit=cash_on_delivery_require_deposit,
+        item_paid_require_deposit=item_paid_require_deposit,
         delivery_weight_fee_threshold_kg=DELIVERY_WEIGHT_FEE_THRESHOLD_KG,
         delivery_weight_extra_fee_mmk=DELIVERY_WEIGHT_EXTRA_FEE_MMK,
     )
@@ -6657,6 +6738,10 @@ def admin_data(key: str = Query(default="")) -> dict:
         "food_orders": food_orders_data,
         "coupons": coupons_data,
         "order_hours": order_hours_status(),
+        "deposit_settings": {
+            "cash_on_delivery_require_deposit": platform_setting_bool("cash_on_delivery_require_deposit", False),
+            "item_paid_require_deposit": platform_setting_bool("item_paid_require_deposit", False),
+        },
     }
 
 
@@ -6688,6 +6773,28 @@ def admin_update_order_hours(
     save_platform_setting("order_hours_end", end)
     save_platform_setting("order_hours_timezone", zone_name)
     return {"order_hours": order_hours_status()}
+
+
+@app.patch("/admin/config/deposit-settings")
+def admin_update_deposit_settings(
+    request: AdminDepositSettingsRequest,
+    key: str = Query(default=""),
+) -> dict:
+    require_admin_key(key)
+    save_platform_setting(
+        "cash_on_delivery_require_deposit",
+        "true" if request.cash_on_delivery_require_deposit else "false",
+    )
+    save_platform_setting(
+        "item_paid_require_deposit",
+        "true" if request.item_paid_require_deposit else "false",
+    )
+    return {
+        "deposit_settings": {
+            "cash_on_delivery_require_deposit": platform_setting_bool("cash_on_delivery_require_deposit", False),
+            "item_paid_require_deposit": platform_setting_bool("item_paid_require_deposit", False),
+        }
+    }
 
 
 @app.post("/admin/coupons", response_model=CouponResponse)
@@ -7534,7 +7641,9 @@ def create_order(
         )
     payment_proof_url = payment_proof_url or prepaid_payment.payment_proof_url
     user_payment_status: PaymentStatus = prepaid_payment.status
-    rider_deposit_status: PaymentStatus = "unpaid" if request.goods_amount > 0 else "not_required"
+    rider_deposit_status: PaymentStatus = (
+        "unpaid" if request.goods_amount > 0 and delivery_deposit_required(request.payment_mode) else "not_required"
+    )
 
     order = OrderResponse(
         id=kpay_transaction_id,
