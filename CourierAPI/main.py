@@ -3258,8 +3258,13 @@ ADMIN_HTML = r'''
     tr { transition: background .14s ease; }
     tr:hover { background: #f9fafb; }
     tr.is-new { background: #ecfdf5; animation: freshRow 2.4s ease-out 1; }
-    .address-cell { width: 100%; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }
+    .address-cell { width: 100%; max-width: 100%; line-height: 1.35; }
     .address-cell .muted { display: block; margin-top: 4px; }
+    .address-summary { max-width: 220px; display: grid; gap: 4px; }
+    .address-summary-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #111827; }
+    .address-summary-line.muted { color: #6b7280; }
+    .address-button { width: auto; padding: 6px 9px; border-radius: 7px; background: #fff; color: #111827; border-color: #d1d5db; font-size: 12px; }
+    .full-address { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; line-height: 1.45; font: inherit; color: #111827; }
     .actions-cell { width: 150px; }
     .actions-cell button { width: 100%; margin-bottom: 6px; padding: 8px 6px; white-space: normal; }
     .grid { display: grid; grid-template-columns: 1.4fr .9fr; gap: 16px; align-items: start; }
@@ -3555,6 +3560,15 @@ ADMIN_HTML = r'''
       <div id="accountDetail" class="modal-body account-detail"></div>
     </div>
   </div>
+  <div id="addressModal" class="modal-backdrop" onclick="closeAddressModal()">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <h3 id="addressModalTitle">地址详情</h3>
+        <button class="modal-close" onclick="closeAddressModal()">关闭</button>
+      </div>
+      <div id="addressModalBody" class="modal-body"></div>
+    </div>
+  </div>
   <div id="rejectConfirmModal" class="modal-backdrop" onclick="resolveRejectConfirmation(false)">
     <div class="modal-card confirm-card" onclick="event.stopPropagation()">
       <div class="modal-head">
@@ -3711,6 +3725,27 @@ ADMIN_HTML = r'''
       const platform = Number(order.platform_delivery_fee || Math.round(gross * (gross >= 10000 ? 0.08 : 0.10)));
       const rider = Number(order.rider_delivery_fee || Math.max(gross - platform, 0));
       return `配送费 ${money(rider)}<br><span class="muted">原送货费 ${money(gross)} / 平台扣费 ${money(platform)}</span><br><span class="muted">货值 ${money(order.goods_amount)}</span>`;
+    }
+    function shortAddress(value, fallback = "未填写") {
+      const text = String(value || "").replace(/\s+/g, " ").trim();
+      if (!text) return fallback;
+      return text.length > 42 ? `${text.slice(0, 42)}...` : text;
+    }
+    function addressSummaryCell(order, kind = "parcel") {
+      if (kind === "food") {
+        return `
+          <div class="address-summary">
+            <div class="address-summary-line">${escapeHtml(shortAddress(order.restaurant_name, "餐厅"))}</div>
+            <div class="address-summary-line muted">${escapeHtml(shortAddress(order.delivery_address, "收货地址"))}</div>
+            <button class="address-button" onclick="event.stopPropagation(); showAddressModal('food', ${jsValue(order.id)})">查看地址</button>
+          </div>`;
+      }
+      return `
+        <div class="address-summary">
+          <div class="address-summary-line">取：${escapeHtml(shortAddress(order.pickup_address))}</div>
+          <div class="address-summary-line muted">收：${escapeHtml(shortAddress(order.dropoff_address))}</div>
+          <button class="address-button" onclick="event.stopPropagation(); showAddressModal('parcel', ${jsValue(order.id)})">查看地址</button>
+        </div>`;
     }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[s]));
@@ -3870,6 +3905,39 @@ ADMIN_HTML = r'''
       const image = document.getElementById("imagePreviewImg");
       if (modal) modal.classList.remove("show");
       if (image) image.src = "";
+    }
+
+    function closeAddressModal() {
+      const modal = document.getElementById("addressModal");
+      const body = document.getElementById("addressModalBody");
+      if (modal) modal.classList.remove("show");
+      if (body) body.innerHTML = "";
+    }
+
+    function showAddressModal(kind, id) {
+      const modal = document.getElementById("addressModal");
+      const title = document.getElementById("addressModalTitle");
+      const body = document.getElementById("addressModalBody");
+      if (!modal || !body) return;
+      const order = kind === "food"
+        ? (state.food_orders || []).find(item => String(item.id) === String(id))
+        : (state.orders || []).find(item => String(item.id) === String(id));
+      if (!order) return;
+      const heading = kind === "food" ? `Food #${String(order.id).slice(0, 8).toUpperCase()}` : `Parcel #${String(order.id).slice(0, 6).toUpperCase()}`;
+      if (title) title.textContent = `${heading} 地址详情`;
+      if (kind === "food") {
+        body.innerHTML = `
+          <div class="row"><b>餐厅</b><pre class="full-address">${escapeHtml(order.restaurant_name || "")}</pre></div>
+          <div class="row"><b>收货地址</b><pre class="full-address">${escapeHtml(order.delivery_address || "")}</pre></div>
+          <div class="row"><b>城市/镇区</b><span>${escapeHtml([order.delivery_city, order.delivery_township].filter(Boolean).join(" / "))}</span></div>
+        `;
+      } else {
+        body.innerHTML = `
+          <div class="row"><b>取件</b><pre class="full-address">${escapeHtml(order.pickup_address || "")}</pre></div>
+          <div class="row"><b>收货</b><pre class="full-address">${escapeHtml(order.dropoff_address || "")}</pre></div>
+        `;
+      }
+      modal.classList.add("show");
     }
 
     function askRejectConfirmation(message = "确定要拒绝吗？") {
@@ -4130,7 +4198,7 @@ ADMIN_HTML = r'''
           <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
           <td>${paymentProofCell(order)}</td>
           <td>${riderDepositLabel(order.rider_deposit_status)}<br>${order.rider_deposit_proof_url ? `<img src="${escapeHtml(order.rider_deposit_proof_url)}" alt="骑手押金截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : ""}</td>
-          <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
+          <td class="address-cell">${addressSummaryCell(order)}</td>
           <td class="actions-cell">
             ${order.user_payment_status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmUserPayment('${order.id}', this)">${prepaid ? "确认用户付款" : "确认送货费"}</button>` : ""}
             ${order.rider_deposit_status === "pending" ? `<button onclick="event.stopPropagation(); confirmDeposit('${order.id}', this)">确认骑手押金</button>` : ""}
@@ -4305,7 +4373,7 @@ ADMIN_HTML = r'''
           <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td><span class="pill">${actor}</span><br><span class="muted">用户付款：${label(order.user_payment_status)}</span></td>
           <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
-          <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span>${cancellationInfoHtml(order)}</td>
+          <td class="address-cell">${addressSummaryCell(order)}${cancellationInfoHtml(order)}</td>
           <td class="actions-cell">
             ${canRefundOrder(order) ? `<button onclick="event.stopPropagation(); refundOrder('${order.id}', this)">Refund</button>` : `<span class="pill">${label(order.user_payment_status)}</span>`}
             <button class="danger" onclick="event.stopPropagation(); deleteOrder('${order.id}', this)">删除</button>
@@ -4321,7 +4389,7 @@ ADMIN_HTML = r'''
           <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}<br>${displayAccount(order.rider_phone, order.rider_nickname || order.rider_name, order.rider_email)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">用户付款：${label(paymentStatus)}</span></td>
           <td>配送费 ${money(order.delivery_fee_mmk)}<br><span class="muted">外卖金额 ${money(order.goods_amount)}</span></td>
-          <td class="address-cell">${escapeHtml(order.restaurant_name || "")}<br><span class="muted">${escapeHtml(order.delivery_address || "")}</span></td>
+          <td class="address-cell">${addressSummaryCell(order, "food")}</td>
           <td class="actions-cell">
             ${canRefundFoodOrder(order) ? `<button onclick="event.stopPropagation(); refundFoodOrder('${order.id}', this)">Refund</button>` : `<span class="pill">${label(paymentStatus)}</span>`}
             <button class="danger" onclick="event.stopPropagation(); deleteFoodOrder('${order.id}', this)">删除</button>
@@ -4504,7 +4572,7 @@ ADMIN_HTML = r'''
           <td>${items}</td>
           <td>${riderSettlementQr}<br><span class="pill">${escapeHtml(label(order.settlement_status || "pending"))}</span></td>
           <td>${proof}<br><span class="pill">${riderDepositLabel(order.rider_deposit_status)}</span><br><span class="muted">押金 ${Number(order.goods_amount || 0).toLocaleString()} MMK</span></td>
-          <td><b>${escapeHtml(order.restaurant_name || "餐厅")}</b><br>${escapeHtml(order.restaurant_location || "")}<br><span class="muted">送达：${escapeHtml(order.delivery_address || "")}</span></td>
+          <td class="address-cell">${addressSummaryCell(order, "food")}</td>
           <td>
             ${paymentStatus === "pending" ? `<button onclick="confirmFoodUserPayment('${order.id}', this)">确认付款</button><button class="danger" onclick="rejectFoodUserPayment('${order.id}', this)">拒绝付款</button>` : ""}
             ${order.rider_deposit_status === "pending" ? `<button onclick="confirmFoodRiderDeposit('${order.id}', this)">确认骑手押金</button>` : ""}
@@ -4818,7 +4886,7 @@ ADMIN_HTML = r'''
           <td>${escapeHtml(roleText)}</td>
           <td><span class="pill">${label(order.status)}</span><br><span class="muted">${label(order.payment_mode)}</span></td>
           <td>配送费 ${money(order.delivery_fee || order.price)}<br><span class="muted">货值 ${money(order.goods_amount)}</span></td>
-          <td class="address-cell">${escapeHtml(order.pickup_address)}<br><span class="muted">${escapeHtml(order.dropoff_address)}</span></td>
+          <td class="address-cell">${addressSummaryCell(order)}</td>
         </tr>`;
     }
 
