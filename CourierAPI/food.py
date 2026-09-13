@@ -1500,6 +1500,32 @@ def create_food_router(
             created_at=row["created_at"],
         )
 
+    def notify_store_coupon_issued_to_all(coupon: StoreCouponResponse) -> None:
+        if notify_user is None:
+            return
+        try:
+            with connect_db() as connection:
+                account_columns = {
+                    column["name"]
+                    for column in connection.execute("PRAGMA table_info(accounts)").fetchall()
+                }
+                if "app_deleted_at" in account_columns:
+                    rows = connection.execute(
+                        "SELECT phone FROM accounts WHERE phone != '' AND app_deleted_at IS NULL"
+                    ).fetchall()
+                else:
+                    rows = connection.execute("SELECT phone FROM accounts WHERE phone != ''").fetchall()
+            for row in rows:
+                phone = row["phone"]
+                notify_user(
+                    phone,
+                    f"coupon-issued-{coupon.id}-{phone}",
+                    "New coupon",
+                    f"You received coupon {coupon.name}.",
+                )
+        except Exception:
+            logger.exception("Store coupon notification failed for %s", coupon.id)
+
     def normalize_coupon_date(value: str) -> str:
         text = value.strip()
         if not text:
@@ -2362,6 +2388,7 @@ def create_food_router(
                     created_at,
                 ),
             )
+        notify_store_coupon_issued_to_all(coupon)
         return coupon
 
     @router.post("/stores/orders/{order_id}/preparation", response_model=FoodOrderResponse)
