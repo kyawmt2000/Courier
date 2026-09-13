@@ -3252,6 +3252,7 @@ ADMIN_HTML = r'''
     table.orders-table .col-amount { width: 100px; }
     table.orders-table .col-proof { width: 118px; }
     table.orders-table .col-deposit { width: 88px; }
+    table.orders-table .col-food-items { width: 170px; }
     table.orders-table .col-actions { width: 150px; }
     th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
     th { color: #6b7280; font-weight: 700; }
@@ -3260,7 +3261,7 @@ ADMIN_HTML = r'''
     tr.is-new { background: #ecfdf5; animation: freshRow 2.4s ease-out 1; }
     .address-cell { width: 100%; max-width: 100%; line-height: 1.35; }
     .address-cell .muted { display: block; margin-top: 4px; }
-    .address-summary { max-width: 220px; display: grid; gap: 4px; }
+    .address-summary { width: 100%; max-width: 320px; display: grid; gap: 4px; }
     .address-summary-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #111827; }
     .address-summary-line.muted { color: #6b7280; }
     .address-button { width: auto; padding: 6px 9px; border-radius: 7px; background: #fff; color: #111827; border-color: #d1d5db; font-size: 12px; }
@@ -3425,7 +3426,7 @@ ADMIN_HTML = r'''
       <table class="orders-table">
         <colgroup>
           <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
-          <col class="col-proof"><col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
+          <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
         </colgroup>
         <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>付款截图</th><th>骑手押金</th><th>地址</th><th>操作</th></tr></thead>
         <tbody id="codOrders"></tbody>
@@ -3436,7 +3437,7 @@ ADMIN_HTML = r'''
       <table class="orders-table">
         <colgroup>
           <col class="col-order"><col class="col-party"><col class="col-status"><col class="col-amount">
-          <col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
+          <col class="col-food-items"><col class="col-proof"><col class="col-deposit"><col><col class="col-actions">
         </colgroup>
         <thead><tr><th>订单</th><th>用户/骑手</th><th>状态</th><th>金额</th><th>菜品</th><th>骑手付款</th><th>骑手押金</th><th>餐厅/地址</th><th>操作</th></tr></thead>
         <tbody id="foodOrders"></tbody>
