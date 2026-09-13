@@ -4193,7 +4193,10 @@ ADMIN_HTML = r'''
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
           <td>${prepaid && payment.goods_amount ? `骑手押金 ${money(payment.goods_amount)}` : `<span class="muted">订单创建后显示</span>`}</td>
           <td class="address-cell">${payment.pickup_address || payment.dropoff_address ? addressSummaryCell(payment) : `<span class="muted">后台确认后，用户端才可以点立即下单</span>`}</td>
-          <td class="actions-cell">${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}', null, this)">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
+          <td class="actions-cell">
+            ${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}', null, this)">确认用户付款</button>` : `<span class="pill">已确认</span>`}
+            <button class="danger" onclick="event.stopPropagation(); deletePrepaidPayment('${payment.id}', this)">删除</button>
+          </td>
         </tr>`;
     }
 
@@ -5613,6 +5616,25 @@ ADMIN_HTML = r'''
         loadData({ silent: true });
       } catch (error) {
         showToast(error.message || "Request failed", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function deletePrepaidPayment(id, button = null) {
+      if (!confirm("确认删除这个付款申请吗？")) return;
+      setButtonBusy(button, true);
+      try {
+        const response = await fetch(`/admin/payments/${id}?key=${keyParam()}`, { method: "DELETE" });
+        if (!response.ok) {
+          throw new Error(await errorText(response));
+        }
+        state.payments = state.payments.filter(item => item.id !== id);
+        render();
+        showToast("付款申请已删除");
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "删除失败", "error");
       } finally {
         setButtonBusy(button, false);
       }
@@ -7070,6 +7092,28 @@ def admin_update_prepaid_payment(
     save_prepaid_payment(updated)
     sync_orders_for_prepaid_payment(updated)
     return updated
+
+
+@app.delete("/admin/payments/{payment_id}")
+def admin_delete_prepaid_payment(payment_id: str, key: str = Query(default="")) -> dict:
+    require_admin_key(key)
+    payment = load_prepaid_payment(payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="付款记录不存在")
+
+    with connect_db() as connection:
+        connection.execute(
+            """
+            DELETE FROM prepaid_payments
+            WHERE id = ?
+               OR json_extract(payload, '$.dinger_transaction_num') = ?
+               OR json_extract(payload, '$.dinger_form_token') = ?
+            """,
+            (payment_id, payment_id, payment_id),
+        )
+
+    delete_gcs_url(payment.payment_proof_url)
+    return {"status": "deleted", "id": payment_id}
 
 
 @app.patch("/admin/orders/{order_id}", response_model=OrderResponse)
