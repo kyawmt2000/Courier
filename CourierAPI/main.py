@@ -536,7 +536,8 @@ class CouponResponse(BaseModel):
     min_cart_mmk: float
     discount_mmk: float = 1000
     discount_type: CouponDiscountType = "amount"
-    discount_percent: float | None = None
+    discount_percent: int = 0
+    menu_item_ids: list[str] = Field(default_factory=list)
     scope: CouponScope
     target_type: CouponTargetType = "all"
     target_user_phone: str | None = None
@@ -992,8 +993,10 @@ def normalize_coupon_date(value: str) -> str:
 
 
 def coupon_from_row(row: sqlite3.Row) -> CouponResponse:
-    discount_type = row["discount_type"] if row["discount_type"] in {"amount", "percent"} else "amount"
-    target_type = row["target_type"] if row["target_type"] in {"none", "all", "account"} else "all"
+    keys = row.keys()
+    discount_type = row["discount_type"] if "discount_type" in keys and row["discount_type"] in {"amount", "percent"} else "amount"
+    target_type = row["target_type"] if "target_type" in keys and row["target_type"] in {"none", "all", "account"} else "all"
+    menu_item_ids_text = row["menu_item_ids"] if "menu_item_ids" in keys and row["menu_item_ids"] else ""
     return CouponResponse(
         id=row["id"],
         name=row["name"],
@@ -1002,11 +1005,12 @@ def coupon_from_row(row: sqlite3.Row) -> CouponResponse:
         min_cart_mmk=float(row["min_cart_mmk"] or 0),
         discount_mmk=float(row["discount_mmk"] or 0),
         discount_type=discount_type,
-        discount_percent=float(row["discount_percent"]) if row["discount_percent"] is not None else None,
-        scope=row["scope"],
+        discount_percent=int(round(float(row["discount_percent"]))) if "discount_percent" in keys and row["discount_percent"] is not None else 0,
+        menu_item_ids=[item_id for item_id in menu_item_ids_text.split(",") if item_id],
+        scope=(row["scope"] if "scope" in keys else "food") or "food",
         target_type=target_type,
-        target_user_phone=row["target_user_phone"],
-        target_email=row["target_email"],
+        target_user_phone=row["target_user_phone"] if "target_user_phone" in keys else None,
+        target_email=row["target_email"] if "target_email" in keys else None,
         is_active=bool(row["is_active"]),
         created_at=row["created_at"],
     )
@@ -1057,7 +1061,7 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
         min_cart_mmk=request.min_cart_mmk,
         discount_mmk=discount_mmk,
         discount_type=request.discount_type,
-        discount_percent=discount_percent,
+        discount_percent=int(round(float(discount_percent))) if discount_percent is not None else 0,
         scope=request.scope,
         target_type="none",
         target_user_phone=None,
