@@ -7908,9 +7908,11 @@ def cancel_rider_order(
         if not app_data_visible_to_account(rider_phone, order.created_at):
             raise HTTPException(status_code=404, detail="订单不存在")
         if order.status in ("accepted", "picking_up", "delivering"):
+            now = datetime.now(timezone.utc)
             updates = {
                 **released_order_update(),
                 **clear_delivery_timeout_update(),
+                "created_at": now,
             }
             if order.rider_deposit_status == "not_required":
                 updates["rider_deposit_status"] = "not_required"
