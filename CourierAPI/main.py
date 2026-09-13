@@ -269,6 +269,8 @@ class CreatePrepaidPaymentRequest(BaseModel):
     payment_proof_url: str
     payment_mode: PaymentMode = "cod"
     promo_invite_email: str | None = None
+    pickup_address: str | None = None
+    dropoff_address: str | None = None
 
 
 class CreateDingerPaymentRequest(BaseModel):
@@ -308,6 +310,8 @@ class PrepaidPaymentResponse(BaseModel):
     original_delivery_fee: float | None = None
     promotion_applied: bool = False
     promo_invite_email: str | None = None
+    pickup_address: str | None = None
+    dropoff_address: str | None = None
 
 
 class OrderResponse(BaseModel):
@@ -2057,6 +2061,8 @@ def order_from_row(row: sqlite3.Row) -> OrderResponse:
 def prepaid_payment_from_row(row: sqlite3.Row) -> PrepaidPaymentResponse:
     payload = json.loads(row["payload"])
     payload.setdefault("payment_mode", "cod")
+    payload.setdefault("pickup_address", None)
+    payload.setdefault("dropoff_address", None)
     return PrepaidPaymentResponse.model_validate(payload)
 
 
@@ -3922,7 +3928,8 @@ ADMIN_HTML = r'''
       if (!modal || !body) return;
       const order = kind === "food"
         ? (state.food_orders || []).find(item => String(item.id) === String(id))
-        : (state.orders || []).find(item => String(item.id) === String(id));
+        : ((state.orders || []).find(item => String(item.id) === String(id)) ||
+           (state.payments || []).find(item => String(item.id) === String(id)));
       if (!order) return;
       const heading = kind === "food" ? `Food #${String(order.id).slice(0, 8).toUpperCase()}` : `Parcel #${String(order.id).slice(0, 6).toUpperCase()}`;
       if (title) title.textContent = `${heading} 地址详情`;
@@ -4185,7 +4192,7 @@ ADMIN_HTML = r'''
           <td>${prepaid ? "送货费" : "配送费"} ${money(payment.amount)}<br><span class="muted">${Number(payment.distance_km || 0).toFixed(1)} km</span></td>
           <td>${payment.payment_proof_url ? `<img src="${escapeHtml(payment.payment_proof_url)}" alt="KPay 转账截图" style="width:84px;height:84px;object-fit:cover;border-radius:8px;background:#f3f4f6;">` : `<span class="muted">无截图</span>`}</td>
           <td>${prepaid && payment.goods_amount ? `骑手押金 ${money(payment.goods_amount)}` : `<span class="muted">订单创建后显示</span>`}</td>
-          <td class="address-cell"><span class="muted">后台确认后，用户端才可以点立即下单</span></td>
+          <td class="address-cell">${payment.pickup_address || payment.dropoff_address ? addressSummaryCell(payment) : `<span class="muted">后台确认后，用户端才可以点立即下单</span>`}</td>
           <td class="actions-cell">${payment.status !== "confirmed" ? `<button onclick="event.stopPropagation(); confirmPrepaidPayment('${payment.id}', null, this)">确认用户付款</button>` : `<span class="pill">已确认</span>`}</td>
         </tr>`;
     }
@@ -7552,6 +7559,8 @@ def create_prepaid_payment(
         raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
     if request.goods_amount > MAX_GOODS_AMOUNT_MMK:
         raise HTTPException(status_code=400, detail=f"货物价格不能超过 {MAX_GOODS_AMOUNT_MMK:,.0f} MMK")
+    pickup_address = clean_optional_text(request.pickup_address)
+    dropoff_address = clean_optional_text(request.dropoff_address)
     original_delivery_fee = estimate_price(request.distance_km, request.weight_kg)
     promotion = delivery_promotion_quote(user_phone, request.distance_km, request.weight_kg, request.promo_invite_email)
     promotion_applied = promotion.active and promotion.eligible
@@ -7575,6 +7584,8 @@ def create_prepaid_payment(
         original_delivery_fee=original_delivery_fee,
         promotion_applied=promotion_applied,
         promo_invite_email=promotion.invite_email,
+        pickup_address=pickup_address,
+        dropoff_address=dropoff_address,
     )
     save_prepaid_payment(payment)
     return payment
