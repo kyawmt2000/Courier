@@ -2391,6 +2391,29 @@ def create_food_router(
         notify_store_coupon_issued_to_all(coupon)
         return coupon
 
+    @router.delete("/stores/coupons/{coupon_id}")
+    def delete_store_coupon(
+        coupon_id: str,
+        restaurant_id: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        user_phone = require_account_phone(authorization)
+        with connect_db() as connection:
+            store = confirmed_store_row(connection, restaurant_id or "", user_phone)
+            existing = connection.execute(
+                """
+                SELECT id
+                FROM coupons
+                WHERE id = ? AND merchant_restaurant_id = ? AND merchant_phone = ?
+                LIMIT 1
+                """,
+                (coupon_id, store["id"], user_phone),
+            ).fetchone()
+            if not existing:
+                raise HTTPException(status_code=404, detail="Coupon not found.")
+            connection.execute("DELETE FROM coupons WHERE id = ?", (coupon_id,))
+        return {"status": "deleted", "id": coupon_id}
+
     @router.post("/stores/orders/{order_id}/preparation", response_model=FoodOrderResponse)
     def update_store_food_order_preparation(
         order_id: str,
