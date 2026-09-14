@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padd
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from delivery_areas import ACTIVE_DELIVERY_AREAS, DeliveryAreaResponse
 from food import (
     AdminUpdateFoodOrderRequest,
     AdminUpdateFoodMenuItemRequest,
@@ -178,6 +179,10 @@ class AppUpdateConfigResponse(BaseModel):
     download_url: str | None = None
     force_update: bool = False
     message: str | None = None
+
+
+class DeliveryAreasResponse(BaseModel):
+    areas: list[DeliveryAreaResponse]
 
 
 class LaunchAdConfigResponse(BaseModel):
@@ -6775,6 +6780,11 @@ def get_app_update_config(
         force_update=force_update,
         message="发现新版本，请更新后继续使用。" if force_update else "发现新版本，建议现在更新。",
     )
+
+
+@app.get("/config/delivery-areas", response_model=DeliveryAreasResponse)
+def get_delivery_areas_config() -> DeliveryAreasResponse:
+    return DeliveryAreasResponse(areas=ACTIVE_DELIVERY_AREAS)
 
 
 @app.get("/coupons", response_model=list[CouponResponse])
