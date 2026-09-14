@@ -537,6 +537,7 @@ class AdminOrderHoursRequest(BaseModel):
 class AdminDepositSettingsRequest(BaseModel):
     cash_on_delivery_require_deposit: bool = False
     item_paid_require_deposit: bool = False
+    max_goods_amount_mmk: float | None = Field(default=None, ge=0)
 
 
 class CouponResponse(BaseModel):
@@ -939,6 +940,21 @@ def platform_setting_bool(key: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def platform_setting_float(key: str, default: float) -> float:
+    value = load_platform_settings().get(key)
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def max_goods_amount_mmk() -> float:
+    return platform_setting_float("max_goods_amount_mmk", MAX_GOODS_AMOUNT_MMK)
 
 
 def delivery_deposit_required(payment_mode: PaymentMode) -> bool:
@@ -3377,7 +3393,7 @@ ADMIN_HTML = r'''
     .settings-panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; margin-bottom: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .settings-panel h2 { margin: 0 10px 0 0; }
     .settings-panel label { font-size: 13px; color: #4b5563; display: inline-flex; align-items: center; gap: 6px; }
-    .settings-panel input[type="time"], .settings-panel input[type="text"] { width: auto; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; }
+    .settings-panel input[type="time"], .settings-panel input[type="text"], .settings-panel input[type="number"] { width: auto; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; }
     .settings-status { color: #6b7280; font-size: 13px; }
     .restaurant-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
     .restaurant-card { display: grid; gap: 8px; padding: 12px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; color: #111827; text-align: left; }
@@ -3472,8 +3488,9 @@ ADMIN_HTML = r'''
           <option value="true">Yes</option>
         </select>
       </label>
+      <label>货值上限 MMK <input id="maxGoodsAmountMmk" type="number" min="0" step="1000" value="200000"></label>
       <button onclick="saveDepositSettings(this)">保存</button>
-      <span id="depositSettingsStatus" class="settings-status">默认 No</span>
+      <span id="depositSettingsStatus" class="settings-status">默认 No / 货值 200,000 MMK</span>
     </section>
     <section id="page-payments" class="page active">
       <h2>订单</h2>
@@ -3680,6 +3697,7 @@ ADMIN_HTML = r'''
     let lastLoadStartedAt = 0;
     let searchTimer = null;
     let keyTimer = null;
+    let orderHoursEditingUntil = 0;
     let autoRefreshTimer = null;
     let autoRefreshEnabled = localStorage.getItem("blinkAdminAutoRefresh") !== "off";
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
@@ -4114,14 +4132,26 @@ ADMIN_HTML = r'''
       const end = document.getElementById("orderHoursEnd");
       const timezone = document.getElementById("orderHoursTimezone");
       const status = document.getElementById("orderHoursStatus");
-      if (enabled) enabled.checked = hours.enabled !== false;
-      if (start && hours.start) start.value = hours.start;
-      if (end && hours.end) end.value = hours.end;
-      if (timezone && hours.timezone) timezone.value = hours.timezone;
+      if (!isEditingOrderHours()) {
+        if (enabled) enabled.checked = hours.enabled !== false;
+        if (start && hours.start) start.value = hours.start;
+        if (end && hours.end) end.value = hours.end;
+        if (timezone && hours.timezone) timezone.value = hours.timezone;
+      }
       if (status) {
         const available = hours.available === false ? "当前不可下单" : "当前可下单";
         status.textContent = `${hours.start || "06:00"} - ${hours.end || "01:00"} (${hours.timezone || "Asia/Yangon"}) / ${available}`;
       }
+    }
+
+    function isEditingOrderHours() {
+      const activeId = document.activeElement?.id || "";
+      return ["orderHoursEnabled", "orderHoursStart", "orderHoursEnd", "orderHoursTimezone"].includes(activeId) ||
+        Date.now() < orderHoursEditingUntil;
+    }
+
+    function markOrderHoursEditing() {
+      orderHoursEditingUntil = Date.now() + 15000;
     }
 
     async function saveOrderHours(button) {
@@ -4139,8 +4169,10 @@ ADMIN_HTML = r'''
         if (!response.ok) throw new Error(await errorText(response));
         const data = await response.json();
         state.order_hours = data.order_hours;
+        orderHoursEditingUntil = 0;
         renderOrderHours();
         showToast("下单时间已保存");
+        loadData({ silent: true });
       } catch (error) {
         showToast(error.message || "保存失败", "error");
       } finally {
@@ -4152,19 +4184,27 @@ ADMIN_HTML = r'''
       const settings = state.deposit_settings || {};
       const cod = document.getElementById("codRequireDeposit");
       const itemPaid = document.getElementById("itemPaidRequireDeposit");
+      const maxGoods = document.getElementById("maxGoodsAmountMmk");
       const status = document.getElementById("depositSettingsStatus");
       const codRequired = settings.cash_on_delivery_require_deposit === true;
       const itemPaidRequired = settings.item_paid_require_deposit === true;
+      const maxGoodsAmount = Number(settings.max_goods_amount_mmk || 200000);
       if (cod) cod.value = codRequired ? "true" : "false";
       if (itemPaid) itemPaid.value = itemPaidRequired ? "true" : "false";
+      if (maxGoods) maxGoods.value = String(Math.round(maxGoodsAmount));
       if (status) {
-        status.textContent = `COD: ${codRequired ? "Yes" : "No"} / Item Paid: ${itemPaidRequired ? "Yes" : "No"}`;
+        status.textContent = `COD: ${codRequired ? "Yes" : "No"} / Item Paid: ${itemPaidRequired ? "Yes" : "No"} / 货值上限 ${money(maxGoodsAmount)}`;
       }
     }
 
     async function saveDepositSettings(button) {
       const cod = document.getElementById("codRequireDeposit").value === "true";
       const itemPaid = document.getElementById("itemPaidRequireDeposit").value === "true";
+      const maxGoodsAmount = Number(document.getElementById("maxGoodsAmountMmk").value || 0);
+      if (maxGoodsAmount <= 0) {
+        showToast("货值上限必须大于 0", "error");
+        return;
+      }
       setButtonBusy(button, true, "保存中");
       try {
         const response = await fetch(`/admin/config/deposit-settings?key=${keyParam()}`, {
@@ -4172,7 +4212,8 @@ ADMIN_HTML = r'''
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             cash_on_delivery_require_deposit: cod,
-            item_paid_require_deposit: itemPaid
+            item_paid_require_deposit: itemPaid,
+            max_goods_amount_mmk: maxGoodsAmount
           })
         });
         if (!response.ok) throw new Error(await errorText(response));
@@ -6117,6 +6158,13 @@ ADMIN_HTML = r'''
     });
     document.getElementById("statusFilter").addEventListener("change", render);
     document.getElementById("paymentFilter").addEventListener("change", render);
+    ["orderHoursEnabled", "orderHoursStart", "orderHoursEnd", "orderHoursTimezone"].forEach(id => {
+      const control = document.getElementById(id);
+      if (!control) return;
+      control.addEventListener("focus", markOrderHoursEditing);
+      control.addEventListener("input", markOrderHoursEditing);
+      control.addEventListener("change", markOrderHoursEditing);
+    });
     document.getElementById("refreshInterval").addEventListener("change", event => {
       autoRefreshIntervalMs = Number(event.target.value || 5000);
       localStorage.setItem("blinkAdminRefreshMs", String(autoRefreshIntervalMs));
@@ -7151,7 +7199,7 @@ def get_platform_payment_config() -> PlatformPaymentConfigResponse:
         receiveqr=receive_qr_url,
         kpay_account_name=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NAME),
         kpay_account_note=clean_optional_text(PLATFORM_KPAY_ACCOUNT_NOTE),
-        max_goods_amount_mmk=MAX_GOODS_AMOUNT_MMK,
+        max_goods_amount_mmk=max_goods_amount_mmk(),
         order_hours_enabled=bool(hours["enabled"]),
         order_hours_start=str(hours["start"]),
         order_hours_end=str(hours["end"]),
@@ -7300,6 +7348,7 @@ def admin_data(key: str = Query(default="")) -> dict:
         "deposit_settings": {
             "cash_on_delivery_require_deposit": platform_setting_bool("cash_on_delivery_require_deposit", False),
             "item_paid_require_deposit": platform_setting_bool("item_paid_require_deposit", False),
+            "max_goods_amount_mmk": max_goods_amount_mmk(),
         },
     }
 
@@ -7348,10 +7397,15 @@ def admin_update_deposit_settings(
         "item_paid_require_deposit",
         "true" if request.item_paid_require_deposit else "false",
     )
+    if request.max_goods_amount_mmk is not None:
+        if request.max_goods_amount_mmk <= 0:
+            raise HTTPException(status_code=400, detail="货值上限必须大于 0")
+        save_platform_setting("max_goods_amount_mmk", str(float(request.max_goods_amount_mmk)))
     return {
         "deposit_settings": {
             "cash_on_delivery_require_deposit": platform_setting_bool("cash_on_delivery_require_deposit", False),
             "item_paid_require_deposit": platform_setting_bool("item_paid_require_deposit", False),
+            "max_goods_amount_mmk": max_goods_amount_mmk(),
         }
     }
 
@@ -8051,8 +8105,9 @@ def create_prepaid_payment(
     payment_proof_url = clean_optional_text(request.payment_proof_url)
     if not payment_proof_url:
         raise HTTPException(status_code=400, detail="请上传 KPay 转账截图")
-    if request.goods_amount > MAX_GOODS_AMOUNT_MMK:
-        raise HTTPException(status_code=400, detail=f"货物价格不能超过 {MAX_GOODS_AMOUNT_MMK:,.0f} MMK")
+    max_goods_amount = max_goods_amount_mmk()
+    if request.goods_amount > max_goods_amount:
+        raise HTTPException(status_code=400, detail=f"货物价格不能超过 {max_goods_amount:,.0f} MMK")
     pickup_address = clean_optional_text(request.pickup_address)
     dropoff_address = clean_optional_text(request.dropoff_address)
     original_delivery_fee = estimate_price(request.distance_km, request.weight_kg)
@@ -8190,8 +8245,9 @@ def create_order(
 
     if request.goods_amount <= 0:
         raise HTTPException(status_code=400, detail="请填写货物价格")
-    if request.goods_amount > MAX_GOODS_AMOUNT_MMK:
-        raise HTTPException(status_code=400, detail=f"货物价格不能超过 {MAX_GOODS_AMOUNT_MMK:,.0f} MMK")
+    max_goods_amount = max_goods_amount_mmk()
+    if request.goods_amount > max_goods_amount:
+        raise HTTPException(status_code=400, detail=f"货物价格不能超过 {max_goods_amount:,.0f} MMK")
 
     if not goods_image_url:
         raise HTTPException(status_code=400, detail="请上传商品图片")
