@@ -34,9 +34,11 @@ from food import (
     create_food_router,
     delete_admin_food_order,
     delete_admin_menu_item,
+    delete_admin_food_review,
     delete_admin_store_application,
     init_food_storage,
     load_admin_food_orders,
+    load_admin_food_reviews,
     load_admin_deleted_store_applications,
     load_admin_menu_items,
     load_admin_store_applications,
@@ -547,6 +549,7 @@ class CouponResponse(BaseModel):
     discount_type: CouponDiscountType = "amount"
     discount_percent: int = 0
     menu_item_ids: list[str] = Field(default_factory=list)
+    merchant_restaurant_id: str | None = None
     scope: CouponScope
     target_type: CouponTargetType = "all"
     target_user_phone: str | None = None
@@ -572,6 +575,8 @@ class AdminCreateCouponRequest(BaseModel):
     discount_type: CouponDiscountType
     discount_mmk: float | None = Field(default=None, ge=0)
     discount_percent: float | None = Field(default=None, gt=0, le=100)
+    menu_item_ids: list[str] = Field(default_factory=list)
+    merchant_restaurant_id: str | None = None
 
 
 class AdminIssueCouponRequest(BaseModel):
@@ -1016,6 +1021,7 @@ def coupon_from_row(row: sqlite3.Row) -> CouponResponse:
         discount_type=discount_type,
         discount_percent=int(round(float(row["discount_percent"]))) if "discount_percent" in keys and row["discount_percent"] is not None else 0,
         menu_item_ids=[item_id for item_id in menu_item_ids_text.split(",") if item_id],
+        merchant_restaurant_id=row["merchant_restaurant_id"] if "merchant_restaurant_id" in keys else None,
         scope=(row["scope"] if "scope" in keys else "food") or "food",
         target_type=target_type,
         target_user_phone=row["target_user_phone"] if "target_user_phone" in keys else None,
@@ -1052,6 +1058,22 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
     end_date = normalize_coupon_date(request.end_date)
     if end_date < start_date:
         raise HTTPException(status_code=400, detail="End Date 不能早于 Start Date")
+    merchant_restaurant_id = (request.merchant_restaurant_id or "").strip() or None
+    merchant_phone: str | None = None
+    if merchant_restaurant_id:
+        with connect_db() as connection:
+            store_row = connection.execute(
+                """
+                SELECT id, user_phone
+                FROM food_store_applications
+                WHERE id = ? AND status = 'confirmed'
+                LIMIT 1
+                """,
+                (merchant_restaurant_id,),
+            ).fetchone()
+        if not store_row:
+            raise HTTPException(status_code=404, detail="餐厅不存在或未确认")
+        merchant_phone = store_row["user_phone"]
     discount_mmk = float(request.discount_mmk or 0)
     discount_percent = request.discount_percent
     if request.discount_type == "amount":
@@ -1071,8 +1093,10 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
         discount_mmk=discount_mmk,
         discount_type=request.discount_type,
         discount_percent=int(round(float(discount_percent))) if discount_percent is not None else 0,
+        menu_item_ids=[item_id.strip() for item_id in request.menu_item_ids if item_id.strip()],
+        merchant_restaurant_id=merchant_restaurant_id,
         scope=request.scope,
-        target_type="none",
+        target_type="all" if merchant_restaurant_id else "none",
         target_user_phone=None,
         target_email=None,
         is_active=True,
@@ -1083,9 +1107,9 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
             """
             INSERT INTO coupons (
                 id, name, start_date, end_date, min_cart_mmk, discount_mmk, discount_type, discount_percent,
-                scope, target_type, target_user_phone, target_email, is_active, created_at
+                menu_item_ids, merchant_restaurant_id, merchant_phone, scope, target_type, target_user_phone, target_email, is_active, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 coupon.id,
@@ -1096,6 +1120,9 @@ def create_coupon(request: AdminCreateCouponRequest) -> CouponResponse:
                 coupon.discount_mmk,
                 coupon.discount_type,
                 coupon.discount_percent,
+                ",".join(coupon.menu_item_ids),
+                coupon.merchant_restaurant_id,
+                merchant_phone,
                 coupon.scope,
                 coupon.target_type,
                 coupon.target_user_phone,
@@ -3352,6 +3379,21 @@ ADMIN_HTML = r'''
     .settings-panel label { font-size: 13px; color: #4b5563; display: inline-flex; align-items: center; gap: 6px; }
     .settings-panel input[type="time"], .settings-panel input[type="text"] { width: auto; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; }
     .settings-status { color: #6b7280; font-size: 13px; }
+    .restaurant-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+    .restaurant-card { display: grid; gap: 8px; padding: 12px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; color: #111827; text-align: left; }
+    .restaurant-card:hover { border-color: #16a34a; }
+    .restaurant-card strong { font-size: 15px; }
+    .restaurant-meta { display: grid; gap: 3px; color: #6b7280; font-size: 12px; font-weight: 500; }
+    .restaurant-modal .modal-card { width: min(1180px, 100%); }
+    .restaurant-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+    .restaurant-tab { background: #fff; color: #374151; border-color: #d1d5db; }
+    .restaurant-tab.active { background: #111827; color: #fff; border-color: #111827; }
+    .restaurant-panel { display: grid; gap: 14px; }
+    .restaurant-panel-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; flex-wrap: wrap; }
+    .restaurant-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; align-items: end; padding: 12px; border: 1px solid #e5e7eb; border-radius: 10px; background: #f9fafb; }
+    .restaurant-form label { display: grid; gap: 4px; color: #4b5563; font-size: 12px; font-weight: 700; }
+    .restaurant-form select[multiple] { min-height: 92px; }
+    .restaurant-form .wide { grid-column: 1 / -1; }
     @keyframes pulse { from { opacity: .55; } to { opacity: 1; } }
     @keyframes freshRow { from { box-shadow: inset 4px 0 0 #22c55e; } to { box-shadow: inset 4px 0 0 transparent; } }
     @media (max-width: 1100px) { .account-detail { max-height: none; } .summary { grid-template-columns: repeat(2, minmax(140px, 1fr)); } }
@@ -3397,6 +3439,7 @@ ADMIN_HTML = r'''
       <button id="tab-rider-registrations" class="tab" onclick="showPage('rider-registrations')">骑手资料</button>
       <button id="tab-service" class="tab" onclick="showPage('service')">Customer Service</button>
       <button id="tab-stores" class="tab" onclick="showPage('stores')">店铺注册</button>
+      <button id="tab-restaurants" class="tab" onclick="showPage('restaurants')">餐厅列表</button>
       <button id="tab-deleted-stores" class="tab" onclick="showPage('deleted-stores')">删除餐厅</button>
       <button id="tab-menu-items" class="tab" onclick="showPage('menu-items')">菜品审核</button>
       <button id="tab-settlements" class="tab" onclick="showPage('settlements')">结算</button>
@@ -3530,6 +3573,10 @@ ADMIN_HTML = r'''
         <tbody id="storeApplications"></tbody>
       </table>
     </section>
+    <section id="page-restaurants" class="page">
+      <h2>餐厅列表</h2>
+      <div id="restaurantList" class="restaurant-cards"></div>
+    </section>
     <section id="page-deleted-stores" class="page">
       <h2>删除餐厅</h2>
       <table>
@@ -3581,6 +3628,18 @@ ADMIN_HTML = r'''
       <div id="addressModalBody" class="modal-body"></div>
     </div>
   </div>
+  <div id="restaurantModal" class="modal-backdrop restaurant-modal" onclick="closeRestaurantModal()">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <h3 id="restaurantModalTitle">餐厅详情</h3>
+        <button class="modal-close" onclick="closeRestaurantModal()">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div id="restaurantTabs" class="restaurant-tabs"></div>
+        <div id="restaurantModalBody" class="restaurant-panel"></div>
+      </div>
+    </div>
+  </div>
   <div id="rejectConfirmModal" class="modal-backdrop" onclick="resolveRejectConfirmation(false)">
     <div class="modal-card confirm-card" onclick="event.stopPropagation()">
       <div class="modal-head">
@@ -3608,12 +3667,14 @@ ADMIN_HTML = r'''
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    let state = { orders: [], food_orders: [], accounts: [], rider_registrations: [], messages: [], payments: [], store_applications: [], deleted_store_applications: [], food_menu_items: [], coupons: [], order_hours: null, deposit_settings: null };
+    let state = { orders: [], food_orders: [], food_reviews: [], accounts: [], rider_registrations: [], messages: [], payments: [], store_applications: [], deleted_store_applications: [], food_menu_items: [], coupons: [], order_hours: null, deposit_settings: null };
     let currentPage = "payments";
-    let tabBadges = { payments: 0, "cancelled-orders": 0, "food-orders": 0, orders: 0, accounts: 0, "rider-registrations": 0, service: 0, stores: 0, "menu-items": 0, settlements: 0, coupons: 0 };
+    let tabBadges = { payments: 0, "cancelled-orders": 0, "food-orders": 0, orders: 0, accounts: 0, "rider-registrations": 0, service: 0, stores: 0, restaurants: 0, "menu-items": 0, settlements: 0, coupons: 0 };
     let selectedServiceConversationId = null;
     let selectedAccountPhone = null;
     let selectedAccountPanel = "placed";
+    let selectedRestaurantId = null;
+    let selectedRestaurantPanel = "menu";
     let activeDetailId = null;
     let rejectConfirmResolve = null;
     let lastLoadStartedAt = 0;
@@ -3624,7 +3685,7 @@ ADMIN_HTML = r'''
     let autoRefreshIntervalMs = Number(localStorage.getItem("blinkAdminRefreshMs") || 5000);
     let hasLoadedOnce = false;
     let highlightedIds = new Set();
-    const pages = ["payments","cancelled-orders","accounts","rider-registrations","service","stores","deleted-stores","menu-items","settlements","food-orders","coupons"];
+    const pages = ["payments","cancelled-orders","accounts","rider-registrations","service","stores","restaurants","deleted-stores","menu-items","settlements","food-orders","coupons"];
     const pageTitles = {
       payments: "订单",
       "cancelled-orders": "取消订单",
@@ -3633,6 +3694,7 @@ ADMIN_HTML = r'''
       "rider-registrations": "骑手资料",
       service: "Customer Service",
       stores: "店铺注册",
+      restaurants: "餐厅列表",
       "deleted-stores": "删除餐厅",
       "menu-items": "菜品审核",
       settlements: "结算",
@@ -4165,6 +4227,9 @@ ADMIN_HTML = r'''
         if (activeDetailId && state.orders.some(order => order.id === activeDetailId)) {
           showDetail(activeDetailId);
         }
+        if (selectedRestaurantId) {
+          renderRestaurantModal();
+        }
         const freshCount = fresh.orders + fresh.payments + fresh.accounts + fresh.riderRegistrations + fresh.settlements + fresh.foodSettlements + fresh.messages + fresh.stores + fresh.menuItems;
         if (freshCount) {
           const parts = [];
@@ -4358,6 +4423,7 @@ ADMIN_HTML = r'''
       }
       renderFoodSettlements();
       renderStoreApplications();
+      renderRestaurants();
       renderDeletedStoreApplications();
       renderFoodMenuItems();
       renderCoupons();
@@ -4707,6 +4773,369 @@ ADMIN_HTML = r'''
       }
     }
 
+    function confirmedRestaurants() {
+      return (state.store_applications || []).filter(application => application.status === "confirmed");
+    }
+
+    function restaurantById(id) {
+      return (state.store_applications || []).find(application => String(application.id) === String(id));
+    }
+
+    function restaurantMenuItems(restaurantId) {
+      return sortByDateDesc((state.food_menu_items || []).filter(item => item.restaurant_id === restaurantId));
+    }
+
+    function restaurantOrders(restaurantId) {
+      return sortByDateDesc((state.food_orders || []).filter(order => order.restaurant_id === restaurantId));
+    }
+
+    function restaurantCoupons(restaurantId) {
+      return sortByDateDesc((state.coupons || []).filter(coupon => coupon.merchant_restaurant_id === restaurantId));
+    }
+
+    function restaurantReviews(restaurantId) {
+      return sortByDateDesc((state.food_reviews || []).filter(review => review.restaurant_id === restaurantId));
+    }
+
+    function renderRestaurants() {
+      const container = document.getElementById("restaurantList");
+      if (!container) return;
+      const q = document.getElementById("q").value.toLowerCase();
+      const restaurants = sortByDateDesc(confirmedRestaurants().filter(item => JSON.stringify(item).toLowerCase().includes(q)));
+      container.innerHTML = restaurants.map(application => {
+        const menuCount = restaurantMenuItems(application.id).length;
+        const orderCount = restaurantOrders(application.id).length;
+        const couponCount = restaurantCoupons(application.id).length;
+        const reviewCount = restaurantReviews(application.id).length;
+        const restaurantTypes = (application.restaurant_types || []).join(" / ");
+        return `
+          <button class="restaurant-card" onclick="openRestaurantModal(${jsValue(application.id)})">
+            <strong>${escapeHtml(application.store_name || "餐厅")}</strong>
+            <span class="pill">${escapeHtml((application.service_types || []).join(" / ") || "Food")}</span>
+            <span class="restaurant-meta">
+              <span>${escapeHtml(application.owner_name || "")} ${escapeHtml(application.primary_phone || "")}</span>
+              <span>${escapeHtml(restaurantTypes || "未填写餐厅类型")}</span>
+              <span>${escapeHtml(application.store_address || "未填写地址")}</span>
+              <span>Menu ${menuCount} / Orders ${orderCount} / Coupons ${couponCount} / Reviews ${reviewCount}</span>
+            </span>
+          </button>`;
+      }).join("");
+      if (!restaurants.length) {
+        container.innerHTML = `<div class="empty">暂无已确认餐厅</div>`;
+      }
+    }
+
+    function openRestaurantModal(id, panel = "menu") {
+      selectedRestaurantId = id;
+      selectedRestaurantPanel = panel;
+      document.getElementById("restaurantModal")?.classList.add("show");
+      renderRestaurantModal();
+    }
+
+    function closeRestaurantModal() {
+      selectedRestaurantId = null;
+      document.getElementById("restaurantModal")?.classList.remove("show");
+      const body = document.getElementById("restaurantModalBody");
+      const tabs = document.getElementById("restaurantTabs");
+      if (body) body.innerHTML = "";
+      if (tabs) tabs.innerHTML = "";
+    }
+
+    function selectRestaurantPanel(panel) {
+      selectedRestaurantPanel = panel;
+      renderRestaurantModal();
+    }
+
+    function restaurantTabButton(panel, text, count) {
+      return `<button class="restaurant-tab ${selectedRestaurantPanel === panel ? "active" : ""}" onclick="selectRestaurantPanel('${panel}')">${escapeHtml(text)} (${count})</button>`;
+    }
+
+    function renderRestaurantModal() {
+      const application = restaurantById(selectedRestaurantId);
+      const modal = document.getElementById("restaurantModal");
+      const title = document.getElementById("restaurantModalTitle");
+      const tabs = document.getElementById("restaurantTabs");
+      const body = document.getElementById("restaurantModalBody");
+      if (!application || !modal || !tabs || !body) {
+        if (modal) modal.classList.remove("show");
+        return;
+      }
+      const menuItems = restaurantMenuItems(application.id);
+      const orders = restaurantOrders(application.id);
+      const coupons = restaurantCoupons(application.id);
+      const reviews = restaurantReviews(application.id);
+      if (title) title.textContent = `${application.store_name || "餐厅"} / 餐厅详情`;
+      tabs.innerHTML = [
+        restaurantTabButton("menu", "Menu", menuItems.length),
+        restaurantTabButton("orders", "Food Order", orders.length),
+        restaurantTabButton("coupon", "Coupon", coupons.length),
+        restaurantTabButton("pos", "POS", orders.filter(order => order.status === "completed").length),
+        restaurantTabButton("review", "Review", reviews.length),
+        restaurantTabButton("blink", "Blink AI", orders.length)
+      ].join("");
+      const header = restaurantHeaderHtml(application, menuItems, orders, coupons, reviews);
+      const content = selectedRestaurantPanel === "orders"
+        ? restaurantOrdersHtml(orders)
+        : selectedRestaurantPanel === "coupon"
+          ? restaurantCouponsHtml(application, menuItems, coupons)
+          : selectedRestaurantPanel === "pos"
+            ? restaurantPosHtml(orders)
+            : selectedRestaurantPanel === "review"
+              ? restaurantReviewsHtml(reviews)
+              : selectedRestaurantPanel === "blink"
+                ? restaurantBlinkAIHtml(orders)
+                : restaurantMenuHtml(menuItems);
+      body.innerHTML = `${header}${content}`;
+    }
+
+    function restaurantHeaderHtml(application, menuItems, orders, coupons, reviews) {
+      const completedOrders = orders.filter(order => order.status === "completed");
+      const revenue = completedOrders.reduce((sum, order) => sum + Number(order.goods_amount || order.subtotal_mmk || 0), 0);
+      return `
+        <section class="restaurant-panel-header">
+          <div>
+            <h3>${escapeHtml(application.store_name || "餐厅")}</h3>
+            <div class="muted">${escapeHtml(application.owner_name || "")} ${escapeHtml(application.primary_phone || "")} / ${displayAccount(application.user_phone || "")}</div>
+            <div class="muted">${escapeHtml(application.store_address || "未填写地址")}</div>
+          </div>
+          <div class="summary-card"><span>Menu</span><strong>${menuItems.length}</strong></div>
+          <div class="summary-card"><span>Orders</span><strong>${orders.length}</strong></div>
+          <div class="summary-card"><span>Revenue</span><strong>${money(revenue)}</strong></div>
+          <div class="summary-card"><span>Review</span><strong>${reviews.length}</strong></div>
+          <div class="summary-card"><span>Coupon</span><strong>${coupons.length}</strong></div>
+        </section>`;
+    }
+
+    function restaurantMenuHtml(menuItems) {
+      const rows = menuItems.map(item => {
+        const image = item.image_url ? `<img class="thumb" src="${escapeHtml(item.image_url)}" alt="菜品图片">` : `<span class="muted">未上传</span>`;
+        const discount = item.original_price_mmk && Number(item.original_price_mmk) > Number(item.price_mmk)
+          ? `<br><span class="muted">原价 ${money(item.original_price_mmk)}</span>`
+          : "";
+        return `
+          <tr>
+            <td>${image}</td>
+            <td><strong>${escapeHtml(item.name || "")}</strong><br><span class="muted">${escapeHtml(item.category || "")}</span></td>
+            <td>${money(item.price_mmk)}${discount}</td>
+            <td><span class="pill">${escapeHtml(label(item.status))}</span><br><span class="muted">${item.is_available ? "Available" : "Unavailable"}</span></td>
+          </tr>`;
+      }).join("");
+      return `
+        <section>
+          <h3>Menu</h3>
+          <table class="mini-table"><thead><tr><th>图片</th><th>菜品</th><th>价格</th><th>状态</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">暂无菜单</td></tr>`}</tbody></table>
+        </section>`;
+    }
+
+    function restaurantOrdersHtml(orders) {
+      const rows = orders.map(order => {
+        const items = (order.items || []).map(item => `${escapeHtml(item.menu_item_name || item.menu_item_id || "")} x${Number(item.quantity || 0)}`).join("<br>") || `<span class="muted">无菜品</span>`;
+        return `
+          <tr>
+            <td><strong>#${escapeHtml(String(order.id || "").slice(0, 8).toUpperCase())}</strong><br><span class="muted">${escapeHtml(new Date(order.created_at).toLocaleString())}</span></td>
+            <td>${displayAccount(order.user_phone, order.user_nickname, order.user_email)}</td>
+            <td><span class="pill">${escapeHtml(label(order.status))}</span><br><span class="muted">付款：${escapeHtml(label(order.payment_status || "not_required"))}</span></td>
+            <td>${money(order.goods_amount || order.subtotal_mmk)}<br><span class="muted">配送费 ${money(order.delivery_fee_mmk)}</span></td>
+            <td>${items}</td>
+            <td><button onclick="deleteFoodOrder('${order.id}', this)">删除订单</button></td>
+          </tr>`;
+      }).join("");
+      return `
+        <section>
+          <h3>Food Order</h3>
+          <table class="mini-table"><thead><tr><th>订单</th><th>用户</th><th>状态</th><th>金额</th><th>菜品</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="6" class="muted">暂无订单</td></tr>`}</tbody></table>
+        </section>`;
+    }
+
+    function restaurantCouponsHtml(application, menuItems, coupons) {
+      const menuOptions = menuItems.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.id)}</option>`).join("");
+      const rows = coupons.map(coupon => `
+        <tr>
+          <td><strong>${escapeHtml(coupon.name)}</strong><br><span class="muted">${escapeHtml(new Date(coupon.created_at).toLocaleString())}</span></td>
+          <td>${escapeHtml(coupon.start_date)} - ${escapeHtml(coupon.end_date)}</td>
+          <td>${money(coupon.min_cart_mmk)}</td>
+          <td>${escapeHtml(couponDiscountText(coupon))}</td>
+          <td>${escapeHtml(restaurantCouponMenuSummary(coupon, menuItems))}</td>
+          <td><button class="danger" onclick="deleteCoupon('${coupon.id}', this)">删除</button></td>
+        </tr>`).join("");
+      return `
+        <section>
+          <h3>后台替商家 Create Coupon</h3>
+          <div class="restaurant-form">
+            <label>Coupon name <input id="restaurantCouponName" type="text" placeholder="Lunch combo"></label>
+            <label>Start Date <input id="restaurantCouponStartDate" type="date"></label>
+            <label>End Date <input id="restaurantCouponEndDate" type="date"></label>
+            <label>Cart 满 <input id="restaurantCouponMinCart" type="number" min="0" step="100" placeholder="MMK"></label>
+            <label>折扣 % <input id="restaurantCouponDiscountPercent" type="number" min="1" max="100" step="1" placeholder="%"></label>
+            <label class="wide"><span><input id="restaurantCouponAllMenu" type="checkbox" checked> All Menu</span></label>
+            <label class="wide">指定菜品
+              <select id="restaurantCouponMenuItems" multiple>${menuOptions}</select>
+            </label>
+            <button onclick="createRestaurantCoupon(${jsValue(application.id)}, this)">Create Coupon</button>
+            <span id="restaurantCouponStatus" class="muted"></span>
+          </div>
+        </section>
+        <section>
+          <h3>Coupon</h3>
+          <table class="mini-table"><thead><tr><th>Name</th><th>Date</th><th>Cart 满</th><th>折扣</th><th>Menu</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="6" class="muted">暂无 Coupon</td></tr>`}</tbody></table>
+        </section>`;
+    }
+
+    function restaurantCouponMenuSummary(coupon, menuItems) {
+      const ids = coupon.menu_item_ids || [];
+      if (!ids.length || ids.includes("ALL")) return "All";
+      return ids.map(id => menuItems.find(item => item.id === id)?.name || id).join(", ");
+    }
+
+    function restaurantPosHtml(orders) {
+      const completedOrders = orders.filter(order => order.status === "completed");
+      const revenue = completedOrders.reduce((sum, order) => sum + Number(order.goods_amount || order.subtotal_mmk || 0), 0);
+      const deliveryFees = completedOrders.reduce((sum, order) => sum + Number(order.delivery_fee_mmk || 0), 0);
+      const average = completedOrders.length ? revenue / completedOrders.length : 0;
+      return `
+        <section>
+          <h3>POS</h3>
+          <div class="summary">
+            <div class="summary-card"><span>Completed Orders</span><strong>${completedOrders.length}</strong></div>
+            <div class="summary-card"><span>Food Revenue</span><strong>${money(revenue)}</strong></div>
+            <div class="summary-card"><span>Delivery Fees</span><strong>${money(deliveryFees)}</strong></div>
+            <div class="summary-card"><span>Average Ticket</span><strong>${money(average)}</strong></div>
+          </div>
+        </section>`;
+    }
+
+    function restaurantReviewsHtml(reviews) {
+      const rows = reviews.map(review => {
+        const images = (review.image_urls || []).map(url => `<img class="thumb" src="${escapeHtml(url)}" alt="评价图片">`).join("");
+        return `
+          <tr>
+            <td><strong>${escapeHtml(review.user_name || review.user_phone || "")}</strong><br><span class="muted">${escapeHtml(new Date(review.created_at).toLocaleString())}</span></td>
+            <td>${"★".repeat(Number(review.rating || 5))}</td>
+            <td>${escapeHtml(review.comment || "")}${review.restaurant_reply ? `<br><span class="muted">商家回复：${escapeHtml(review.restaurant_reply)}</span>` : ""}</td>
+            <td>${images || `<span class="muted">无图片</span>`}</td>
+            <td><button class="danger" onclick="deleteFoodReview('${review.id}', this)">删除评价</button></td>
+          </tr>`;
+      }).join("");
+      return `
+        <section>
+          <h3>Review</h3>
+          <table class="mini-table"><thead><tr><th>用户</th><th>评分</th><th>评价</th><th>图片</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="muted">暂无评价</td></tr>`}</tbody></table>
+        </section>`;
+    }
+
+    function restaurantBlinkAIHtml(orders) {
+      const insights = restaurantBlinkInsights(orders);
+      return `
+        <section>
+          <h3>Blink AI</h3>
+          ${insights.map(text => `<div class="chat-thread">${escapeHtml(text)}</div>`).join("")}
+        </section>`;
+    }
+
+    function restaurantBlinkInsights(orders) {
+      const completedOrders = orders.filter(order => order.status === "completed");
+      if (!completedOrders.length) return ["Blink AI needs completed food orders before it can analyze sales and notes."];
+      const itemStats = new Map();
+      completedOrders.flatMap(order => order.items || []).forEach(item => {
+        const name = item.menu_item_name || item.menu_item_id || "Item";
+        const key = item.selected_option ? `${name} (${item.selected_option})` : name;
+        itemStats.set(key, (itemStats.get(key) || 0) + Number(item.quantity || 0));
+      });
+      const topItems = Array.from(itemStats.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      const revenue = completedOrders.reduce((sum, order) => sum + Number(order.goods_amount || order.subtotal_mmk || 0), 0);
+      const noteCount = completedOrders.filter(order => String(order.note || "").trim()).length +
+        completedOrders.flatMap(order => order.items || []).filter(item => String(item.note || "").trim()).length;
+      const insights = [`Completed revenue is ${money(revenue)} from ${completedOrders.length} delivered orders.`];
+      if (topItems.length) insights.push(`Best sellers: ${topItems.map(([name, count]) => `${name} x${count}`).join(", ")}.`);
+      if (noteCount) insights.push(`${noteCount} customer notes found. Review repeated requests to optimize taste, packaging, and options.`);
+      const slowItem = Array.from(itemStats.entries()).sort((a, b) => a[1] - b[1])[0];
+      if (slowItem && itemStats.size > 1) insights.push(`${slowItem[0]} has lower completed sales. Improve photo, description, price, or bundle it with a best seller.`);
+      return insights;
+    }
+
+    async function createRestaurantCoupon(restaurantId, button = null) {
+      const status = document.getElementById("restaurantCouponStatus");
+      const name = document.getElementById("restaurantCouponName")?.value.trim() || "";
+      const startDate = document.getElementById("restaurantCouponStartDate")?.value || "";
+      const endDate = document.getElementById("restaurantCouponEndDate")?.value || "";
+      const minCartMmk = Number(document.getElementById("restaurantCouponMinCart")?.value || 0);
+      const discountPercent = Number(document.getElementById("restaurantCouponDiscountPercent")?.value || 0);
+      const allMenu = document.getElementById("restaurantCouponAllMenu")?.checked !== false;
+      const selectedMenuIds = Array.from(document.getElementById("restaurantCouponMenuItems")?.selectedOptions || []).map(option => option.value);
+      const menuItemIds = allMenu ? ["ALL"] : selectedMenuIds;
+      if (!name || !startDate || !endDate || discountPercent <= 0 || discountPercent > 100) {
+        showToast("请填写 Coupon name、日期和 1-100 的折扣百分比", "error");
+        return;
+      }
+      if (!allMenu && !menuItemIds.length) {
+        showToast("请选择菜品或勾选 All Menu", "error");
+        return;
+      }
+      setButtonBusy(button, true, "创建中...");
+      if (status) status.textContent = "创建中...";
+      try {
+        const response = await fetch(`/admin/coupons?key=${keyParam()}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            start_date: startDate,
+            end_date: endDate,
+            min_cart_mmk: minCartMmk,
+            scope: "food",
+            discount_type: "percent",
+            discount_percent: discountPercent,
+            menu_item_ids: menuItemIds,
+            merchant_restaurant_id: restaurantId
+          })
+        });
+        if (!response.ok) throw new Error(await errorText(response));
+        const coupon = await response.json();
+        state.coupons.unshift(coupon);
+        renderCoupons();
+        renderRestaurants();
+        renderRestaurantModal();
+        if (status) status.textContent = "已创建";
+        showToast("餐厅 Coupon 已创建");
+        loadData({ silent: true });
+      } catch (error) {
+        if (status) status.textContent = "创建失败";
+        showToast(error.message || "创建失败", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function deleteFoodReview(reviewId, button = null) {
+      if (!confirm("确认删除这个用户评价吗？")) return;
+      setButtonBusy(button, true, "删除中...");
+      try {
+        const review = (state.food_reviews || []).find(item => item.id === reviewId);
+        const response = await fetch(`/admin/food/reviews/${encodeURIComponent(reviewId)}?key=${keyParam()}`, { method: "DELETE" });
+        if (!response.ok) throw new Error(await errorText(response));
+        state.food_reviews = (state.food_reviews || []).filter(item => item.id !== reviewId);
+        if (review?.order_id) {
+          const order = (state.food_orders || []).find(item => item.id === review.order_id);
+          if (order) {
+            order.review_rating = null;
+            order.review_comment = null;
+            order.review_image_urls = [];
+            order.reviewed_by_user_at = null;
+            order.restaurant_reply = null;
+            order.restaurant_replied_at = null;
+          }
+        }
+        renderRestaurants();
+        renderRestaurantModal();
+        showToast("评价已删除");
+        loadData({ silent: true });
+      } catch (error) {
+        showToast(error.message || "删除失败", "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    }
+
     function renderFoodMenuItems() {
       const table = document.getElementById("foodMenuItems");
       if (!table) return;
@@ -4864,6 +5293,8 @@ ADMIN_HTML = r'''
         if (!response.ok) throw new Error(await errorText(response));
         state.coupons = state.coupons.filter(item => item.id !== couponId);
         renderCoupons();
+        renderRestaurants();
+        if (selectedRestaurantId) renderRestaurantModal();
         showToast("Coupon 已删除");
         loadData({ silent: true });
       } catch (error) {
@@ -5426,6 +5857,7 @@ ADMIN_HTML = r'''
         }
         state.food_orders = (state.food_orders || []).filter(item => item.id !== id);
         render();
+        if (selectedRestaurantId) renderRestaurantModal();
         showToast("外卖订单已删除");
         loadData({ silent: true });
       } catch (error) {
@@ -6849,6 +7281,7 @@ def admin_data(key: str = Query(default="")) -> dict:
     deleted_store_applications_data = load_admin_deleted_store_applications(db_path, signed_gcs_read_url)
     food_menu_items_data = load_admin_menu_items(db_path, signed_gcs_read_url)
     food_orders_data = load_admin_food_orders(db_path, signed_gcs_read_url)
+    food_reviews_data = load_admin_food_reviews(db_path, signed_gcs_read_url)
     rider_registrations_data = load_admin_rider_registrations()
     coupons_data = [coupon.model_dump(mode="json") for coupon in load_coupons()]
     return {
@@ -6861,6 +7294,7 @@ def admin_data(key: str = Query(default="")) -> dict:
         "deleted_store_applications": deleted_store_applications_data,
         "food_menu_items": food_menu_items_data,
         "food_orders": food_orders_data,
+        "food_reviews": food_reviews_data,
         "coupons": coupons_data,
         "order_hours": order_hours_status(),
         "deposit_settings": {
@@ -7025,6 +7459,12 @@ def admin_delete_food_order(order_id: str, key: str = Query(default="")) -> dict
 def admin_delete_food_menu_item(menu_item_id: str, key: str = Query(default="")) -> dict:
     require_admin_key(key)
     return delete_admin_menu_item(db_path, menu_item_id, delete_gcs_url)
+
+
+@app.delete("/admin/food/reviews/{review_id}")
+def admin_delete_food_review(review_id: str, key: str = Query(default="")) -> dict:
+    require_admin_key(key)
+    return delete_admin_food_review(db_path, review_id)
 
 
 @app.post("/admin/chat/messages", response_model=ChatMessageResponse)
