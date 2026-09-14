@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError
 
+from delivery_areas import city_bounds_with_margin, delivery_townships_by_city
+
 RIDER_DEPOSIT_CONFIRM_WINDOW = timedelta(minutes=5)
 UNACCEPTED_FOOD_ORDER_EXPIRATION = timedelta(
     hours=float(os.getenv("UNACCEPTED_FOOD_ORDER_EXPIRATION_HOURS", "1") or 1)
@@ -443,69 +445,8 @@ RESTAURANT_TYPES = {
     "Fast Food",
 }
 
-DELIVERY_TOWNSHIPS_BY_CITY = {
-    "Yangon": [
-        "Ahlone",
-        "Bahan",
-        "Dagon",
-        "Kamayut",
-        "Kyauktada",
-        "Kyeemyindaing",
-        "Lanmadaw",
-        "Latha",
-        "Pabedan",
-        "Sanchaung",
-        "Botahtaung",
-        "Dagon Myothit (East)",
-        "Dagon Myothit (North)",
-        "Dagon Myothit (Seikkan)",
-        "Dagon Myothit (South)",
-        "Dawbon",
-        "Mingalartaungnyunt",
-        "North Okkalapa",
-        "Pazundaung",
-        "South Okkalapa",
-        "Tamwe",
-        "Thaketa",
-        "Thingangyun",
-        "Yankin",
-        "Hlaing",
-        "Hlaingthaya",
-        "Hmawbi",
-        "Htantabin",
-        "Insein",
-        "Mayangone",
-        "Mingaladon",
-        "Shwepyitha",
-        "Cocokyun",
-        "Dala",
-        "Kawhmu",
-        "Kayan",
-        "Kungyangon",
-        "Kyauktan",
-        "Seikkan",
-        "Seikkyi Kanaungto",
-        "Thanlyin",
-        "Thongwa",
-        "Twantay",
-    ],
-    "Mandalay": ["Aungmyethazan", "Chanayethazan", "Mahaaungmye", "Chanmyathazi", "Pyigyidagun", "Patheingyi"],
-    "Naypyidaw": ["Zabuthiri", "Dekkhinathiri", "Pobbathiri", "Ottarathiri", "Zeyathiri", "Pyinmana", "Lewe", "Tatkone"],
-    "Bago": ["Bago"],
-    "Mawlamyine": ["Mawlamyine"],
-    "Taunggyi": ["Taunggyi"],
-    "Taungoo": ["Taungoo"],
-}
-
-CITY_BOUNDS_WITH_MARGIN = {
-    "Yangon": ((15.95, 17.35), (95.65, 96.75), 0.25),
-    "Mandalay": ((21.65, 22.35), (95.75, 96.35), 0.20),
-    "Naypyidaw": ((19.35, 20.10), (95.70, 96.45), 0.25),
-    "Bago": ((17.05, 17.65), (96.15, 96.85), 0.20),
-    "Mawlamyine": ((16.20, 16.75), (97.35, 97.90), 0.20),
-    "Taunggyi": ((20.55, 21.05), (96.75, 97.30), 0.20),
-    "Taungoo": ((18.70, 19.15), (96.20, 96.70), 0.20),
-}
+DELIVERY_TOWNSHIPS_BY_CITY = delivery_townships_by_city()
+CITY_BOUNDS_WITH_MARGIN = city_bounds_with_margin()
 
 
 def _validate_delivery_city_township(city: str, township: str) -> tuple[str, str]:
