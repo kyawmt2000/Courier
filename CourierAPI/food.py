@@ -947,6 +947,88 @@ def load_admin_menu_items(db_path: Path, sign_url: SignUrl | None = None) -> lis
     return items
 
 
+def load_admin_food_reviews(db_path: Path, sign_url: SignUrl | None = None) -> list[dict]:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT review.id, review.order_id, review.restaurant_id, review.user_phone,
+                   COALESCE(account.nickname, review.user_phone) AS user_name,
+                   review.rating, review.comment, review.image_count,
+                   review.restaurant_reply, review.restaurant_replied_at,
+                   review.payload, review.created_at,
+                   store.store_name, store.owner_name, store.primary_phone, store.user_phone AS owner_user_phone
+            FROM food_reviews AS review
+            LEFT JOIN accounts AS account ON account.phone = review.user_phone
+            LEFT JOIN food_store_applications AS store ON store.id = review.restaurant_id
+            ORDER BY review.created_at DESC
+            """
+        ).fetchall()
+    reviews: list[dict] = []
+    for row in rows:
+        payload = json.loads(row["payload"] or "{}")
+        image_urls = payload.get("image_urls") or []
+        if sign_url:
+            image_urls = [sign_url(url) or url for url in image_urls]
+        reviews.append(
+            {
+                "id": row["id"],
+                "order_id": row["order_id"],
+                "restaurant_id": row["restaurant_id"],
+                "restaurant_name": row["store_name"] or "",
+                "owner_name": row["owner_name"] or "",
+                "primary_phone": row["primary_phone"] or "",
+                "owner_user_phone": row["owner_user_phone"] or "",
+                "user_phone": row["user_phone"],
+                "user_name": row["user_name"] or row["user_phone"] or "",
+                "rating": int(row["rating"] or 5),
+                "comment": row["comment"] or "",
+                "image_urls": image_urls,
+                "image_count": int(row["image_count"] or len(image_urls)),
+                "restaurant_reply": row["restaurant_reply"],
+                "restaurant_replied_at": row["restaurant_replied_at"],
+                "created_at": row["created_at"],
+            }
+        )
+    return reviews
+
+
+def delete_admin_food_review(db_path: Path, review_id: str) -> dict:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT id, order_id FROM food_reviews WHERE id = ? LIMIT 1",
+            (review_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="评价不存在")
+        order_id = row["order_id"]
+        if order_id:
+            order_row = connection.execute(
+                "SELECT payload FROM food_orders WHERE id = ? LIMIT 1",
+                (order_id,),
+            ).fetchone()
+            if order_row:
+                order = _food_order_from_payload(order_row["payload"]).model_copy(
+                    update={
+                        "review_rating": None,
+                        "review_comment": None,
+                        "review_image_urls": [],
+                        "reviewed_by_user_at": None,
+                        "restaurant_reply": None,
+                        "restaurant_replied_at": None,
+                    }
+                )
+                connection.execute(
+                    "UPDATE food_orders SET payload = ? WHERE id = ?",
+                    (_food_order_payload(order), order.id),
+                )
+        connection.execute("DELETE FROM food_review_reactions WHERE review_id = ?", (review_id,))
+        connection.execute("DELETE FROM food_review_comments WHERE review_id = ?", (review_id,))
+        connection.execute("DELETE FROM food_reviews WHERE id = ?", (review_id,))
+        return {"status": "deleted", "id": review_id}
+
+
 def _food_order_from_payload(payload: str | None) -> FoodOrderResponse:
     data = json.loads(payload or "{}")
     data.setdefault("delivery_city", "")
@@ -3315,8 +3397,13 @@ def create_food_router(
                       AND end_date >= ?
                       AND (scope = 'food' OR scope = 'both')
                       AND (target_type = 'all' OR target_user_phone = ?)
+                      AND (
+                          merchant_restaurant_id IS NULL
+                          OR merchant_restaurant_id = ''
+                          OR merchant_restaurant_id = ?
+                      )
                     """,
-                    (voucher_code, today, today, user_phone),
+                    (voucher_code, today, today, user_phone, request.restaurant_id),
                 ).fetchone()
                 if coupon_row and request.subtotal_mmk >= float(coupon_row["min_cart_mmk"] or 0):
                     menu_item_ids_text = coupon_row["menu_item_ids"] or ""
